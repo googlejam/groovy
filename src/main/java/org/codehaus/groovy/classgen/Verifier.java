@@ -74,7 +74,9 @@ import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
 
 import java.beans.Transient;
+import java.lang.invoke.MethodHandles;
 import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -98,6 +100,10 @@ import static org.apache.groovy.ast.tools.MethodNodeUtils.getCodeAsBlock;
 import static org.apache.groovy.ast.tools.MethodNodeUtils.getPropertyName;
 import static org.apache.groovy.ast.tools.MethodNodeUtils.methodDescriptorWithoutReturnType;
 import static org.codehaus.groovy.ast.AnnotationNode.METHOD_TARGET;
+import static org.codehaus.groovy.ast.ClassHelper.isObjectType;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveBoolean;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveDouble;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveLong;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.binX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.block;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.bytecodeX;
@@ -134,6 +140,7 @@ import static org.codehaus.groovy.ast.tools.PropertyNodeUtils.adjustPropertyModi
  *     <li>Property accessor methods</li>
  *     <li>Covariant methods</li>
  *     <li>Additional methods/constructors as needed for default parameters</li>
+ *     <li>{@link java.lang.invoke.MethodHandles.Lookup} getter</li>
  * </ul>
  */
 public class Verifier implements GroovyClassVisitor, Opcodes {
@@ -193,7 +200,7 @@ public class Verifier implements GroovyClassVisitor, Opcodes {
             return ret;
         }
         ClassNode current = node;
-        while (current != ClassHelper.OBJECT_TYPE) {
+        while (!(isObjectType(current))) {
             current = current.getSuperClass();
             if (current == null) break;
             ret = current.getDeclaredField("metaClass");
@@ -247,6 +254,8 @@ public class Verifier implements GroovyClassVisitor, Opcodes {
 
             addFastPathHelperFieldsAndHelperMethod(node, classInternalName, knownSpecialCase);
             if (!knownSpecialCase) addGroovyObjectInterfaceAndMethods(node, classInternalName);
+
+            addGetLookupMethod(node);
         }
 
         addDefaultConstructor(node);
@@ -318,7 +327,7 @@ public class Verifier implements GroovyClassVisitor, Opcodes {
         FieldNode ret = node.getDeclaredField(fieldName);
         if (ret != null) {
             if (isPublic(ret.getModifiers()) &&
-                    ret.getType().redirect() == ClassHelper.boolean_TYPE) {
+                    isPrimitiveBoolean(ret.getType().redirect())) {
                 return ret;
             }
             throw new RuntimeParserException("The class " + node.getName() +
@@ -347,6 +356,30 @@ public class Verifier implements GroovyClassVisitor, Opcodes {
         constructor.setHasNoRealSourcePosition(true);
         markAsGenerated(node, constructor);
         node.addConstructor(constructor);
+    }
+
+    private void addGetLookupMethod(final ClassNode node) {
+        int modifiers = ACC_PUBLIC;
+        boolean nonStaticInnerClass = null != node.getOuterClass() && !Modifier.isStatic(node.getModifiers());
+        if (!nonStaticInnerClass) {
+            // static method cannot be declared in non-static inner class util Java 16
+            modifiers |= ACC_STATIC;
+        }
+
+        node.addSyntheticMethod(
+                "$getLookup",
+                modifiers,
+                ClassHelper.make(MethodHandles.Lookup.class),
+                Parameter.EMPTY_ARRAY,
+                ClassNode.EMPTY_ARRAY,
+                new BytecodeSequence(new BytecodeInstruction() {
+                    @Override
+                    public void visit(final MethodVisitor mv) {
+                        mv.visitMethodInsn(INVOKESTATIC, "java/lang/invoke/MethodHandles", "lookup", "()Ljava/lang/invoke/MethodHandles$Lookup;", false);
+                        mv.visitInsn(ARETURN);
+                    }
+                })
+        );
     }
 
     private void addStaticMetaClassField(final ClassNode node, final String classInternalName) {
@@ -644,10 +677,10 @@ public class Verifier implements GroovyClassVisitor, Opcodes {
             Parameter[] params = node.getParameters();
             if (params.length == 1) {
                 Parameter param = params[0];
-                if (param.getType() == null || param.getType() == ClassHelper.OBJECT_TYPE) {
+                if (param.getType() == null || isObjectType(param.getType())) {
                     param.setType(ClassHelper.STRING_TYPE.makeArray());
                     ClassNode returnType = node.getReturnType();
-                    if (returnType == ClassHelper.OBJECT_TYPE) {
+                    if (isObjectType(returnType)) {
                         node.setReturnType(ClassHelper.VOID_TYPE);
                     }
                 }
@@ -681,7 +714,7 @@ public class Verifier implements GroovyClassVisitor, Opcodes {
 
         String getterName = node.getGetterName();
         if (getterName == null) {
-            getterName = "get" + capitalize(name); // we handle "is" below
+            getterName = "get" + capitalize(name);
         }
         String setterName = node.getSetterNameOrDefault();
 
@@ -690,9 +723,8 @@ public class Verifier implements GroovyClassVisitor, Opcodes {
         Statement getterBlock = node.getGetterBlock();
         if (getterBlock == null) {
             MethodNode getter = classNode.getGetterMethod(getterName, !node.isStatic());
-            if (getter == null && ClassHelper.boolean_TYPE == node.getType()) {
-                String secondGetterName = "is" + capitalize(name);
-                getter = classNode.getGetterMethod(secondGetterName);
+            if (getter == null && isPrimitiveBoolean(node.getType())) {
+                getter = classNode.getGetterMethod("is" + capitalize(name));
             }
             if (!node.isPrivate() && methodNeedsReplacement(getter)) {
                 getterBlock = createGetterBlock(node, field);
@@ -700,9 +732,9 @@ public class Verifier implements GroovyClassVisitor, Opcodes {
         }
         Statement setterBlock = node.getSetterBlock();
         if (setterBlock == null) {
-            // 2nd arg false below: though not usual, allow setter with non-void return type
-            MethodNode setter = classNode.getSetterMethod(setterName, false);
-            if (!node.isPrivate() && !isFinal(accessorModifiers) && methodNeedsReplacement(setter)) {
+            MethodNode setter = classNode.getSetterMethod(setterName,
+                    false); // atypical: allow setter with non-void return type
+            if ((accessorModifiers & (ACC_FINAL | ACC_PRIVATE)) == 0 && methodNeedsReplacement(setter)) {
                 setterBlock = createSetterBlock(node, field);
             }
         }
@@ -715,7 +747,7 @@ public class Verifier implements GroovyClassVisitor, Opcodes {
         if (getterBlock != null) {
             visitGetter(node, field, getterBlock, getterModifiers, getterName);
 
-            if (node.getGetterName() == null && getterName.startsWith("get") && (node.getType().equals(ClassHelper.boolean_TYPE) || node.getType().equals(ClassHelper.Boolean_TYPE))) {
+            if (node.getGetterName() == null && getterName.startsWith("get") && isPrimitiveBoolean(node.getType())) {
                 String altGetterName = "is" + capitalize(name);
                 MethodNode altGetter = classNode.getGetterMethod(altGetterName, !node.isStatic());
                 if (methodNeedsReplacement(altGetter)) {
@@ -1453,8 +1485,8 @@ public class Verifier implements GroovyClassVisitor, Opcodes {
                         for (int i = 0, n = para.length; i < n; i += 1) {
                             ClassNode type = para[i].getType();
                             BytecodeHelper.load(mv, type, i + 1 + doubleSlotOffset);
-                            if (type.redirect() == ClassHelper.double_TYPE
-                                    || type.redirect() == ClassHelper.long_TYPE) {
+                            if (isPrimitiveDouble(type.redirect())
+                                    || isPrimitiveLong(type.redirect())) {
                                 doubleSlotOffset += 1;
                             }
                             if (!type.equals(goal[i].getType())) {

@@ -219,15 +219,17 @@ public class DefaultGroovyMethods extends DefaultGroovyMethodsSupport {
             ProcessGroovyMethods.class,
             ResourceGroovyMethods.class,
             SocketGroovyMethods.class,
-            StringGroovyMethods.class//,
-            // Below are registered as module extension classes
-//            DateUtilExtensions.class,
-//            DateTimeStaticExtensions.class,
-//            DateTimeExtensions.class,
-//            SqlExtensions.class,
-//            SwingGroovyMethods.class,
-//            XmlExtensions.class,
-//            NioExtensions.class
+            StreamGroovyMethods.class,
+            StringGroovyMethods.class,
+            /* registered extensions:
+            DateUtilExtensions.class,
+            DateTimeExtensions.class,
+            DateTimeStaticExtensions.class,
+            NioExtensions.class,
+            SqlExtensions.class,
+            SwingGroovyMethods.class,
+            XmlExtensions.class,
+            */
     };
     private static final Object[] EMPTY_OBJECT_ARRAY = new Object[0];
     private static final NumberAwareComparator<Comparable> COMPARABLE_NUMBER_AWARE_COMPARATOR = new NumberAwareComparator<>();
@@ -1111,15 +1113,42 @@ public class DefaultGroovyMethods extends DefaultGroovyMethodsSupport {
 
     /**
      * Special 'Case' implementation for Class, which allows testing
-     * for a certain class in a switch statement.
-     * For example:
-     * <pre>switch( obj ) {
-     *   case List :
-     *     // obj is a list
-     *     break;
-     *   case Set :
-     *     // etc
-     * }</pre>
+     * whether some switch value is assignable from the given case class.
+     *
+     * If the switch value is an object, {@code isCase} will return true if the
+     * switch value is assignment compatible with the class (case value),
+     * i.e.&nbsp;is an {@code instanceof} the class, for example:
+     * <pre class="groovyTestCase">
+     * def someList = []
+     * switch (someList) {
+     *   case List:
+     *     assert true, 'is a list'
+     *     break
+     *   case Map:
+     *     assert false, 'is not a Map'
+     *     break
+     *   default:
+     *     assert false, 'should never get here'
+     *     break
+     * }
+     * </pre>
+     *
+     * If the switch value is a class, {@code isCase} will return true if the
+     * switch value is assignable from the given class (case value), i.e.&nbsp;the case class
+     * is the same as, or a superclass, or a super-interface of the switch class, for example:
+     * <pre class="groovyTestCase">
+     * switch (ArrayList) {
+     *   case List:
+     *     assert true, 'is a list'
+     *     break
+     *   case Map:
+     *     assert false, 'is not a Map'
+     *     break
+     *   default:
+     *     assert false, 'should never get here'
+     *     break
+     * }
+     * </pre>
      *
      * @param caseValue   the case value
      * @param switchValue the switch value

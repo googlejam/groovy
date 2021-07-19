@@ -21,10 +21,10 @@ package org.codehaus.groovy.reflection;
 import groovy.lang.GroovyObjectSupport;
 import groovy.test.GroovyTestCase;
 import org.codehaus.groovy.runtime.InvokerInvocationException;
+
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.ReflectPermission;
-import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.security.AccessControlException;
 import java.security.Permission;
@@ -221,7 +221,7 @@ public class SecurityTest extends GroovyTestCase {
         if (isAtLeastJdk("9.0")) {
             return;
         }
-        cachedMethodUnderTest = createCachedMethod(ClassLoader.class, "getBootstrapClassPath", new Class[0]);
+        cachedMethodUnderTest = createCachedMethod(ClassLoader.class, "getBootstrapClassPath");
         System.setSecurityManager(restrictiveSecurityManager);
 
         try {
@@ -241,6 +241,9 @@ public class SecurityTest extends GroovyTestCase {
 
 
     public void testChecksCreateClassLoaderPermissionForClassLoaderProtectedMethodAccess() throws Exception {
+        // Illegal access to java.lang.ClassLoader.defineClass(java.lang.String,java.nio.ByteBuffer,java.security.ProtectionDomain)
+        if (isAtLeastJdk("16.0")) return;
+
         cachedMethodUnderTest = createCachedMethod(ClassLoader.class, "defineClass", new Class[]{String.class, ByteBuffer.class, ProtectionDomain.class});
         forbidden = new Permissions();
         forbidden.add(new RuntimePermission("createClassLoader"));

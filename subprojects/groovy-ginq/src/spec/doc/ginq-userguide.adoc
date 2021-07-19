@@ -141,6 +141,18 @@ Construct new objects as column values:
 include::../test/org/apache/groovy/ginq/GinqTest.groovy[tags=ginq_projection_02,indent=0]
 ----
 
+===== Distinct
+`distinct` is equivalent to SQL's `DISTINCT`
+[source, groovy]
+----
+include::../test/org/apache/groovy/ginq/GinqTest.groovy[tags=ginq_distinct_1,indent=0]
+----
+
+[source, groovy]
+----
+include::../test/org/apache/groovy/ginq/GinqTest.groovy[tags=ginq_distinct_2,indent=0]
+----
+
 ==== Filtering
 `where` is equivalent to SQL's `WHERE`
 
@@ -342,10 +354,10 @@ GINQ provides some built-in aggregate functions:
 |java.math.BigDecimal
 |the statistical variance for the population for all non-null values
 
-|agg(_expression_)
-|any
-|any
-|customizes the aggregation logic in _expression_ and returns single value
+//|agg(_expression_)
+//|any
+//|any
+//|customizes the aggregation logic in _expression_ and returns single value
 
 |===
 
@@ -379,6 +391,7 @@ include::../test/org/apache/groovy/ginq/GinqTest.groovy[tags=ginq_grouping_11,in
 include::../test/org/apache/groovy/ginq/GinqTest.groovy[tags=ginq_grouping_12,indent=0]
 ----
 
+////
 [source, sql]
 ----
 include::../test/org/apache/groovy/ginq/GinqTest.groovy[tags=ginq_grouping_03,indent=0]
@@ -386,7 +399,7 @@ include::../test/org/apache/groovy/ginq/GinqTest.groovy[tags=ginq_grouping_03,in
 [NOTE]
 `_g` is an implicit variable for `agg` aggregate function,
 it represents the grouped `Queryable` object and its record(e.g. `r`) could reference the data source by alias(e.g. `n`)
-
+////
 
 Also, we could apply the aggregate functions for the whole GINQ result, i.e. no `groupby` clause is needed:
 [source, groovy]
@@ -394,10 +407,12 @@ Also, we could apply the aggregate functions for the whole GINQ result, i.e. no 
 include::../test/org/apache/groovy/ginq/GinqTest.groovy[tags=ginq_aggfunction_02,indent=0]
 ----
 
+////
 [source, groovy]
 ----
 include::../test/org/apache/groovy/ginq/GinqTest.groovy[tags=ginq_aggfunction_01,indent=0]
 ----
+////
 
 [source, groovy]
 ----
@@ -873,7 +888,6 @@ include::../test/org/apache/groovy/ginq/GinqTest.groovy[tags=ginq_tips_05,indent
 ----
 
 ==== List Comprehension
-
 List comprehension is an elegant way to define and create lists based on existing lists:
 [source, groovy]
 ----
@@ -906,10 +920,17 @@ include::../test/org/apache/groovy/ginq/GinqTest.groovy[tags=ginq_tips_07,indent
 ----
 
 ==== Alternative for `with` clause
-GINQ does not support `with` clause for now. We could define a temporary variable to workaround:
+GINQ does not support `with` clause for now, but we could define a temporary variable to workaround:
 [source, groovy]
 ----
 include::../test/org/apache/groovy/ginq/GinqTest.groovy[tags=ginq_tips_12,indent=0]
+----
+
+==== Alternative for `case-when`
+`case-when` of SQL could be replaced with switch expression:
+[source, groovy]
+----
+include::../test/org/apache/groovy/ginq/GinqTest.groovy[tags=ginq_tips_13,indent=0]
 ----
 
 ==== Query JSON
@@ -925,7 +946,7 @@ Parallel querying is especially efficient when querying big data sources. It is 
 include::../test/org/apache/groovy/ginq/GinqTest.groovy[tags=ginq_tips_08,indent=0]
 ----
 
-As parallel querying will use a shared thread pool, the following code should be executed to release resources after all GINQ statements execution are completed, otherwise JVM will not exit. The code will wait util all tasks of theads are completed.
+As parallel querying will use a shared thread pool, the following code can release resources after all GINQ statements execution are completed, and it will wait util all tasks of threads are completed.
 [source, groovy]
 ----
 include::../test/org/apache/groovy/ginq/GinqTest.groovy[tags=ginq_tips_09,indent=0]

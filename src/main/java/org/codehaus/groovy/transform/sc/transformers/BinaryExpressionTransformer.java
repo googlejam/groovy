@@ -60,6 +60,14 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.isOrImplements;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.nullX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.ternaryX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.varX;
+import static org.codehaus.groovy.ast.ClassHelper.isBigDecimalType;
+import static org.codehaus.groovy.ast.ClassHelper.isBigIntegerType;
+import static org.codehaus.groovy.ast.ClassHelper.isWrapperByte;
+import static org.codehaus.groovy.ast.ClassHelper.isWrapperDouble;
+import static org.codehaus.groovy.ast.ClassHelper.isWrapperFloat;
+import static org.codehaus.groovy.ast.ClassHelper.isWrapperInteger;
+import static org.codehaus.groovy.ast.ClassHelper.isWrapperLong;
+import static org.codehaus.groovy.ast.ClassHelper.isWrapperShort;
 
 public class BinaryExpressionTransformer {
     private static final MethodNode COMPARE_TO_METHOD = ClassHelper.COMPARABLE_TYPE.getMethods("compareTo").get(0);
@@ -82,7 +90,7 @@ public class BinaryExpressionTransformer {
                 return optimized;
             }
         }
-        Object[] list = bin.getNodeMetaData(StaticCompilationMetadataKeys.BINARY_EXP_TARGET);
+
         Token operation = bin.getOperation();
         int operationType = operation.getType();
         Expression leftExpression = bin.getLeftExpression();
@@ -162,6 +170,8 @@ public class BinaryExpressionTransformer {
         } else if (operationType == Types.KEYWORD_IN) {
             return staticCompilationTransformer.transform(convertInOperatorToTernary(bin, rightExpression, leftExpression));
         }
+
+        Object[] list = bin.getNodeMetaData(StaticCompilationMetadataKeys.BINARY_EXP_TARGET);
         if (list != null) {
             MethodCallExpression call;
             Expression left = staticCompilationTransformer.transform(leftExpression);
@@ -369,28 +379,28 @@ public class BinaryExpressionTransformer {
     }
 
     private static Object convertConstant(final Number source, final ClassNode target) {
-        if (ClassHelper.Byte_TYPE.equals(target)) {
+        if (isWrapperByte(target)) {
             return source.byteValue();
         }
-        if (ClassHelper.Short_TYPE.equals(target)) {
+        if (isWrapperShort(target)) {
             return source.shortValue();
         }
-        if (ClassHelper.Integer_TYPE.equals(target)) {
+        if (isWrapperInteger(target)) {
             return source.intValue();
         }
-        if (ClassHelper.Long_TYPE.equals(target)) {
+        if (isWrapperLong(target)) {
             return source.longValue();
         }
-        if (ClassHelper.Float_TYPE.equals(target)) {
+        if (isWrapperFloat(target)) {
             return source.floatValue();
         }
-        if (ClassHelper.Double_TYPE.equals(target)) {
+        if (isWrapperDouble(target)) {
             return source.doubleValue();
         }
-        if (ClassHelper.BigInteger_TYPE.equals(target)) {
+        if (isBigIntegerType(target)) {
             return DefaultGroovyMethods.asType(source, BigInteger.class);
         }
-        if (ClassHelper.BigDecimal_TYPE.equals(target)) {
+        if (isBigDecimalType(target)) {
             return DefaultGroovyMethods.asType(source, BigDecimal.class);
         }
         throw new IllegalArgumentException("Unsupported conversion");

@@ -18,9 +18,11 @@
  */
 package org.codehaus.groovy.vmplugin.v8;
 
+import groovy.lang.GroovyObject;
 import groovy.lang.GroovyRuntimeException;
 import groovy.lang.MetaClass;
 import groovy.lang.MetaMethod;
+import org.apache.groovy.lang.GroovyObjectHelper;
 import org.codehaus.groovy.GroovyBugError;
 import org.codehaus.groovy.ast.AnnotatedNode;
 import org.codehaus.groovy.ast.AnnotationNode;
@@ -40,6 +42,7 @@ import org.codehaus.groovy.ast.expr.ListExpression;
 import org.codehaus.groovy.ast.expr.PropertyExpression;
 import org.codehaus.groovy.ast.stmt.ReturnStatement;
 import org.codehaus.groovy.reflection.ReflectionUtils;
+import org.codehaus.groovy.runtime.MetaClassHelper;
 import org.codehaus.groovy.vmplugin.VMPlugin;
 import org.codehaus.groovy.vmplugin.VMPluginFactory;
 
@@ -67,6 +70,7 @@ import java.security.AccessController;
 import java.security.Permission;
 import java.security.PrivilegedAction;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Java 8 based functions.
@@ -76,7 +80,6 @@ import java.util.List;
 public class Java8 implements VMPlugin {
 
     private static final Class<?>[] PLUGIN_DGM = {PluginDefaultGroovyMethods.class};
-    private static final Class<?>[] EMPTY_CLASS_ARRAY = new Class[0];
     private static final Method[] EMPTY_METHOD_ARRAY = new Method[0];
     private static final Annotation[] EMPTY_ANNOTATION_ARRAY = new Annotation[0];
     private static final Permission ACCESS_PERMISSION = new ReflectPermission("suppressAccessChecks");
@@ -304,7 +307,7 @@ public class Java8 implements VMPlugin {
 
     @Override
     public Class<?>[] getPluginStaticGroovyMethods() {
-        return EMPTY_CLASS_ARRAY;
+        return MetaClassHelper.EMPTY_TYPE_ARRAY;
     }
 
     private void setAnnotationMetaData(Annotation[] annotations, AnnotatedNode an) {
@@ -623,11 +626,27 @@ public class Java8 implements VMPlugin {
         IndyInterface.invalidateSwitchPoints();
     }
 
+    protected MethodHandles.Lookup getLookup(Object receiver) {
+        MethodHandles.Lookup lookup = null;
+        if (receiver instanceof GroovyObject) {
+            Optional<MethodHandles.Lookup> lookupOptional = GroovyObjectHelper.lookup((GroovyObject) receiver);
+            if (lookupOptional.isPresent()) {
+                lookup = lookupOptional.get();
+            }
+        }
+        if (null == lookup) {
+            final Class<?> receiverType = receiver.getClass();
+            lookup = newLookup(receiverType);
+        }
+        return lookup;
+    }
+
     @Override
     public Object getInvokeSpecialHandle(Method method, Object receiver) {
-        final Class<?> receiverType = receiver.getClass();
         try {
-            return newLookup(receiverType).unreflectSpecial(method, receiverType).bindTo(receiver);
+            MethodHandles.Lookup lookup = getLookup(receiver);
+            Class<?> receiverType = receiver.getClass();
+            return lookup.unreflectSpecial(method, receiverType).bindTo(receiver);
         } catch (ReflectiveOperationException e) {
             return getInvokeSpecialHandleFallback(method, receiver);
         }

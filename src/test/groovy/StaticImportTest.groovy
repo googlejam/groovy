@@ -18,7 +18,6 @@
  */
 package groovy
 
-import gls.CompilableTestSupport
 import static java.lang.Boolean.FALSE as F
 import static java.text.DateFormat.MEDIUM as M
 import static java.util.regex.Pattern.*
@@ -44,7 +43,8 @@ import static java.util.jar.Attributes.Name as AttrName
 import static groovy.Container5087.*
 import org.codehaus.groovy.runtime.DefaultGroovyMethods as DGM
 
-class StaticImportTest extends CompilableTestSupport {
+final class StaticImportTest extends groovy.test.GroovyTestCase {
+
     void testFieldWithAliasInExpression() {
         assert !F
     }
@@ -120,25 +120,25 @@ class StaticImportTest extends CompilableTestSupport {
         assert cfield == 21
         assert pfield == 42
     }
-    
+
     void testStaticImportAndDefaultValue() {
-      assertScript """
-        import static Foo.*
-        import static Bar.*
-        
-        class Bar {
-          static void bar() { 
-            assert foo(10,1000) == 1010 
-            assert foo(10) == 110
-          }
-        }
-        
-        class Foo {
-          static int foo(int x, int y = 100) {x+y}
-        }
-        
-        Bar.bar()
-      """  
+        assertScript '''
+            import static Foo.*
+            import static Bar.*
+
+            class Bar {
+                static void bar() { 
+                    assert foo(10,1000) == 1010 
+                    assert foo(10) == 110
+                }
+            }
+
+            class Foo {
+                static int foo(int x, int y = 100) {x+y}
+            }
+
+            Bar.bar()
+        '''
     }
 
     void testStaticImportProperty() {
@@ -230,16 +230,45 @@ class StaticImportTest extends CompilableTestSupport {
         }
     }
 
+    // GROOVY-9382, GROOVY-10133
+    void testStaticImportPropertyWithChoices() {
+        assertScript '''
+            import static Foo.isX
+            import static Foo.getX
+            class Foo {
+                static boolean isX() { true }
+                static boolean getX() { false }
+            }
+            assert x
+        '''
+
+        def err = shouldFail '''
+            import static Foo.isX
+            class Foo { static isX() {} }
+
+            x
+        '''
+        assert err =~ /No such property: x for class/
+
+        err = shouldFail '''
+            import static Foo.isX as isY
+            class Foo { static isX() {} }
+
+            y
+        '''
+        assert err =~ /No such property: y for class/
+    }
+
     void testConstructorArgsAliasing() {
         // not recommended style to use statics in constructors but supported
-        assertScript """
-        class Foo {
-            static x
-        }
-        import static Foo.x as z
-        new Foo(z:'hi')
-        assert z == 'hi'
-        """
+        assertScript '''
+            class Foo {
+                static x
+            }
+            import static Foo.x as z
+            new Foo(z:'hi')
+            assert z == 'hi'
+        '''
     }
 
     void testMethodCallWithThisTargetIsNotResolvedToStaticallyImportedMethod() {
@@ -269,7 +298,7 @@ class StaticImportTest extends CompilableTestSupport {
     }
 
     void testMethodCallExpressionInStaticContextWithInstanceVariableShouldFail() { //GROOVY-4228
-        shouldNotCompile '''
+        def err = shouldFail '''
             class B {
                 def c = new Object()
                 static main(args) {
@@ -277,6 +306,7 @@ class StaticImportTest extends CompilableTestSupport {
                 }
             }
         '''
+        assert err =~ /Apparent variable 'c' was found in a static scope but doesn't refer to a local variable, static field or class/
     }
 
     void testStaticStarImportOfStaticInnerClass() {

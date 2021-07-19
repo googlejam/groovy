@@ -30,8 +30,8 @@ import org.codehaus.groovy.runtime.IteratorClosureAdapter;
 import org.codehaus.groovy.runtime.MethodClosure;
 import org.codehaus.groovy.runtime.NullObject;
 import org.codehaus.groovy.runtime.ResourceGroovyMethods;
+import org.codehaus.groovy.runtime.StreamGroovyMethods;
 import org.codehaus.groovy.runtime.StringGroovyMethods;
-import org.codehaus.groovy.vmplugin.v8.PluginDefaultGroovyMethods;
 
 import java.io.File;
 import java.io.IOException;
@@ -382,6 +382,7 @@ public class DefaultTypeTransformation {
         }
 
         Exception nested = null;
+        Exception suppressed = null;
         if (args != null) {
             try {
                 return InvokerHelper.invokeConstructorOf(type, args);
@@ -398,6 +399,8 @@ public class DefaultTypeTransformation {
                         // as the caller has more context to be able to throw a more
                         // meaningful exception (but stash to get message later)
                         nested = e;
+                        // keep the original exception as suppressed exception to allow easier failure analysis
+                        suppressed = ex;
                     }
                 } else {
                     nested = e;
@@ -415,6 +418,9 @@ public class DefaultTypeTransformation {
             gce = new GroovyCastException(object, type, nested);
         } else {
             gce = new GroovyCastException(object, type);
+        }
+        if (suppressed != null) {
+            gce.addSuppressed(suppressed);
         }
         throw gce;
     }
@@ -476,7 +482,7 @@ public class DefaultTypeTransformation {
         } else if (value.getClass().isArray()) {
             return arrayAsCollection(value);
         } else if (value instanceof BaseStream) {
-            return PluginDefaultGroovyMethods.toList((BaseStream) value);
+            return StreamGroovyMethods.toList((BaseStream) value);
         } else if (value instanceof MethodClosure) {
             MethodClosure method = (MethodClosure) value;
             IteratorClosureAdapter adapter = new IteratorClosureAdapter(method.getDelegate());

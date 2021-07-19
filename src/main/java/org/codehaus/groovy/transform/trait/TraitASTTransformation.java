@@ -40,6 +40,7 @@ import org.codehaus.groovy.ast.stmt.BlockStatement;
 import org.codehaus.groovy.ast.stmt.ExpressionStatement;
 import org.codehaus.groovy.ast.stmt.Statement;
 import org.codehaus.groovy.ast.tools.GeneralUtils;
+import org.codehaus.groovy.ast.tools.GenericsUtils;
 import org.codehaus.groovy.classgen.GeneratorContext;
 import org.codehaus.groovy.classgen.VariableScopeVisitor;
 import org.codehaus.groovy.classgen.Verifier;
@@ -63,6 +64,8 @@ import java.util.Set;
 import static org.apache.groovy.ast.tools.AnnotatedNodeUtils.markAsGenerated;
 import static org.apache.groovy.ast.tools.MethodNodeUtils.getCodeAsBlock;
 import static org.apache.groovy.util.BeanUtils.capitalize;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveBoolean;
+import static org.codehaus.groovy.ast.ClassHelper.isWrapperBoolean;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.args;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.assignS;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.block;
@@ -228,6 +231,11 @@ public class TraitASTTransformation extends AbstractASTTransformation implements
             }
         }
 
+        // add fields
+        for (FieldNode field : fields) {
+            processField(field, initializer, staticInitializer, fieldHelper, helper, staticFieldHelper, cNode, fieldNames);
+        }
+
         // add methods
         List<MethodNode> methods = new ArrayList<>(cNode.getMethods());
         List<MethodNode> nonPublicAPIMethods = new LinkedList<>();
@@ -258,11 +266,6 @@ public class TraitASTTransformation extends AbstractASTTransformation implements
         // remove methods which should not appear in the trait interface
         for (MethodNode privateMethod : nonPublicAPIMethods) {
             cNode.removeMethod(privateMethod);
-        }
-
-        // add fields
-        for (FieldNode field : fields) {
-            processField(field, initializer, staticInitializer, fieldHelper, helper, staticFieldHelper, cNode, fieldNames);
         }
 
         // copy statements from static and instance init blocks
@@ -400,7 +403,7 @@ public class TraitASTTransformation extends AbstractASTTransformation implements
         Statement getterBlock = node.getGetterBlock();
         if (getterBlock == null) {
             MethodNode getter = cNode.getGetterMethod(getterName);
-            if (getter == null && node.getType().equals(ClassHelper.boolean_TYPE)) {
+            if (getter == null && isPrimitiveBoolean(node.getType())) {
                 getter = cNode.getGetterMethod("is" + capitalize(name));
             }
             if (!node.isPrivate() && methodNeedsReplacement(cNode, getter)) {
@@ -422,7 +425,7 @@ public class TraitASTTransformation extends AbstractASTTransformation implements
             getter.setSynthetic(true);
             cNode.addMethod(getter);
 
-            if (node.getGetterName() == null && getterName.startsWith("get") && (node.getType().equals(ClassHelper.boolean_TYPE) || node.getType().equals(ClassHelper.Boolean_TYPE))) {
+            if (node.getGetterName() == null && getterName.startsWith("get") && (isPrimitiveBoolean(node.getType()) || isWrapperBoolean(node.getType()))) {
                 MethodNode secondGetter = new MethodNode("is" + capitalize(name), propNodeModifiers, node.getType(), Parameter.EMPTY_ARRAY, ClassNode.EMPTY_ARRAY, getterBlock);
                 if (methodNeedsReplacement(cNode, secondGetter)) {
                     secondGetter.setSynthetic(true);
@@ -612,10 +615,7 @@ public class TraitASTTransformation extends AbstractASTTransformation implements
         ClassNode type;
         if (isStatic) {
             // Class<TraitClass>
-            type = ClassHelper.CLASS_Type.getPlainNodeReference();
-            type.setGenericsTypes(new GenericsType[]{
-                    new GenericsType(rawType)
-            });
+            type = GenericsUtils.makeClassSafe0(ClassHelper.CLASS_Type, new GenericsType(rawType));
         } else {
             // TraitClass
             type = rawType;

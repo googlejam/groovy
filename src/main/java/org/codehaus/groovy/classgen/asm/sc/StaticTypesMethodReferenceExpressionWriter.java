@@ -28,7 +28,6 @@ import org.codehaus.groovy.ast.Parameter;
 import org.codehaus.groovy.ast.expr.ArgumentListExpression;
 import org.codehaus.groovy.ast.expr.ArrayExpression;
 import org.codehaus.groovy.ast.expr.ClassExpression;
-import org.codehaus.groovy.ast.expr.ConstantExpression;
 import org.codehaus.groovy.ast.expr.Expression;
 import org.codehaus.groovy.ast.expr.MethodCallExpression;
 import org.codehaus.groovy.ast.expr.MethodReferenceExpression;
@@ -53,6 +52,7 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.block;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.callX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.classX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.ctorX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.nullX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.returnS;
 import static org.codehaus.groovy.ast.tools.ParameterUtils.parametersCompatible;
 import static org.codehaus.groovy.transform.stc.StaticTypeCheckingSupport.filterMethodsByVisibility;
@@ -60,7 +60,7 @@ import static org.codehaus.groovy.transform.stc.StaticTypeCheckingSupport.findDG
 import static org.codehaus.groovy.transform.stc.StaticTypeCheckingSupport.isAssignableTo;
 
 /**
- * Writer responsible for generating method reference in statically compiled mode.
+ * Generates bytecode for method reference expressions in statically-compiled code.
  *
  * @since 3.0.0
  */
@@ -173,7 +173,7 @@ public class StaticTypesMethodReferenceExpressionWriter extends MethodReferenceE
     private MethodNode addSyntheticMethodForDGSM(final MethodNode mn) {
         Parameter[] parameters = removeFirstParameter(mn.getParameters());
         ArgumentListExpression args = args(parameters);
-        args.getExpressions().add(0, ConstantExpression.NULL);
+        args.getExpressions().add(0, nullX());
 
         MethodCallExpression returnValue = callX(classX(mn.getDeclaringClass()), mn.getName(), args);
         returnValue.putNodeMetaData(StaticTypesMarker.DIRECT_METHOD_CALL_TARGET, mn);
@@ -241,9 +241,11 @@ public class StaticTypesMethodReferenceExpressionWriter extends MethodReferenceE
             for (int i = 0, n = parameters.length; i < n; i += 1) {
                 ClassNode inferredParamType = inferredParamTypes[i];
                 if (inferredParamType == null) continue;
-                Parameter parameter = parameters[i];
 
-                ClassNode type = convertParameterType(parameter.getType(), inferredParamType);
+                Parameter parameter = parameters[i];
+                Parameter targetParameter = parameter;
+
+                ClassNode type = convertParameterType(targetParameter.getType(), parameter.getType(), inferredParamType);
                 parameter.setOriginType(type);
                 parameter.setType(type);
             }

@@ -83,6 +83,7 @@ import java.util.Set;
 import java.util.function.Consumer;
 
 import static org.codehaus.groovy.antlr.PrimitiveHelper.getDefaultValueForPrimitive;
+import static org.codehaus.groovy.ast.ClassHelper.isObjectType;
 
 /**
  * Handy methods when working with the Groovy AST
@@ -450,22 +451,16 @@ public class GeneralUtils {
     }
 
     public static Set<ClassNode> getInterfacesAndSuperInterfaces(final ClassNode type) {
-        Set<ClassNode> res = new LinkedHashSet<>();
-        if (type.isInterface()) {
-            res.add(type);
-            return res;
+        Set<ClassNode> result = new LinkedHashSet<>();
+        for (ClassNode next = type; next != null; next = next.getSuperClass()) {
+            result.addAll(next.getAllInterfaces());
         }
-        ClassNode next = type;
-        while (next != null) {
-            res.addAll(next.getAllInterfaces());
-            next = next.getSuperClass();
-        }
-        return res;
+        return result;
     }
 
     public static List<FieldNode> getSuperNonPropertyFields(final ClassNode cNode) {
         List<FieldNode> result;
-        if (cNode == ClassHelper.OBJECT_TYPE) {
+        if (isObjectType(cNode)) {
             result = new ArrayList<>();
         } else {
             result = getSuperNonPropertyFields(cNode.getSuperClass());
@@ -480,7 +475,7 @@ public class GeneralUtils {
 
     public static List<FieldNode> getSuperPropertyFields(final ClassNode cNode) {
         List<FieldNode> result;
-        if (cNode == ClassHelper.OBJECT_TYPE) {
+        if (isObjectType(cNode)) {
             result = new ArrayList<>();
         } else {
             result = getSuperPropertyFields(cNode.getSuperClass());
@@ -505,7 +500,7 @@ public class GeneralUtils {
                                                       final boolean includeFields, final boolean includePseudoGetters, final boolean includePseudoSetters,
                                                       final boolean traverseSuperClasses, final boolean skipReadonly, final boolean reverse, final boolean allNames, final boolean includeStatic) {
         List<PropertyNode> result = new ArrayList<>();
-        if (cNode != ClassHelper.OBJECT_TYPE && traverseSuperClasses && !reverse) {
+        if (!(isObjectType(cNode)) && traverseSuperClasses && !reverse) {
             result.addAll(getAllProperties(names, origType, cNode.getSuperClass(), includeProperties, includeFields, includePseudoGetters, includePseudoSetters, true, skipReadonly));
         }
         if (includeProperties) {
@@ -540,7 +535,7 @@ public class GeneralUtils {
                 names.add(fNode.getName());
             }
         }
-        if (cNode != ClassHelper.OBJECT_TYPE && traverseSuperClasses && reverse) {
+        if (!(isObjectType(cNode)) && traverseSuperClasses && reverse) {
             result.addAll(getAllProperties(names, origType, cNode.getSuperClass(), includeProperties, includeFields, includePseudoGetters, includePseudoSetters, true, skipReadonly));
         }
         return result;
