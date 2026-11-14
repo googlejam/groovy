@@ -25,14 +25,11 @@ import org.apache.groovy.contracts.util.ExpressionUtils;
 import org.codehaus.groovy.ast.AnnotationNode;
 import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
-import org.codehaus.groovy.ast.ConstructorNode;
 import org.codehaus.groovy.ast.MethodNode;
 import org.codehaus.groovy.ast.Parameter;
 import org.codehaus.groovy.ast.VariableScope;
 import org.codehaus.groovy.ast.expr.ArgumentListExpression;
-import org.codehaus.groovy.ast.expr.ArrayExpression;
 import org.codehaus.groovy.ast.expr.BooleanExpression;
-import org.codehaus.groovy.ast.expr.ClassExpression;
 import org.codehaus.groovy.ast.expr.ConstantExpression;
 import org.codehaus.groovy.ast.expr.Expression;
 import org.codehaus.groovy.ast.expr.MethodCallExpression;
@@ -40,18 +37,14 @@ import org.codehaus.groovy.ast.expr.VariableExpression;
 import org.codehaus.groovy.ast.stmt.BlockStatement;
 import org.codehaus.groovy.ast.stmt.TryCatchStatement;
 import org.codehaus.groovy.control.io.ReaderSource;
-import org.codehaus.groovy.runtime.InvokerHelper;
-import org.codehaus.groovy.syntax.Token;
-import org.codehaus.groovy.syntax.Types;
 
 import java.lang.annotation.Annotation;
-import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
+import java.util.stream.Collectors;
 
+import static org.codehaus.groovy.ast.tools.GeneralUtils.andX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.args;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.assignS;
-import static org.codehaus.groovy.ast.tools.GeneralUtils.binX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.block;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.boolX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.callX;
@@ -61,6 +54,7 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.declS;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.ifS;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.localVarX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.notX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.orX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.stmt;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.tryCatchS;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.varX;
@@ -70,17 +64,63 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.varX;
  */
 public abstract class BaseGenerator {
 
+    /**
+     * Prefix used for synthetic methods that evaluate class invariants.
+     */
     public static final String INVARIANT_CLOSURE_PREFIX = "invariant";
+
+    /**
+     * Node metadata flag indicating that assertions can be emitted in inline mode.
+     */
     public static final String META_DATA_USE_INLINE_MODE = "org.apache.groovy.contracts.USE_INLINE_MODE";
 
+    /**
+     * The inline-mode node-metadata key for one contract kind. The flag is written while composing
+     * inherited contract calls and read when generating that kind's assertion; it MUST be qualified
+     * by kind — preconditions are processed before postconditions, and a single shared key let the
+     * precondition pass's "no inherited preconditions" verdict leak into the postcondition
+     * generator, whose inline path then dropped composed inherited postconditions.
+     *
+     * @param annotationType the contract kind's meta annotation (Precondition/Postcondition)
+     * @return the per-kind metadata key
+     */
+    protected static String inlineModeKey(final Class<? extends Annotation> annotationType) {
+        return META_DATA_USE_INLINE_MODE + "." + annotationType.getName();
+    }
+
+    /**
+     * Reader source used by generators that need source-aware AST construction.
+     */
     protected final ReaderSource source;
 
-    public BaseGenerator(final ReaderSource source) {
+    /**
+     * Creates a generator bound to the supplied reader source.
+     *
+     * @param source the reader source backing the current source unit
+     */
+    protected BaseGenerator(final ReaderSource source) {
         this.source = source;
     }
 
     /**
-     * @param classNode the {@link org.codehaus.groovy.ast.ClassNode} used to look up the invariant closure field
+     * Ensures the given method's body is a {@link BlockStatement} so that contract code generators can
+     * weave assertions into it. Earlier transforms (e.g. {@code @Synchronized}, which runs at
+     * CANONICALIZATION) may have replaced the body with a non-block statement such as a
+     * {@code SynchronizedStatement}; in that case the original statement is wrapped in a fresh block.
+     * A {@code null} body (e.g. an abstract method or a not-yet-populated synthetic body) is left
+     * untouched. Mirrors the body normalization the precondition path already performs (GROOVY-12066)
+     * so the post-condition and invariant generators see a consistent body shape (GROOVY-12084).
+     *
+     * @param method the method whose body should be normalized to a block
+     */
+    protected static void ensureBlockBody(final MethodNode method) {
+        if (method.getCode() != null && !(method.getCode() instanceof BlockStatement)) {
+            method.setCode(block(method.getCode()));
+        }
+    }
+
+    /**
+     * @param classNode the {@link ClassNode} used to look up the invariant closure field
      * @return the field name of the invariant closure field of the given <tt>classNode</tt>
      */
     public static String getInvariantMethodName(final ClassNode classNode) {
@@ -88,32 +128,46 @@ public abstract class BaseGenerator {
     }
 
     /**
-     * @param classNode the {@link org.codehaus.groovy.ast.ClassNode} used to look up the invariant closure field
-     * @return the {@link org.codehaus.groovy.ast.MethodNode} which contains the invariant of the given <tt>classNode</tt>
+     * @param classNode the {@link ClassNode} used to look up the invariant closure field
+     * @return the {@link MethodNode} which contains the invariant of the given <tt>classNode</tt>
      */
     public static MethodNode getInvariantMethodNode(final ClassNode classNode) {
         return classNode.getDeclaredMethod(getInvariantMethodName(classNode), Parameter.EMPTY_ARRAY);
     }
 
+    /**
+     * Extracts the inline-mode assertion block from the supplied wrapper block.
+     *
+     * @param blockStatement the block containing generated assertion statements
+     * @return an inline-mode block guarded by the contracts-enabled flag
+     */
     protected BlockStatement getInlineModeBlockStatement(BlockStatement blockStatement) {
-        final BooleanExpression combinedBooleanExpression = ExpressionUtils.getBooleanExpression(ExpressionUtils.getBooleanExpressionsFromAssertionStatements(blockStatement));
+        BooleanExpression combinedBooleanExpression = ExpressionUtils.getBooleanExpression(ExpressionUtils.getBooleanExpressionsFromAssertionStatements(blockStatement));
         return block(ifS(
                 boolX(varX(BaseVisitor.GCONTRACTS_ENABLED_VAR, ClassHelper.boolean_TYPE)),
                 block(ifS(notX(combinedBooleanExpression), blockStatement))));
     }
 
+    /**
+     * Wraps a contract predicate with tracking, violation rethrowing, and execution guards.
+     *
+     * @param type the declaring class
+     * @param methodNode the method whose assertion is being emitted
+     * @param classInvariantExpression the predicate to evaluate
+     * @param assertionType the logical assertion kind
+     * @return the generated wrapper block
+     */
     protected BlockStatement wrapAssertionBooleanExpression(ClassNode type, MethodNode methodNode, BooleanExpression classInvariantExpression, String assertionType) {
+        ClassNode violationTrackerClassNode = ClassHelper.makeWithoutCaching(ViolationTracker.class);
+        VariableExpression gcResult = varX("$_gc_result", ClassHelper.boolean_TYPE);
+        gcResult.setAccessedVariable(gcResult);
 
-        final ClassNode violationTrackerClassNode = ClassHelper.makeWithoutCaching(ViolationTracker.class);
-        final VariableExpression $_gc_result = varX("$_gc_result", ClassHelper.boolean_TYPE);
-        $_gc_result.setAccessedVariable($_gc_result);
-
-        final BlockStatement ifBlockStatement = block(
-                declS($_gc_result, ConstantExpression.FALSE),
+        BlockStatement ifBlockStatement = block(
+                declS(gcResult, ConstantExpression.FALSE),
                 stmt(callX(classX(violationTrackerClassNode), "init")),
-                assignS($_gc_result, classInvariantExpression),
+                assignS(gcResult, classInvariantExpression),
                 ifS(
-                        boolX(notX(callX($_gc_result, "booleanValue"))),
+                        boolX(notX(callX(gcResult, "booleanValue"))),
                         ifS(
                                 boolX(callX(classX(violationTrackerClassNode), "violationsOccurred")),
                                 tryCatchS(
@@ -123,10 +177,10 @@ public abstract class BaseGenerator {
                 )
         );
 
-        final TryCatchStatement lockTryCatchStatement = tryCatchS(
-                block(ifS(
+        TryCatchStatement lockTryCatchStatement = tryCatchS(
+                ifS(
                         boolX(callX(classX(ClassHelper.make(ContractExecutionTracker.class)), "track", args(constX(type.getName()), constX(methodNode.getTypeDescriptor()), constX(assertionType), methodNode.isStatic() ? ConstantExpression.TRUE : ConstantExpression.FALSE))),
-                        ifBlockStatement)),
+                        ifBlockStatement),
                 block(new VariableScope(), stmt(callX(
                         classX(ClassHelper.make(ContractExecutionTracker.class)),
                         "clear",
@@ -137,56 +191,66 @@ public abstract class BaseGenerator {
     }
 
     // TODO: what about constructor method nodes - does it find a constructor node in the super class?
+    /**
+     * Merges inherited contract closures into the supplied predicate for the given method.
+     *
+     * @param type the declaring class
+     * @param methodNode the method whose inherited contracts should be consulted
+     * @param annotationType the contract meta-annotation to search for
+     * @param booleanExpression the predicate built from the current declaration
+     * @param isPostcondition whether postcondition calling conventions should be used
+     * @return the predicate augmented with inherited contract closures
+     */
     protected BooleanExpression addCallsToSuperMethodNodeAnnotationClosure(final ClassNode type, final MethodNode methodNode, final Class<? extends Annotation> annotationType, BooleanExpression booleanExpression, boolean isPostcondition) {
-
-        final List<AnnotationNode> nextContractElementAnnotations = AnnotationUtils.getAnnotationNodeInHierarchyWithMetaAnnotation(type.getSuperClass(), methodNode, ClassHelper.makeWithoutCaching(annotationType));
-        if (nextContractElementAnnotations.isEmpty()) {
-            if (methodNode.getNodeMetaData(META_DATA_USE_INLINE_MODE) == null)
-                methodNode.setNodeMetaData(META_DATA_USE_INLINE_MODE, Boolean.TRUE);
-            return booleanExpression;
+        List<AnnotationNode> contractElementAnnotations = AnnotationUtils.getAnnotationNodeInHierarchyWithMetaAnnotation(type.getSuperClass(), methodNode, ClassHelper.makeWithoutCaching(annotationType));
+        if (!isPostcondition) {
+            // An unwoven precondition (@Requires(woven = false)) never contributes to generated
+            // assertions — inherited arms included, so an override does not weave a check its
+            // declaring class deliberately left to existing enforcement.
+            contractElementAnnotations = contractElementAnnotations.stream()
+                    .filter(a -> !isUnwoven(a))
+                    .collect(Collectors.toList());
         }
+        if (contractElementAnnotations.isEmpty()) {
+            methodNode.putNodeMetaData(inlineModeKey(annotationType), Boolean.TRUE);
+        } else {
+            BooleanExpression collectedPre = null;
+            for (AnnotationNode contractElementAnnotation : contractElementAnnotations) {
+                ArgumentListExpression argumentList = new ArgumentListExpression();
+                for (Parameter parameter : methodNode.getParameters()) {
+                    argumentList.addExpression(varX(parameter));
+                }
+                if (isPostcondition && !methodNode.isVoidMethod()) {
+                    argumentList.addExpression(localVarX("result", methodNode.getReturnType()));
+                }
+                if (isPostcondition && !methodNode.isConstructor()) {
+                    argumentList.addExpression(localVarX("old", ClassHelper.MAP_TYPE.getPlainNodeReference()));
+                }
 
-        for (AnnotationNode nextContractElementAnnotation : nextContractElementAnnotations) {
-            ClassExpression classExpression = (ClassExpression) nextContractElementAnnotation.getMember(BaseVisitor.CLOSURE_ATTRIBUTE_NAME);
-            if (classExpression == null) continue;
+                BooleanExpression predicate = BaseVisitor.asConditionExecution(contractElementAnnotation);
+                ((MethodCallExpression) predicate.getExpression()).setArguments(argumentList);
 
-            ArgumentListExpression callArgumentList = new ArgumentListExpression();
-            for (Parameter parameter : methodNode.getParameters()) {
-                callArgumentList.addExpression(varX(parameter));
+                if (isPostcondition) {
+                    booleanExpression = boolX(andX(booleanExpression, predicate));
+                } else {
+                    if (collectedPre == null) {
+                        collectedPre = predicate;
+                    } else {
+                        collectedPre = boolX(andX(collectedPre, predicate));
+                    }
+                }
             }
-
-            if (isPostcondition && methodNode.getReturnType() != ClassHelper.VOID_TYPE && !(methodNode instanceof ConstructorNode)) {
-                callArgumentList.addExpression(localVarX("result", methodNode.getReturnType()));
+            if (collectedPre != null) {
+                booleanExpression = boolX(orX(booleanExpression, collectedPre));
             }
-
-            if (isPostcondition && !(methodNode instanceof ConstructorNode)) {
-                callArgumentList.addExpression(localVarX("old", new ClassNode(Map.class)));
-            }
-
-            ArgumentListExpression newInstanceArguments = args(
-                    classExpression,
-                    new ArrayExpression(
-                            ClassHelper.DYNAMIC_TYPE,
-                            Arrays.<Expression>asList(VariableExpression.THIS_EXPRESSION, VariableExpression.THIS_EXPRESSION)
-                    )
-            );
-
-            MethodCallExpression doCall = callX(
-                    callX(ClassHelper.makeWithoutCaching(InvokerHelper.class), "invokeConstructorOf", newInstanceArguments),
-                    "doCall",
-                    callArgumentList);
-            doCall.setMethodTarget(classExpression.getType().getMethods("doCall").get(0));
-
-            booleanExpression.setSourcePosition(nextContractElementAnnotation);
-
-            booleanExpression = boolX(
-                    binX(
-                            booleanExpression,
-                            isPostcondition ? Token.newSymbol(Types.LOGICAL_AND, -1, -1) : Token.newSymbol(Types.LOGICAL_OR, -1, -1),
-                            boolX(doCall))
-            );
         }
-
         return booleanExpression;
+    }
+
+    /** True for a contract arm carrying {@code woven = false} (enforced elsewhere, never asserted). */
+    private static boolean isUnwoven(final AnnotationNode annotationNode) {
+        Expression member = annotationNode.getMember("woven");
+        return member instanceof ConstantExpression constant
+                && Boolean.FALSE.equals(constant.getValue());
     }
 }

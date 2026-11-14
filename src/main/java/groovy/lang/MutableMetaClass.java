@@ -61,18 +61,20 @@ public interface MutableMetaClass extends MetaClass {
      void addNewStaticMethod(Method method);
 
     /**
-     * Adds a new MetaMethod to the MetaClass
+     * Adds a new MetaMethod to the MetaClass. This is only
+     * possible as long as initialise was not called.
      *
      * @param metaMethod The MetaMethod to add
      */
     void addMetaMethod(MetaMethod metaMethod);
 
     /**
-     * Adds a new MetaBeanProperty to the MetaClass
+     * Adds a new MetaBeanProperty to the MetaClass. This is only
+     * possible as long as initialise was not called.
      *
      * @param metaBeanProperty The MetaBeanProperty instance
      */
     void addMetaBeanProperty(MetaBeanProperty metaBeanProperty);
-    
+
     // TODO: Add methods like addMetaConstructor, addMetaAttribute, addMetaAnnotation etc.
 }

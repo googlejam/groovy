@@ -42,6 +42,7 @@ import org.codehaus.groovy.ast.expr.VariableExpression;
 import org.codehaus.groovy.control.CompilePhase;
 import org.codehaus.groovy.control.SourceUnit;
 import org.codehaus.groovy.runtime.DefaultGroovyMethods;
+import org.objectweb.asm.Opcodes;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -130,6 +131,13 @@ public class NewifyASTTransformation extends ClassCodeExpressionTransformer impl
 
     private static final Pattern extractNamePattern = Pattern.compile("^(?:.*\\$|)(.*)$");
 
+    /**
+     * Returns the simple name after the last {@code $} in {@code s}.
+     * A name with no {@code $} is returned unchanged.
+     *
+     * @param s binary or source name, possibly containing {@code $}
+     * @return the trailing simple name
+     */
     public static String extractName(final String s) {
         return extractNamePattern.matcher(s).replaceFirst("$1");
     }
@@ -231,8 +239,7 @@ public class NewifyASTTransformation extends ClassCodeExpressionTransformer impl
     }
 
     private Pattern determineClassNamePattern(Expression expr) {
-        if (!(expr instanceof ConstantExpression)) { return null; }
-        final ConstantExpression constExpr = (ConstantExpression) expr;
+        if (!(expr instanceof ConstantExpression constExpr)) { return null; }
         final String text = constExpr.getText();
         if (constExpr.getValue() == null || text.isEmpty()) { return null; }
         try {
@@ -251,8 +258,7 @@ public class NewifyASTTransformation extends ClassCodeExpressionTransformer impl
         ListExpression list = new ListExpression();
         if (expr instanceof ClassExpression) {
             list.addExpression(expr);
-        } else if (expr instanceof VariableExpression && searchSourceUnit) {
-            VariableExpression ve = (VariableExpression) expr;
+        } else if (expr instanceof VariableExpression ve && searchSourceUnit) {
             ClassNode fromSourceUnit = getSourceUnitClass(ve);
             if (fromSourceUnit != null) {
                 ClassExpression found = classX(fromSourceUnit);
@@ -266,8 +272,7 @@ public class NewifyASTTransformation extends ClassCodeExpressionTransformer impl
             final List<Expression> expressions = list.getExpressions();
             for (int i = 0; i < expressions.size(); i++) {
                 Expression next = expressions.get(i);
-                if (next instanceof VariableExpression && searchSourceUnit) {
-                    VariableExpression ve = (VariableExpression) next;
+                if (next instanceof VariableExpression ve && searchSourceUnit) {
                     ClassNode fromSourceUnit = getSourceUnitClass(ve);
                     if (fromSourceUnit != null) {
                         ClassExpression found = classX(fromSourceUnit);
@@ -298,8 +303,7 @@ public class NewifyASTTransformation extends ClassCodeExpressionTransformer impl
     @Override
     public Expression transform(Expression expr) {
         if (expr == null) return null;
-        if (expr instanceof MethodCallExpression && candidate == null) {
-            MethodCallExpression mce = (MethodCallExpression) expr;
+        if (expr instanceof MethodCallExpression mce && candidate == null) {
             Expression args = transform(mce.getArguments());
             if (isNewifyCandidate(mce)) {
                 Expression transformed = transformMethodCall(mce, args);
@@ -313,16 +317,13 @@ public class NewifyASTTransformation extends ClassCodeExpressionTransformer impl
             transformed.setSafe(mce.isSafe());
             transformed.setSourcePosition(mce);
             return transformed;
-        } else if (expr instanceof ClosureExpression) {
-            ClosureExpression ce = (ClosureExpression) expr;
+        } else if (expr instanceof ClosureExpression ce) {
             ce.getCode().visit(this);
-        } else if (expr instanceof ConstructorCallExpression) {
-            ConstructorCallExpression cce = (ConstructorCallExpression) expr;
+        } else if (expr instanceof ConstructorCallExpression cce) {
             if (cce.isUsingAnonymousInnerClass()) {
                 cce.getType().visitContents(this);
             }
-        } else if (expr instanceof DeclarationExpression) {
-            DeclarationExpression de = (DeclarationExpression) expr;
+        } else if (expr instanceof DeclarationExpression de) {
             if (shouldTransform(de)) {
                 candidate = null;
                 Expression left = de.getLeftExpression();
@@ -387,7 +388,7 @@ public class NewifyASTTransformation extends ClassCodeExpressionTransformer impl
         final Expression obj = mce.getObjectExpression();
         final Expression meth = mce.getMethod();
         return (obj instanceof ClassExpression && meth instanceof ConstantExpression
-                && ((ConstantExpression) meth).getValue().equals("new"));
+                && "new".equals(((ConstantExpression) meth).getValue()));
     }
 
     private Expression transformMethodCall(MethodCallExpression mce, Expression argsExp) {
@@ -401,12 +402,11 @@ public class NewifyASTTransformation extends ClassCodeExpressionTransformer impl
 
         if (classType != null) {
             Expression argsToUse = argsExp;
-            if (classType.getOuterClass() != null && ((classType.getModifiers() & org.objectweb.asm.Opcodes.ACC_STATIC) == 0)) {
-                if (!(argsExp instanceof ArgumentListExpression)) {
-                    addError("Non-static inner constructor arguments must be an argument list expression; pass 'this' pointer explicitely as first constructor argument otherwise.", mce);
+            if (classType.getOuterClass() != null && ((classType.getModifiers() & Opcodes.ACC_STATIC) == 0)) {
+                if (!(argsExp instanceof ArgumentListExpression argsListExp)) {
+                    addError("Non-static inner constructor arguments must be an argument list expression; pass 'this' pointer explicitly as first constructor argument otherwise.", mce);
                     return mce;
                 }
-                final ArgumentListExpression argsListExp = (ArgumentListExpression) argsExp;
                 final List<Expression> argExpList = argsListExp.getExpressions();
                 final VariableExpression thisVarExp = new VariableExpression("this");
 
@@ -516,11 +516,24 @@ public class NewifyASTTransformation extends ClassCodeExpressionTransformer impl
         final ClassNode type;
         List<ClassNode> types;
 
+        /**
+         * Records one class under the simple name used for lookup.
+         *
+         * @param name simple name after the last {@code $}
+         * @param type class node stored for that name
+         */
         public NewifyClassData(final String name, final ClassNode type) {
             this.name = name;
             this.type = type;
         }
 
+        /**
+         * Records another class that shares this simple name. The original
+         * type is kept, and both are listed so a later lookup can report
+         * the ambiguity.
+         *
+         * @param additionalType another class with the same simple name
+         */
         public void addAdditionalType(final ClassNode additionalType) {
             if (types == null) {
                 types = new LinkedList<>();

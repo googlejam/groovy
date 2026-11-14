@@ -16,24 +16,30 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import groovy.util.Expando
+import org.junit.jupiter.api.Test
+
+import java.util.ArrayList
+
 
 /**
   * Fixes GROOVY-558 and GROOVY-616.
   * A fully qualified class name ending with .class or not were not recognized properly.
   */
-class Groovy558_616_Bug extends GroovyTestCase {
+class Groovy558_616_Bug {
 
+    @Test
     void testListClass() {
-        assert java.util.ArrayList.class == ArrayList.class
-        assert java.util.ArrayList.class == ArrayList
+        assert ArrayList.class == ArrayList.class
+        assert ArrayList.class == ArrayList
         assert ArrayList != Class
         def list = new ArrayList()
         assert list.class == ArrayList
     }
 
+    @Test
     void testStringClass() {
         assert java.lang.String.class == String.class
         assert java.lang.String.class == String
@@ -42,16 +48,18 @@ class Groovy558_616_Bug extends GroovyTestCase {
         assert st.class == String
     }
 
+    @Test
     void testExpandoClass() {
-        assert groovy.util.Expando.class == Expando.class
-        assert groovy.util.Expando.class == Expando
+        assert Expando.class == Expando.class
+        assert Expando.class == Expando
         assert Expando != Class
         def dum = new Expando()
         assert dum.class == Expando
     }
 
+    @Test
     void testFooClass() {
-        assert groovy.bugs.Groovy558_616_Bug.class == Groovy558_616_Bug
+        assert bugs.Groovy558_616_Bug.class == Groovy558_616_Bug
         assert Groovy558_616_Bug != Class
         def f = new Groovy558_616_Bug()
         assert f.class == Groovy558_616_Bug

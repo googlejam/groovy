@@ -18,31 +18,54 @@
  */
 package org.codehaus.groovy.classgen.asm;
 
-import org.codehaus.groovy.ast.ClassHelper;
-import org.codehaus.groovy.ast.expr.Expression;
 import org.codehaus.groovy.ast.expr.MethodPointerExpression;
 import org.codehaus.groovy.runtime.ScriptBytecodeAdapter;
 
+import static org.codehaus.groovy.ast.ClassHelper.CLOSURE_TYPE;
+import static org.codehaus.groovy.ast.ClassHelper.isClassType;
+import static org.codehaus.groovy.ast.ClassHelper.isObjectType;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.varX;
+
 /**
- * A helper class used to generate bytecode for method pointer expressions.
+ * Generates bytecode for method pointer expressions.
+ *
  * @since 3.0.0
  */
 public class MethodPointerExpressionWriter {
-    // Closure
-    static final MethodCaller getMethodPointer = MethodCaller.newStatic(ScriptBytecodeAdapter.class, "getMethodPointer");
 
+    private static final MethodCaller getMethodPointer = MethodCaller.newStatic(ScriptBytecodeAdapter.class, "getMethodPointer");
+
+    /** The controller coordinating all bytecode writers for the current class. */
     protected final WriterController controller;
 
+    /**
+     * Creates a method pointer expression writer with the given controller.
+     *
+     * @param controller the writer controller
+     */
     public MethodPointerExpressionWriter(final WriterController controller) {
         this.controller = controller;
     }
 
-    public void writeMethodPointerExpression(MethodPointerExpression expression) {
-        Expression subExpression = expression.getExpression();
-        subExpression.visit(controller.getAcg());
-        controller.getOperandStack().box();
-        controller.getOperandStack().pushDynamicName(expression.getMethodName());
+    /**
+     * Generates bytecode for a method pointer expression.
+     *
+     * @param pointerOrReference the method pointer expression
+     */
+    public void writeMethodPointerExpression(final MethodPointerExpression pointerOrReference) {
+        pointerOrReference.getExpression().visit(controller.getAcg());
+        OperandStack operandStack = controller.getOperandStack();
+        operandStack.box();
+
+        var type = operandStack.getTopOperand();
+        if (!isClassType(type) && !isObjectType(type)) {
+            // GROOVY-5051, GROOVY-10568: retain static type
+            controller.getAcg().loadWrapper(varX("", type));
+        }
+
+        operandStack.pushDynamicName(pointerOrReference.getMethodName());
+        // delegate to ScriptBytecodeAdapter#getMethodPointer
         getMethodPointer.call(controller.getMethodVisitor());
-        controller.getOperandStack().replace(ClassHelper.CLOSURE_TYPE,2);
+        operandStack.replace(CLOSURE_TYPE, 2);
     }
 }

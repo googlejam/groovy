@@ -21,14 +21,16 @@ plugins {
 }
 
 dependencies {
-    api rootProject // TestNgRunner implements GroovyRunner...
-    runtimeOnly('org.testng:testng:7.4.0') {
+    api project(':') // TestNgRunner implements GroovyRunner...
+    runtimeOnly('org.testng:testng:7.12.0') {
         exclude(group: 'com.google.inject', module: 'guice')
+        exclude(group: 'com.google.code.findbugs', module: 'jsr305')
         exclude(group: 'junit', module: 'junit')
         exclude(group: 'org.apache.ant', module: 'ant')
         exclude(group: 'org.yaml', module: 'snakeyaml')
     }
-    testImplementation project(':groovy-test')
+    runtimeOnly "org.slf4j:slf4j-api:$versions.slf4j"
+    testImplementation projects.groovyTest
 }
 
 groovyLibrary {

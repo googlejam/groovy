@@ -19,9 +19,11 @@
 package servlet
 
 import gls.CompilableTestSupport
+import org.junit.jupiter.api.Test
 
-class GroovyServletTest extends CompilableTestSupport {
+final class GroovyServletTest extends CompilableTestSupport {
 
+    @Test
     void testExample() {
         shouldCompile '''
             // tag::example[]
@@ -49,7 +51,8 @@ class GroovyServletTest extends CompilableTestSupport {
             // end::example[]
         '''
     }
-    
+
+    @Test
     void testExampleMarkupBuilder() {
         shouldCompile '''
             // tag::example_markup_builder[]

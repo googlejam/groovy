@@ -18,9 +18,13 @@
  */
 package metaprogramming
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class GroovyObjectTest extends GroovyTestCase {
+import static groovy.test.GroovyAssert.assertScript
+
+final class GroovyObjectTest {
+
+    @Test
     void testInvokeMethod() {
         assertScript '''
 // tag::groovy_invoke_method[]
@@ -29,7 +33,7 @@ class SomeGroovyClass {
     def invokeMethod(String name, Object args) {
         return "called invokeMethod $name $args"
     }
-    
+
     def test() {
         return 'method exists'
     }
@@ -42,7 +46,8 @@ assert someGroovyClass.someMethod() == 'called invokeMethod someMethod []'
 // end::groovy_invoke_method[]
 '''
     }
-    
+
+    @Test
     void testGetProperty () {
         assertScript '''
 // tag::groovy_get_property[]
@@ -51,11 +56,11 @@ class SomeGroovyClass {
     def property1 = 'ha'
     def field2 = 'ho'
     def field4 = 'hu'
-    
+
     def getField1() {
         return 'getHa'
     }
-    
+
     def getProperty(String name) {
         if (name != 'field3')
             return metaClass.getProperty(this, name) // <1>
@@ -73,14 +78,15 @@ assert someGroovyClass.field4 == 'hu'
 // end::groovy_get_property[]
 '''
     }
-    
+
+    @Test
     void testSetProperty () {
         assertScript '''
 // tag::groovy_set_property[]
 class POGO {
 
-    String property 
-    
+    String property
+
     void setProperty(String name, Object value) {
         this.@"$name" = 'overridden'
     }
@@ -94,6 +100,7 @@ assert pogo.property == 'overridden'
 '''
     }
 
+    @Test
     void testGetAttribute () {
         assertScript '''
 // tag::groovy_get_attribute[]
@@ -101,7 +108,7 @@ class SomeGroovyClass {
 
     def field1 = 'ha'
     def field2 = 'ho'
-    
+
     def getField1() {
         return 'getHa'
     }
@@ -114,7 +121,8 @@ assert someGroovyClass.metaClass.getAttribute(someGroovyClass, 'field2') == 'ho'
 // end::groovy_get_attribute[]
 '''
     }
-    
+
+    @Test
     void testSetAttribute () {
         assertScript '''
 // tag::groovy_set_attribute[]
@@ -122,7 +130,7 @@ class POGO {
 
     private String field
     String property1
-    
+
     void setProperty1(String property1) {
         this.property1 = "setProperty1"
     }

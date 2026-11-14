@@ -24,7 +24,7 @@ import java.util.List;
 
 
 /**
- * An abstract base class for a key used for comparators and Map keys to lookup a method by
+ * An abstract base class for a key used for comparators and Map keys to look up a method by
  * name and parameter types
  */
 public abstract class MethodKey {
@@ -33,7 +33,14 @@ public abstract class MethodKey {
     private final String name;
     private final Class sender;
     private final boolean isCallToSuper;
-    
+
+    /**
+     * Constructs a MethodKey for a method invocation.
+     *
+     * @param sender the class that sends the method call
+     * @param name the method name
+     * @param isCallToSuper whether this is a super method call
+     */
     public MethodKey(Class sender, String name, boolean isCallToSuper) {
         this.sender = sender;
         this.name = name;
@@ -41,7 +48,7 @@ public abstract class MethodKey {
     }
 
     /**
-     * Creates an immutable copy that we can cache. 
+     * Creates an immutable copy that we can cache.
      */
     public MethodKey createCopy() {
         int size = getParameterCount();
@@ -63,13 +70,23 @@ public abstract class MethodKey {
         return false;
     }
 
+    /**
+     * Compares sender, super-call flag, name, parameter count, and parameter types.
+     * The senders are compared with {@code !=}. Each parameter type is compared
+     * by identity, not by {@link Class#equals(Object)}.
+     * <p>A null {@code that} fails immediately.
+     *
+     * @param that the other key
+     * @return {@code true} when the sender, super-call flag, name, count, and each
+     *         parameter type match
+     */
     public boolean equals(MethodKey that) {
       int size;
       if (sender!=that.sender) return false;
       if (isCallToSuper!=that.isCallToSuper) return false;
       if (!name.equals(that.name)) return false;
       if ((size = getParameterCount()) != that.getParameterCount()) return false;
-      
+
       for (int i = 0; i < size; i++) {
           if (getParameterType(i) != that.getParameterType(i)) {
               return false;
@@ -94,10 +111,23 @@ public abstract class MethodKey {
         return super.toString() + "[name:" + name + "; params:" + getParamterTypes();
     }
 
+    /**
+     * Returns the method name passed to the constructor.
+     *
+     * @return the method name
+     */
     public String getName() {
         return name;
     }
 
+    /**
+     * Returns the parameter types in index order.
+     * A count of zero or less yields {@link Collections#EMPTY_LIST}, which cannot
+     * be modified. Otherwise the result is a new {@link ArrayList} and is not a
+     * view of this key.
+     *
+     * @return the parameter types
+     */
     public List getParamterTypes() {
         int size = getParameterCount();
         if (size <= 0) {
@@ -110,17 +140,39 @@ public abstract class MethodKey {
         return params;
     }
 
+    /**
+     * Returns how many parameter types this key has.
+     *
+     * @return the parameter count
+     */
     public abstract int getParameterCount();
+
+    /**
+     * Returns the parameter type at {@code index}.
+     * {@link #equals(MethodKey)} compares these classes by identity.
+     *
+     * @param index zero-based parameter index
+     * @return the class at that index
+     */
     public abstract Class getParameterType(int index);
 
+    /**
+     * Computes an uncached hash from the name, each parameter type, the super-call
+     * flag, and the sender. Each step multiplies by 37. A parameter contributes
+     * {@code 1 + type.hashCode()}, the super-call flag contributes 1 or 0, and the
+     * sender contributes {@code 1 + sender.hashCode()}. {@link #hashCode()} caches
+     * this value and substitutes {@code 0xcafebabe} when the computed value is 0.
+     *
+     * @return the uncached hash, which may be 0
+     */
     protected int createHashCode() {
         int answer = name.hashCode();
         int size = getParameterCount();
 
-        /** @todo we should use the real Josh Bloch algorithm here */
+        /* @todo we should use the real Josh Bloch algorithm here */
 
         // can't remember the exact Josh Bloch algorithm and I've not got the book handy
-        // but its something like this IIRC
+        // but it's something like this IIRC
         for (int i = 0; i < size; i++) {
             answer *= 37;
             answer += 1 + getParameterType(i).hashCode();

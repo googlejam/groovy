@@ -99,11 +99,16 @@ public class JmxEventEmitter extends NotificationBroadcasterSupport implements J
         return seq;
     }
 
-    private static class NumberSequencer {
-        private static final AtomicLong num = new AtomicLong(0);
+    private static final class NumberSequencer {
+        private static final AtomicLong NUM = new AtomicLong(0);
 
+        /**
+         * Returns the next notification sequence number.
+         *
+         * @return the next sequence number
+         */
         public static long getNextSequence() {
-            return num.incrementAndGet();
+            return NUM.incrementAndGet();
         }
     }
 }

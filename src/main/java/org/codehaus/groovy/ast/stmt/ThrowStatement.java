@@ -23,24 +23,42 @@ import org.codehaus.groovy.ast.expr.Expression;
 
 
 /**
- * Represents a throw statement
+ * Represents a throw statement that raises an exception.
+ * A throw statement evaluates an {@link #getExpression() exception expression} and throws
+ * the resulting exception object to interrupt normal execution flow and transfer control
+ * to an appropriate exception handler.
+ *
+ * @see {@link CatchStatement}
+ * @see {@link TryCatchStatement}
+ * @see {@link Statement}
  */
 public class ThrowStatement extends Statement {
 
     private Expression expression;
-    
+
+    /**
+     * Constructs a throw statement with the given exception expression.
+     *
+     * @param expression the {@link Expression} that evaluates to the exception to throw
+     */
     public ThrowStatement(Expression expression) {
         this.expression = expression;
     }
-    
+
+    /**
+     * Returns the exception expression to be thrown.
+     *
+     * @return the {@link Expression} that evaluates to an exception object
+     */
     public Expression getExpression() {
         return expression;
     }
 
-    @Override
-    public void visit(GroovyCodeVisitor visitor) {
-        visitor.visitThrowStatement(this);
-    }
+    /**
+     * Sets the exception expression to be thrown.
+     *
+     * @param expression the {@link Expression} that evaluates to an exception object
+     */
     public void setExpression(Expression expression) {
         this.expression = expression;
     }
@@ -50,4 +68,8 @@ public class ThrowStatement extends Statement {
         return "throw " + expression.getText();
     }
 
+    @Override
+    public void visit(GroovyCodeVisitor visitor) {
+        visitor.visitThrowStatement(this);
+    }
 }

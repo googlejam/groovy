@@ -16,19 +16,23 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-class IterateOverCustomTypeBug extends TestSupport {
-    
+import groovy.bugs.TestSupport
+import org.junit.jupiter.api.Test
+
+final class IterateOverCustomTypeBug extends TestSupport {
+
+    @Test
     void testBug() {
         def object = this
-        
+
         def answer = []
         for (i in object) {
             answer << i
         }
         assert answer == ['a', 'b', 'c']
-        
+
         answer = []
         object.each { answer << it }
         assert answer == ['a', 'b', 'c']

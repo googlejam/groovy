@@ -20,6 +20,7 @@ package groovy.lang;
 
 import org.codehaus.groovy.transform.GroovyASTTransformationClass;
 
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -61,7 +62,7 @@ import java.lang.annotation.Target;
  * <p>
  * An example showing a {@code use} statement (allowing fine-grained application of
  * the category methods):
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * {@code @Category}(Integer)
  * class IntegerOps {
  *     def triple() {
@@ -74,7 +75,7 @@ import java.lang.annotation.Target;
  * }
  * </pre>
  * Or, "mixing in" your methods at runtime:
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * {@code @Category}(List)
  * class Shuffler {
  *     def shuffle() {
@@ -94,10 +95,15 @@ import java.lang.annotation.Target;
  * // {@code =>} [quick, fox, The, brown]       (order will vary)
  * </pre>
  */
-@java.lang.annotation.Documented
+@Documented
 @Retention(RetentionPolicy.SOURCE)
 @Target(ElementType.TYPE)
 @GroovyASTTransformationClass("org.codehaus.groovy.transform.CategoryASTTransformation")
 public @interface Category {
+    /**
+     * Specifies the self type for the generated category methods.
+     *
+     * @return the category target type
+     */
     Class value () default Object.class;
 }

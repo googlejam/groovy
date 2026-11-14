@@ -23,29 +23,48 @@ import org.codehaus.groovy.ast.expr.ClassExpression;
 import org.codehaus.groovy.ast.expr.Expression;
 import org.codehaus.groovy.ast.expr.MethodCallExpression;
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression;
-import org.codehaus.groovy.transform.stc.StaticTypesMarker;
 
-public class StaticMethodCallExpressionTransformer {
-    private final StaticCompilationTransformer transformer;
+import static org.codehaus.groovy.transform.stc.StaticTypesMarker.DIRECT_METHOD_CALL_TARGET;
 
-    public StaticMethodCallExpressionTransformer(final StaticCompilationTransformer staticCompilationTransformer) {
-        transformer = staticCompilationTransformer;
+/**
+ * Rewrites static method-call expressions into regular method calls with an explicit class receiver.
+ */
+class StaticMethodCallExpressionTransformer {
+
+    private final StaticCompilationTransformer scTransformer;
+
+    /**
+     * Creates a static-method-call transformer backed by the owning static compilation transformer.
+     *
+     * @param scTransformer the shared transformer context
+     */
+    StaticMethodCallExpressionTransformer(final StaticCompilationTransformer scTransformer) {
+        this.scTransformer = scTransformer;
     }
 
-    Expression transformStaticMethodCallExpression(final StaticMethodCallExpression orig) {
-        MethodNode target = (MethodNode) orig.getNodeMetaData(StaticTypesMarker.DIRECT_METHOD_CALL_TARGET);
-        if (target != null) {
-            MethodCallExpression call = new MethodCallExpression(
-                    new ClassExpression(orig.getOwnerType()),
-                    orig.getMethod(),
-                    orig.getArguments()
-            );
-            call.setMethodTarget(target);
-            call.setSourcePosition(orig);
-            call.copyNodeMetaData(orig);
-            return transformer.transform(call);
+    /**
+     * Rewrites a static method call when a direct target method has been resolved.
+     *
+     * @param smce the static method call expression to transform
+     * @return the transformed expression
+     */
+    Expression transformStaticMethodCallExpression(final StaticMethodCallExpression smce) {
+        var target = smce.getNodeMetaData(DIRECT_METHOD_CALL_TARGET);
+        if (target instanceof MethodNode) {
+            var receiver = new ClassExpression(smce.getOwnerType().getPlainNodeReference());
+            receiver.setLineNumber(smce.getLineNumber());
+            receiver.setColumnNumber(smce.getColumnNumber());
+            receiver.setLastLineNumber(receiver.getLineNumber());
+            receiver.setLastColumnNumber(receiver.getColumnNumber());
+
+            var mce = new MethodCallExpression(receiver, smce.getMethod(), smce.getArguments());
+            mce.setMethodTarget((MethodNode) target);
+            mce.setSourcePosition(smce);
+            mce.copyNodeMetaData(smce);
+
+            return scTransformer.transform(mce);
         }
-        return transformer.superTransform(orig);
-    }
 
+        return scTransformer.superTransform(smce);
+    }
 }

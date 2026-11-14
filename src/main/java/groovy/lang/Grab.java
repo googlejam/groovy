@@ -18,6 +18,10 @@
  */
 package groovy.lang;
 
+import groovy.lang.annotation.ExtendedElementType;
+import groovy.lang.annotation.ExtendedTarget;
+
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -46,8 +50,9 @@ import java.lang.annotation.Target;
  * </pre>
  * Further information such as where artifacts are downloaded to, how to add additional resolvers,
  * how to customise artifact resolution etc., can be found on the Grape documentation page:
- * <a href="http://groovy-lang.org/grape.html">http://groovy-lang.org/grape.html</a>.
+ * <a href="https://groovy-lang.org/grape.html">https://groovy-lang.org/grape.html</a>.
  */
+@Documented
 @Retention(RetentionPolicy.SOURCE)
 @Target({
         ElementType.CONSTRUCTOR,
@@ -56,6 +61,7 @@ import java.lang.annotation.Target;
         ElementType.METHOD,
         ElementType.PARAMETER,
         ElementType.TYPE})
+@ExtendedTarget(ExtendedElementType.IMPORT)
 public @interface Grab {
     /**
      * The organisation or group, e.g.: "org.apache.ant". A non-empty value is required unless value() is used.
@@ -128,7 +134,7 @@ public @interface Grab {
      * {@code group#module;version[confs]} (where only group and module are required and confs,
      * if used, is one or more comma separated configuration names)<br>
      * In addition, you can add any valid Ivy attributes at the end of your string value using
-     * semi-colon separated name = value pairs, e.g.:<br>
+     * semicolon separated name = value pairs, e.g.:<br>
      * {@code @Grab('junit:junit:*;transitive=false')}<br>
      * {@code @Grab('group=junit;module=junit;version=4.8.2;classifier=javadoc')}<br>
      */

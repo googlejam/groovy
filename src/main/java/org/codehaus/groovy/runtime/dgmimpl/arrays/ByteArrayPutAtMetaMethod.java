@@ -18,25 +18,16 @@
  */
 package org.codehaus.groovy.runtime.dgmimpl.arrays;
 
-import groovy.lang.MetaClassImpl;
-import groovy.lang.MetaMethod;
 import org.codehaus.groovy.reflection.CachedClass;
 import org.codehaus.groovy.reflection.ReflectionCache;
-import org.codehaus.groovy.runtime.callsite.CallSite;
-import org.codehaus.groovy.runtime.callsite.PojoMetaMethodSite;
 
+/** {@code putAt} for a {@code byte[]}. */
 public class ByteArrayPutAtMetaMethod extends ArrayPutAtMetaMethod {
-    private static final CachedClass OBJECT_CLASS = ReflectionCache.OBJECT_CLASS;
-    private static final CachedClass ARR_CLASS = ReflectionCache.getCachedClass(byte[].class);
-    private static final CachedClass[] PARAM_CLASS_ARR = new CachedClass[]{INTEGER_CLASS, OBJECT_CLASS};
-
-    public ByteArrayPutAtMetaMethod() {
-        parameterTypes = PARAM_CLASS_ARR;
-    }
+    private static final CachedClass ARRAY_CLASS = ReflectionCache.getCachedClass(byte[].class);
 
     @Override
     public final CachedClass getDeclaringClass() {
-        return ARR_CLASS;
+        return ARRAY_CLASS;
     }
 
     @Override
@@ -49,46 +40,5 @@ public class ByteArrayPutAtMetaMethod extends ArrayPutAtMetaMethod {
         } else
             objects[index] = (Byte) args[1];
         return null;
-    }
-
-    @Override
-    public CallSite createPojoCallSite(CallSite site, MetaClassImpl metaClass, MetaMethod metaMethod, Class[] params, Object receiver, Object[] args) {
-        if (!(args[0] instanceof Integer) || !(args[1] instanceof Byte))
-            return PojoMetaMethodSite.createNonAwareCallSite(site, metaClass, metaMethod, params, args);
-        else
-            return new MyPojoMetaMethodSite(site, metaClass, metaMethod, params);
-    }
-
-    private static class MyPojoMetaMethodSite extends PojoMetaMethodSite {
-        public MyPojoMetaMethodSite(CallSite site, MetaClassImpl metaClass, MetaMethod metaMethod, Class[] params) {
-            super(site, metaClass, metaMethod, params);
-        }
-
-        @Override
-        public Object call(Object receiver, Object[] args) throws Throwable {
-            if ((receiver instanceof byte[] && args[0] instanceof Integer && args[1] instanceof Byte)
-                    && checkPojoMetaClass()) {
-                final byte[] objects = (byte[]) receiver;
-                objects[normaliseIndex((Integer) args[0], objects.length)] = (Byte) args[1];
-                return null;
-            } else
-                return super.call(receiver, args);
-        }
-
-        @Override
-        public Object call(Object receiver, Object arg1, Object arg2) throws Throwable {
-            if (checkPojoMetaClass()) {
-                try {
-                    final byte[] objects = (byte[]) receiver;
-                    objects[normaliseIndex((Integer) arg1, objects.length)] = (Byte) arg2;
-                    return null;
-                }
-                catch (ClassCastException e) {
-                    if ((receiver instanceof byte[]) && (arg1 instanceof Integer))
-                        throw e;
-                }
-            }
-            return super.call(receiver, arg1, arg2);
-        }
     }
 }

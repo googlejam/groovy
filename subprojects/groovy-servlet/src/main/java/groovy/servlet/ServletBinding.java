@@ -23,13 +23,13 @@ import groovy.xml.MarkupBuilder;
 import org.codehaus.groovy.GroovyBugError;
 import org.codehaus.groovy.runtime.MethodClosure;
 
-import javax.servlet.RequestDispatcher;
-import javax.servlet.ServletContext;
-import javax.servlet.ServletException;
-import javax.servlet.ServletOutputStream;
-import javax.servlet.WriteListener;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
+import jakarta.servlet.RequestDispatcher;
+import jakarta.servlet.ServletContext;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletOutputStream;
+import jakarta.servlet.WriteListener;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -84,7 +84,7 @@ import java.util.Map;
  *
  * If <code>response.getWriter()</code> is called directly (without using out), then a write method
  * call on 'sout' will not cause the <code>IllegalStateException</code>, but it will still be invalid.
- * It is the responsibility of the user of this class, to not to mix these different usage
+ * It is the responsibility of the user of this class to not mix these different usage
  * styles. The same applies to calling <code>response.getOutputStream()</code> and using 'out' or 'html'.
  *
  * <h3>Methods</h3>
@@ -95,12 +95,12 @@ import java.util.Map;
  * </ul>
  */
 public class ServletBinding extends Binding {
-    
+
     /**
      * A OutputStream dummy that will throw a GroovyBugError for any
-     * write method call to it. 
+     * write method call to it.
      */
-    private static class InvalidOutputStream extends OutputStream {
+    private static final class InvalidOutputStream extends OutputStream {
         /**
          * Will always throw a GroovyBugError
          * @see java.io.OutputStream#write(int)
@@ -113,17 +113,17 @@ public class ServletBinding extends Binding {
     /**
      * A class to manage the response output stream and writer.
      * If the stream have been 'used', then using the writer will cause
-     * a IllegalStateException. If the writer have been 'used', then 
+     * a IllegalStateException. If the writer have been 'used', then
      * using the stream will cause a IllegalStateException. 'used' means
      * any write method has been called. Simply requesting the objects will
-     * not cause an exception. 
+     * not cause an exception.
      */
     private static class ServletOutput {
         private final HttpServletResponse response;
         private ServletOutputStream outputStream;
         private PrintWriter writer;
-        
-        public ServletOutput(HttpServletResponse response) {
+
+        ServletOutput(HttpServletResponse response) {
             this.response = response;
         }
         private ServletOutputStream getResponseStream() throws IOException {
@@ -131,8 +131,21 @@ public class ServletBinding extends Binding {
             if (outputStream == null) outputStream = response.getOutputStream();
             return outputStream;
         }
+        /**
+         * Returns a stream that forwards writes to the response output stream.
+         * The response stream is opened on the first call, and that open fails
+         * if the response writer has already been used.
+         *
+         * @return the forwarding stream
+         */
         public ServletOutputStream getOutputStream() {
             return new ServletOutputStream() {
+                /**
+                 * Asks the response stream whether it can accept a write.
+                 * An {@link IOException} from that call is wrapped in {@link RuntimeException}.
+                 *
+                 * @return the response stream's readiness
+                 */
                 @Override
                 public boolean isReady() {
                     try {
@@ -142,6 +155,12 @@ public class ServletBinding extends Binding {
                     }
                 }
 
+                /**
+                 * Installs {@code writeListener} on the response stream.
+                 * An {@link IOException} from that call is wrapped in {@link RuntimeException}.
+                 *
+                 * @param writeListener the listener to install
+                 */
                 @Override
                 public void setWriteListener(WriteListener writeListener) {
                     try {
@@ -151,22 +170,52 @@ public class ServletBinding extends Binding {
                     }
                 }
 
+                /**
+                 * Writes one byte to the response stream.
+                 *
+                 * @param b the byte to write
+                 * @throws IOException if the response stream cannot be written
+                 */
                 @Override
                 public void write(int b) throws IOException {
                     getResponseStream().write(b);
                 }
+                /**
+                 * Closes the response stream.
+                 *
+                 * @throws IOException if the response stream cannot be closed
+                 */
                 @Override
                 public void close() throws IOException {
                     getResponseStream().close();
                 }
+                /**
+                 * Flushes the response stream.
+                 *
+                 * @throws IOException if the response stream cannot be flushed
+                 */
                 @Override
                 public void flush() throws IOException {
                     getResponseStream().flush();
                 }
+                /**
+                 * Writes the whole array to the response stream.
+                 *
+                 * @param b the bytes to write
+                 * @throws IOException if the response stream cannot be written
+                 */
                 @Override
                 public void write(byte[] b) throws IOException {
                     getResponseStream().write(b);
                 }
+                /**
+                 * Writes a slice of {@code b} to the response stream.
+                 *
+                 * @param b the source bytes
+                 * @param off the first index to write
+                 * @param len the number of bytes to write
+                 * @throws IOException if the response stream cannot be written
+                 */
                 @Override
                 public void write(byte[] b, int off, int len) throws IOException {
                     getResponseStream().write(b, off, len);
@@ -185,54 +234,116 @@ public class ServletBinding extends Binding {
             }
             return writer;
         }
+        /**
+         * Returns a writer that forwards output to the response writer.
+         * The response writer is opened on the first call, and that open fails
+         * if the response output stream has already been used. The writer is
+         * constructed over a stream that rejects writes, so only these forwarded
+         * methods produce a response.
+         *
+         * @return the forwarding writer
+         */
         public PrintWriter getWriter() {
             return new PrintWriter(new InvalidOutputStream()) {
+                /**
+                 * Returns the response writer's error flag.
+                 *
+                 * @return {@code true} when the response writer has recorded an error
+                 */
                 @Override
                 public boolean checkError() {
                     return getResponseWriter().checkError();
                 }
+                /**
+                 * Closes the response writer.
+                 */
                 @Override
                 public void close() {
                     getResponseWriter().close();
                 }
+                /**
+                 * Flushes the response writer.
+                 */
                 @Override
                 public void flush() {
                     getResponseWriter().flush();
                 }
+                /**
+                 * Writes the whole character array to the response writer.
+                 *
+                 * @param buf the characters to write
+                 */
                 @Override
                 public void write(char[] buf) {
                     getResponseWriter().write(buf);
                 }
+                /**
+                 * Writes a slice of {@code buf} to the response writer.
+                 *
+                 * @param buf the source characters
+                 * @param off the first index to write
+                 * @param len the number of characters to write
+                 */
                 @Override
                 public void write(char[] buf, int off, int len) {
                     getResponseWriter().write(buf, off, len);
                 }
+                /**
+                 * Writes one character to the response writer.
+                 *
+                 * @param c the character to write
+                 */
                 @Override
                 public void write(int c) {
                     getResponseWriter().write(c);
                 }
+                /**
+                 * Writes a slice of {@code s} to the response writer.
+                 *
+                 * @param s the source string
+                 * @param off the first index to write
+                 * @param len the number of characters to write
+                 */
                 @Override
                 public void write(String s, int off, int len) {
                     getResponseWriter().write(s, off, len);
                 }
+                /**
+                 * Writes a line separator through the response writer.
+                 */
                 @Override
                 public void println() {
                     getResponseWriter().println();
                 }
+                /**
+                 * Formats {@code args} with {@code format} on the response writer and returns this wrapper.
+                 *
+                 * @param format the format string
+                 * @param args the values to format
+                 * @return this writer
+                 */
                 @Override
                 public PrintWriter format(String format, Object... args) {
                     getResponseWriter().format(format, args);
                     return this;
                 }
+                /**
+                 * Formats {@code args} with {@code format} for {@code l} on the response writer and returns this wrapper.
+                 *
+                 * @param l the locale used for formatting
+                 * @param format the format string
+                 * @param args the values to format
+                 * @return this writer
+                 */
                 @Override
                 public PrintWriter format(Locale l, String format, Object... args) {
                     getResponseWriter().format(l, format, args);
                     return this;
                 }
             };
-        }        
-    }    
-    
+        }
+    }
+
     private boolean initialized;
 
     /**
@@ -294,6 +405,12 @@ public class ServletBinding extends Binding {
         return params;
     }
 
+    /**
+     * Binds a servlet variable while protecting the reserved lazy helper names.
+     *
+     * @param name the variable name to bind
+     * @param value the value to expose through the binding
+     */
     @Override
     public void setVariable(String name, Object value) {
         lazyInit();
@@ -308,6 +425,11 @@ public class ServletBinding extends Binding {
         super.setVariable(name, value);
     }
 
+    /**
+     * Returns the current binding variables after initializing the lazy servlet helpers.
+     *
+     * @return the binding variables map
+     */
     @Override
     public Map getVariables() {
         lazyInit();
@@ -349,11 +471,11 @@ public class ServletBinding extends Binding {
         // bind forward method
         MethodClosure c = new MethodClosure(this, "forward");
         super.setVariable("forward", c);
-        
+
         // bind include method
         c = new MethodClosure(this, "include");
         super.setVariable("include", c);
-        
+
         // bind redirect method
         c = new MethodClosure(this, "redirect");
         super.setVariable("redirect", c);
@@ -368,7 +490,7 @@ public class ServletBinding extends Binding {
         if (name == null) {
             throw new IllegalArgumentException(message + " null key.");
         }
-        if (name.length() == 0) {
+        if (name.isEmpty()) {
             throw new IllegalArgumentException(message + " blank key name. [length=0]");
         }
     }
@@ -378,14 +500,28 @@ public class ServletBinding extends Binding {
             throw new IllegalArgumentException("Can't bind variable to key named '" + name + "'.");
         }
     }
-    
+
+    /**
+     * Forwards the current request to another resource using the same request and response.
+     *
+     * @param path the dispatcher path to forward to
+     * @throws ServletException if the target resource fails
+     * @throws IOException if request dispatching fails
+     */
     public void forward(String path) throws ServletException, IOException {
         HttpServletRequest request = (HttpServletRequest) super.getVariable("request");
         HttpServletResponse response = (HttpServletResponse) super.getVariable("response");
         RequestDispatcher dispatcher = request.getRequestDispatcher(path);
         dispatcher.forward(request, response);
-    } 
-    
+    }
+
+    /**
+     * Includes another resource in the current response.
+     *
+     * @param path the dispatcher path to include
+     * @throws ServletException if the target resource fails
+     * @throws IOException if request dispatching fails
+     */
     public void include(String path) throws ServletException, IOException {
         HttpServletRequest request = (HttpServletRequest) super.getVariable("request");
         HttpServletResponse response = (HttpServletResponse) super.getVariable("response");
@@ -393,8 +529,14 @@ public class ServletBinding extends Binding {
         dispatcher.include(request, response);
     }
 
+    /**
+     * Sends a redirect response to the supplied location.
+     *
+     * @param location the redirect target
+     * @throws IOException if the redirect cannot be sent
+     */
     public void redirect(String location) throws IOException {
         HttpServletResponse response = (HttpServletResponse) super.getVariable("response");
         response.sendRedirect(location);
-    }    
+    }
 }

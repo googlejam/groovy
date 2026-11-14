@@ -49,7 +49,7 @@ public interface MetaClass extends MetaObjectProtocol {
      * @param isCallToSuper Whether the method is a call to a super class method
      * @param fromInsideClass Whether the call was invoked from the inside or the outside of the class
      *
-     * @return The return value of the method
+     * @return The method's return value.
      */
      Object invokeMethod(Class sender, Object receiver, String methodName, Object[] arguments, boolean isCallToSuper, boolean fromInsideClass);
 
@@ -66,7 +66,7 @@ public interface MetaClass extends MetaObjectProtocol {
      * @param isCallToSuper Whether the call is to a super class property
      * @param fromInsideClass ??
      *
-     * @return The properties value
+     * @return The property's value.
      */
      Object getProperty(Class sender, Object receiver, String property, boolean isCallToSuper, boolean fromInsideClass);
 
@@ -106,7 +106,7 @@ public interface MetaClass extends MetaObjectProtocol {
      * @param propertyName The name of the property
      * @param optionalValue The value of the property which could be null in the case of a getter
      * @param isGetter Whether the missing property event was the result of a getter or a setter
-     * 
+     *
      * @return The result of the propertyMissing method or throws MissingPropertyException
      */
      Object invokeMissingProperty(Object instance, String propertyName, Object optionalValue, boolean isGetter);
@@ -133,15 +133,15 @@ public interface MetaClass extends MetaObjectProtocol {
      * @param fromInsideClass Whether the call happened from the inside or the outside of a class
      */
      void setAttribute(Class sender, Object receiver, String messageName, Object messageValue, boolean useSuper, boolean fromInsideClass);
-    
+
     /**
      * Complete the initialisation process. After this method
-     * is called no methods should be added to the meta class.
+     * is called no methods should be added to the metaclass.
      * Invocation of methods or access to fields/properties is
-     * forbidden unless this method is called. This method 
+     * forbidden unless this method is called. This method
      * should contain any initialisation code, taking a longer
-     * time to complete. An example is the creation of the 
-     * Reflector. It is suggested to synchronize this 
+     * time to complete. An example is the creation of the
+     * Reflector. It is suggested to synchronize this
      * method.
      */
      void initialize();
@@ -163,7 +163,7 @@ public interface MetaClass extends MetaObjectProtocol {
      */
     @Override
     List<MetaMethod> getMethods();
-     
+
      /**
       * Obtains a reference to the original AST for the MetaClass if it is available at runtime
       *
@@ -177,7 +177,7 @@ public interface MetaClass extends MetaObjectProtocol {
       * @return A list of MetaMethods
       */
      List<MetaMethod> getMetaMethods();
-    
+
      /**
       *
       * Internal method to support Groovy runtime. Not for client usage.

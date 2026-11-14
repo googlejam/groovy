@@ -19,15 +19,19 @@
 package builder
 
 import asciidoctor.Utils
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.assertScript
+import static groovy.test.GroovyAssert.shouldFail
 
 /**
-* Tests for ObjectGraphBuilder. The tests directly in this file are specific
-* to ObjectGraphBuilder. Functionality in common with other Builders
-* is tested in the parent class.
-*/
-class ObjectGraphBuilderTest  extends GroovyTestCase {
+ * Tests for ObjectGraphBuilder. The tests directly in this file are specific
+ * to ObjectGraphBuilder. Functionality in common with other Builders
+ * is tested in the parent class.
+ */
+final class ObjectGraphBuilderTest {
 
+    @Test
     void testBuilder() {
         assertScript '''// tag::domain_classes[]
 package com.acme
@@ -78,7 +82,7 @@ assert employee.address instanceof Address
 '''
     }
 
-
+    @Test
     void testBuildImmutableFailure() {
         def err = shouldFail '''
 package com.acme
@@ -100,13 +104,14 @@ builder.classNameResolver = "com.acme"
 def person = builder.person(name:'Jon', age:17)
 // end::immutable_fail_runtime[]
         '''
-        assert err == Utils.stripAsciidocMarkup('''
+        assert err.message == Utils.stripAsciidocMarkup('''
 // tag::expected_error_immutable[]
-Cannot set readonly property: name for class: com.acme.Person
+Cannot set read-only property: name for class: com.acme.Person
 // end::expected_error_immutable[]
 ''')
     }
 
+    @Test
     void testBuildImmutableFixed() {
         assertScript '''
 package com.acme
@@ -133,12 +138,13 @@ builder.newInstanceResolver = { Class klazz, Map attributes ->
 }
 // end::newinstanceresolver[]
 def person = builder.person(name:'Jon', age:17)
-
         '''
     }
 
+    @Test
     void testId() {
-        assertScript '''package com.acme
+        assertScript '''
+package com.acme
 
 class Company {
     String name
@@ -179,6 +185,6 @@ assert e1.name == 'Duke'
 assert e2.name == 'John'
 assert e1.address.line1 == '123 Groovy Rd'
 assert e2.address.line1 == '123 Groovy Rd'
-'''
+        '''
     }
 }

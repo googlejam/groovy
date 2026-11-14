@@ -18,12 +18,15 @@
  */
 package groovy.jmx.builder
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
 import javax.management.ObjectName
 
-class JmxMetaMapBuilderTest extends GroovyTestCase {
+import static groovy.test.GroovyAssert.shouldFail
 
+class JmxMetaMapBuilderTest {
+
+    @Test
     void testBuildObjectMapFromGroovyObject() {
         def object = new MockManagedGroovyObject()
         def map = JmxMetaMapBuilder.buildObjectMapFrom(object)
@@ -64,6 +67,7 @@ class JmxMetaMapBuilderTest extends GroovyTestCase {
         assert map.operations.doSomethingElse.name == "doSomethingElse"
     }
 
+    @Test
     void testBuildObjectMapFromObject() {
         def object = new MockManagedObject()
         def map = JmxMetaMapBuilder.buildObjectMapFrom(object)
@@ -107,6 +111,7 @@ class JmxMetaMapBuilderTest extends GroovyTestCase {
         assert ops."doSomethingElse".params."java.lang.String".displayName
     }
 
+    @Test
     void testBuildAttribMapFromObject() {
         def object = new MockManagedObject()
         def attribs = JmxMetaMapBuilder.buildAttributeMapFrom(object)
@@ -135,6 +140,7 @@ class JmxMetaMapBuilderTest extends GroovyTestCase {
         assert attribs.Available.setMethod == null
     }
 
+    @Test
     void testBuildObjectWithNameOnly() {
         def object = new MockManagedObject()
         def map = JmxMetaMapBuilder.buildObjectMapFrom(object, [
@@ -181,6 +187,7 @@ class JmxMetaMapBuilderTest extends GroovyTestCase {
         assert ops."doSomethingElse".params."java.lang.String".displayName
     }
 
+    @Test
     void testBuildObjectWithGStringJmxName() {
         def object = new MockManagedObject()
         def name = "jmx.builder:type=TestObject@${object.hashCode()}"
@@ -193,6 +200,7 @@ class JmxMetaMapBuilderTest extends GroovyTestCase {
         assert map.jmxName.toString() == name
     }
 
+    @Test
     void testBuildAttributeMapFromDescriptorMap() {
         def object = new MockManagedObject()
         def attribs = JmxMetaMapBuilder.buildAttributeMapFrom(object, [
@@ -225,6 +233,7 @@ class JmxMetaMapBuilderTest extends GroovyTestCase {
         assert attribs.Available.setMethod == "setAvailable"
     }
 
+    @Test
     void testBuildAttributeMapFromDescriptorList() {
         def object = new MockManagedObject()
         def attribs = JmxMetaMapBuilder.buildAttributeMapFrom(object, ["something", "somethingElse"])
@@ -246,6 +255,7 @@ class JmxMetaMapBuilderTest extends GroovyTestCase {
         assert attribs.SomethingElse.setMethod == null
     }
 
+    @Test
     void testBuildConstructorMapFromObject() {
         def object = new MockManagedObject()
         def ctors = JmxMetaMapBuilder.buildConstructorMapFrom(object)
@@ -271,6 +281,7 @@ class JmxMetaMapBuilderTest extends GroovyTestCase {
         assert m.params."int".type == Integer.TYPE
     }
 
+    @Test
     void testBuildConstructorMapFromDescriptor() {
         def object = new MockManagedObject()
 
@@ -310,6 +321,7 @@ class JmxMetaMapBuilderTest extends GroovyTestCase {
 
     }
 
+    @Test
     void testBuildOperationMapFromObject() {
         def object = new MockManagedObject()
         def map = JmxMetaMapBuilder.buildOperationMapFrom(object)
@@ -328,6 +340,32 @@ class JmxMetaMapBuilderTest extends GroovyTestCase {
         assert map."set".name == "set"
     }
 
+    @Test
+    void testMetaClassAccessorsAreNotExportedAsOperations() {
+        // Not exported because getMetaClass/setMetaClass resolve to the metaClass MetaProperty
+        // and are dropped by the getter/setter filter, not because they are named in
+        // OPS_EXCEPTION_LIST. Pinned so that a change to that filter cannot quietly publish
+        // them as remotely invokable operations.
+        [new MockManagedObject(), new MockManagedGroovyObject()].each { object ->
+            def map = JmxMetaMapBuilder.buildOperationMapFrom(object)
+            assert !map."getMetaClass"
+            assert !map."setMetaClass"
+        }
+    }
+
+    @Test
+    void testInheritedOperationsRemainExported() {
+        // The default export deliberately spans the whole inheritance chain: JmxBuilder's own
+        // embedded-descriptor fixtures declare their operations on a base class, and
+        // 'operations: "*"' routes here and must mean all of them.
+        def map = JmxMetaMapBuilder.buildOperationMapFrom(new EmbeddedAllOps())
+
+        assert map."doNothing"
+        assert map."doTwoThings"
+        assert map."doThreeThings"
+    }
+
+    @Test
     void testBuildOperationFromDescriptorMap() {
         def object = new MockManagedObject()
         def map = JmxMetaMapBuilder.buildOperationMapFrom(object, "*")
@@ -369,6 +407,7 @@ class JmxMetaMapBuilderTest extends GroovyTestCase {
         assert map.doSomethingElse.params."java.lang.String"
     }
 
+    @Test
     void testBuildParameterMapFromConstructor() {
         def object = new MockManagedObject()
         def ctor
@@ -415,6 +454,7 @@ class JmxMetaMapBuilderTest extends GroovyTestCase {
 
     }
 
+    @Test
     void testBuildParameterMapFromMethod() {
         def object = new MockManagedObject()
         def method
@@ -460,6 +500,7 @@ class JmxMetaMapBuilderTest extends GroovyTestCase {
         assert map."int".type.name == "int"
     }
 
+    @Test
     void testBuildAttributeNotificationFromDescriptor() {
         def object = new MockManagedObject()
         def map
@@ -481,6 +522,7 @@ class JmxMetaMapBuilderTest extends GroovyTestCase {
         assert map.SomethingElse.methodListener.callback instanceof Closure
     }
 
+    @Test
     void testBuildOperationNotificationFromDescriptor() {
         def object = new MockManagedObject()
         def map
@@ -498,6 +540,7 @@ class JmxMetaMapBuilderTest extends GroovyTestCase {
         assert map.doSomething.methodListener.callback instanceof Closure
     }
 
+    @Test
     void testBuildListenerMap() {
         def map = JmxMetaMapBuilder.buildListenerMapFrom(
                 [

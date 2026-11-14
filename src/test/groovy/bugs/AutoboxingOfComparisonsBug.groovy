@@ -16,11 +16,13 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class AutoboxingOfComparisonsBug extends GroovyTestCase {
+final class AutoboxingOfComparisonsBug {
+
+    @Test
     void testBug() {
         def y = true
         def x = y == true

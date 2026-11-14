@@ -21,20 +21,19 @@ package groovy.xml.markupsupport;
 import java.util.Optional;
 import java.util.function.Function;
 
+/**
+ * Escapes XML attribute characters that must be written as numeric entities.
+ */
 public class StandardXmlAttributeFilter implements Function<Character, Optional<String>> {
+    /** {@inheritDoc} */
     @Override
     public Optional<String> apply(Character ch) {
-        String result = null;
-        switch (ch) {
-            case '\n':
-                result = "&#10;";
-                break;
-            case '\r':
-                result = "&#13;";
-                break;
-            case '\t':
-                result = "&#09;";
-        }
+        String result = switch (ch) {
+            case '\n' -> "&#10;";
+            case '\r' -> "&#13;";
+            case '\t' -> "&#09;";
+            default -> null;
+        };
         return Optional.ofNullable(result);
     }
 }

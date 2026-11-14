@@ -55,6 +55,7 @@ import org.codehaus.groovy.ast.expr.RangeExpression;
 import org.codehaus.groovy.ast.expr.SpreadExpression;
 import org.codehaus.groovy.ast.expr.SpreadMapExpression;
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression;
+import org.codehaus.groovy.ast.expr.SwitchExpression;
 import org.codehaus.groovy.ast.expr.TernaryExpression;
 import org.codehaus.groovy.ast.expr.TupleExpression;
 import org.codehaus.groovy.ast.expr.UnaryMinusExpression;
@@ -77,6 +78,7 @@ import org.codehaus.groovy.ast.stmt.SynchronizedStatement;
 import org.codehaus.groovy.ast.stmt.ThrowStatement;
 import org.codehaus.groovy.ast.stmt.TryCatchStatement;
 import org.codehaus.groovy.ast.stmt.WhileStatement;
+import org.codehaus.groovy.ast.stmt.YieldStatement;
 import org.codehaus.groovy.classgen.BytecodeExpression;
 import org.codehaus.groovy.control.SourceUnit;
 
@@ -99,22 +101,45 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
     private final Deque<TreeContext> treeContextStack = new ArrayDeque<TreeContext>();
     private TreeContext lastContext;
 
+    /**
+     * Creates a visitor with an initial root context.
+     */
     public ContextualClassCodeVisitor() {
         pushContext(new TreeContext(null, null));
     }
 
+    /**
+     * Returns the current traversal context.
+     *
+     * @return the current context, or {@code null}
+     */
     public TreeContext getTreeContext() {
         return treeContextStack.isEmpty()?null:treeContextStack.peek();
     }
 
+    /**
+     * Returns the most recently popped traversal context.
+     *
+     * @return the last completed context
+     */
     public TreeContext getLastContext() {
         return lastContext;
     }
 
+    /**
+     * Pushes an explicit traversal context.
+     *
+     * @param ctx the context to push
+     */
     protected void pushContext(TreeContext ctx) {
         treeContextStack.push(ctx);
     }
 
+    /**
+     * Pops the current traversal context.
+     *
+     * @return the popped context
+     */
     protected TreeContext popContext() {
         final TreeContext treeContext = treeContextStack.pop();
         List<TreeContextAction> actions = treeContext.getOnPopHandlers();
@@ -125,11 +150,22 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         ASTNode parentNode = treeContext.parent!=null?treeContext.parent.node:null;
         if (treeContext.node instanceof Expression && parentNode !=null) {
             ClassCodeExpressionTransformer trn = new ClassCodeExpressionTransformer() {
+                /**
+                 * Returns no source unit for deferred replacement.
+                 *
+                 * @return {@code null}
+                 */
                 @Override
                 protected SourceUnit getSourceUnit() {
                     return null;
                 }
 
+                /**
+                 * Replaces the current expression when a replacement was registered.
+                 *
+                 * @param exp the expression to transform
+                 * @return the replacement or the transformed expression
+                 */
                 @Override
                 public Expression transform(final Expression exp) {
                     if (exp==treeContext.node) {
@@ -147,6 +183,11 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         return treeContext;
     }
 
+    /**
+     * Pushes a child context for the supplied AST node.
+     *
+     * @param node the node to enter
+     */
     protected void pushContext(ASTNode node) {
         pushContext(getTreeContext().fork(node));
     }
@@ -155,6 +196,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
     // ----------------------- override visit methods to provide contextual information ---------------------------
 
 
+    /** Visits a class node while tracking traversal context. */
     @Override
     public void visitClass(final ClassNode node) {
         pushContext(node);
@@ -162,6 +204,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a package node while tracking traversal context. */
     @Override
     public void visitPackage(final PackageNode node) {
         if (node!=null) {
@@ -173,6 +216,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         }
     }
 
+    /** Visits module imports while tracking traversal context. */
     @Override
     public void visitImports(final ModuleNode node) {
         pushContext(node);
@@ -180,6 +224,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a constructor or method while tracking traversal context. */
     @Override
     protected void visitConstructorOrMethod(final MethodNode node, final boolean isConstructor) {
         pushContext(node);
@@ -187,6 +232,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a field node while tracking traversal context. */
     @Override
     public void visitField(final FieldNode node) {
         pushContext(node);
@@ -194,6 +240,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a property node while tracking traversal context. */
     @Override
     public void visitProperty(final PropertyNode node) {
         pushContext(node);
@@ -201,6 +248,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a method call expression while tracking traversal context. */
     @Override
     public void visitMethodCallExpression(final MethodCallExpression call) {
         pushContext(call);
@@ -208,6 +256,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a static method call expression while tracking traversal context. */
     @Override
     public void visitStaticMethodCallExpression(final StaticMethodCallExpression call) {
         pushContext(call);
@@ -215,6 +264,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a constructor call expression while tracking traversal context. */
     @Override
     public void visitConstructorCallExpression(final ConstructorCallExpression call) {
         pushContext(call);
@@ -222,6 +272,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a binary expression while tracking traversal context. */
     @Override
     public void visitBinaryExpression(final BinaryExpression expression) {
         pushContext(expression);
@@ -229,6 +280,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a ternary expression while tracking traversal context. */
     @Override
     public void visitTernaryExpression(final TernaryExpression expression) {
         pushContext(expression);
@@ -236,6 +288,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits an Elvis expression while tracking traversal context. */
     @Override
     public void visitShortTernaryExpression(final ElvisOperatorExpression expression) {
         pushContext(expression);
@@ -243,6 +296,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a postfix expression while tracking traversal context. */
     @Override
     public void visitPostfixExpression(final PostfixExpression expression) {
         pushContext(expression);
@@ -250,6 +304,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a prefix expression while tracking traversal context. */
     @Override
     public void visitPrefixExpression(final PrefixExpression expression) {
         pushContext(expression);
@@ -257,6 +312,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a boolean expression while tracking traversal context. */
     @Override
     public void visitBooleanExpression(final BooleanExpression expression) {
         pushContext(expression);
@@ -264,6 +320,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a not expression while tracking traversal context. */
     @Override
     public void visitNotExpression(final NotExpression expression) {
         pushContext(expression);
@@ -271,6 +328,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a closure expression while tracking traversal context. */
     @Override
     public void visitClosureExpression(final ClosureExpression expression) {
         pushContext(expression);
@@ -278,6 +336,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a tuple expression while tracking traversal context. */
     @Override
     public void visitTupleExpression(final TupleExpression expression) {
         pushContext(expression);
@@ -285,6 +344,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a list expression while tracking traversal context. */
     @Override
     public void visitListExpression(final ListExpression expression) {
         pushContext(expression);
@@ -292,6 +352,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits an array expression while tracking traversal context. */
     @Override
     public void visitArrayExpression(final ArrayExpression expression) {
         pushContext(expression);
@@ -299,6 +360,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a map expression while tracking traversal context. */
     @Override
     public void visitMapExpression(final MapExpression expression) {
         pushContext(expression);
@@ -306,6 +368,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a map-entry expression while tracking traversal context. */
     @Override
     public void visitMapEntryExpression(final MapEntryExpression expression) {
         pushContext(expression);
@@ -313,6 +376,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a range expression while tracking traversal context. */
     @Override
     public void visitRangeExpression(final RangeExpression expression) {
         pushContext(expression);
@@ -320,6 +384,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a spread expression while tracking traversal context. */
     @Override
     public void visitSpreadExpression(final SpreadExpression expression) {
         pushContext(expression);
@@ -327,6 +392,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a spread-map expression while tracking traversal context. */
     @Override
     public void visitSpreadMapExpression(final SpreadMapExpression expression) {
         pushContext(expression);
@@ -334,6 +400,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a method-pointer expression while tracking traversal context. */
     @Override
     public void visitMethodPointerExpression(final MethodPointerExpression expression) {
         pushContext(expression);
@@ -341,6 +408,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a unary-minus expression while tracking traversal context. */
     @Override
     public void visitUnaryMinusExpression(final UnaryMinusExpression expression) {
         pushContext(expression);
@@ -348,6 +416,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a unary-plus expression while tracking traversal context. */
     @Override
     public void visitUnaryPlusExpression(final UnaryPlusExpression expression) {
         pushContext(expression);
@@ -355,6 +424,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a bitwise-negation expression while tracking traversal context. */
     @Override
     public void visitBitwiseNegationExpression(final BitwiseNegationExpression expression) {
         pushContext(expression);
@@ -362,6 +432,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a cast expression while tracking traversal context. */
     @Override
     public void visitCastExpression(final CastExpression expression) {
         pushContext(expression);
@@ -369,6 +440,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a constant expression while tracking traversal context. */
     @Override
     public void visitConstantExpression(final ConstantExpression expression) {
         pushContext(expression);
@@ -376,6 +448,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a class expression while tracking traversal context. */
     @Override
     public void visitClassExpression(final ClassExpression expression) {
         pushContext(expression);
@@ -383,6 +456,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a variable expression while tracking traversal context. */
     @Override
     public void visitVariableExpression(final VariableExpression expression) {
         pushContext(expression);
@@ -390,6 +464,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a property expression while tracking traversal context. */
     @Override
     public void visitPropertyExpression(final PropertyExpression expression) {
         pushContext(expression);
@@ -397,6 +472,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits an attribute expression while tracking traversal context. */
     @Override
     public void visitAttributeExpression(final AttributeExpression expression) {
         pushContext(expression);
@@ -404,6 +480,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a field expression while tracking traversal context. */
     @Override
     public void visitFieldExpression(final FieldExpression expression) {
         pushContext(expression);
@@ -411,6 +488,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a GString expression while tracking traversal context. */
     @Override
     public void visitGStringExpression(final GStringExpression expression) {
         pushContext(expression);
@@ -418,6 +496,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a closure-list expression while tracking traversal context. */
     @Override
     public void visitClosureListExpression(final ClosureListExpression cle) {
         pushContext(cle);
@@ -425,6 +504,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a bytecode expression while tracking traversal context. */
     @Override
     public void visitBytecodeExpression(final BytecodeExpression cle) {
         pushContext(cle);
@@ -432,6 +512,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits an assert statement while tracking traversal context. */
     @Override
     public void visitAssertStatement(final AssertStatement statement) {
         pushContext(statement);
@@ -439,6 +520,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a block statement while tracking traversal context. */
     @Override
     public void visitBlockStatement(final BlockStatement block) {
         pushContext(block);
@@ -446,6 +528,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a break statement while tracking traversal context. */
     @Override
     public void visitBreakStatement(final BreakStatement statement) {
         pushContext(statement);
@@ -453,6 +536,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a case statement while tracking traversal context. */
     @Override
     public void visitCaseStatement(final CaseStatement statement) {
         pushContext(statement);
@@ -460,6 +544,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a catch statement while tracking traversal context. */
     @Override
     public void visitCatchStatement(final CatchStatement statement) {
         pushContext(statement);
@@ -467,6 +552,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a continue statement while tracking traversal context. */
     @Override
     public void visitContinueStatement(final ContinueStatement statement) {
         pushContext(statement);
@@ -474,6 +560,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a do-while loop while tracking traversal context. */
     @Override
     public void visitDoWhileLoop(final DoWhileStatement loop) {
         pushContext(loop);
@@ -481,6 +568,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits an expression statement while tracking traversal context. */
     @Override
     public void visitExpressionStatement(final ExpressionStatement statement) {
         pushContext(statement);
@@ -488,6 +576,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a for loop while tracking traversal context. */
     @Override
     public void visitForLoop(final ForStatement forLoop) {
         pushContext(forLoop);
@@ -495,6 +584,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits an if/else statement while tracking traversal context. */
     @Override
     public void visitIfElse(final IfStatement ifElse) {
         pushContext(ifElse);
@@ -502,6 +592,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a return statement while tracking traversal context. */
     @Override
     public void visitReturnStatement(final ReturnStatement statement) {
         pushContext(statement);
@@ -509,6 +600,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a switch statement while tracking traversal context. */
     @Override
     public void visitSwitch(final SwitchStatement statement) {
         pushContext(statement);
@@ -516,6 +608,23 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a first-class switch expression while tracking traversal context (GROOVY-12255). */
+    @Override
+    public void visitSwitchExpression(final SwitchExpression expression) {
+        pushContext(expression);
+        super.visitSwitchExpression(expression);
+        popContext();
+    }
+
+    /** Visits a yield statement while tracking traversal context (GROOVY-12255). */
+    @Override
+    public void visitYieldStatement(final YieldStatement statement) {
+        pushContext(statement);
+        super.visitYieldStatement(statement);
+        popContext();
+    }
+
+    /** Visits a synchronized statement while tracking traversal context. */
     @Override
     public void visitSynchronizedStatement(final SynchronizedStatement statement) {
         pushContext(statement);
@@ -523,6 +632,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a throw statement while tracking traversal context. */
     @Override
     public void visitThrowStatement(final ThrowStatement statement) {
         pushContext(statement);
@@ -530,6 +640,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a try/catch/finally statement while tracking traversal context. */
     @Override
     public void visitTryCatchFinally(final TryCatchStatement statement) {
         pushContext(statement);
@@ -537,6 +648,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits a while loop while tracking traversal context. */
     @Override
     public void visitWhileLoop(final WhileStatement loop) {
         pushContext(loop);
@@ -544,6 +656,7 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /** Visits an empty statement while tracking traversal context. */
     @Override
     public void visitEmptyStatement(final EmptyStatement statement) {
         pushContext(statement);
@@ -551,6 +664,11 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         popContext();
     }
 
+    /**
+     * Returns the current traversal path, starting with the last completed context.
+     *
+     * @return the current tree path
+     */
     public List<TreeContext> getTreePath() {
         List<TreeContext> path = new LinkedList<TreeContext>();
         path.add(lastContext);
@@ -558,6 +676,12 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         return path;
     }
 
+    /**
+     * Returns the current path when all supplied predicates match successive parents.
+     *
+     * @param predicates the predicates to match against the path
+     * @return the matching path, or an empty list
+     */
     public List<TreeContext> pathMatches(List<ASTNodePredicate> predicates) {
         List<TreeContext> path = new LinkedList<TreeContext>();
         TreeContext current = lastContext.parent;
@@ -574,14 +698,33 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
         return path;
     }
 
+    /**
+     * Returns the path up to the first node matching the supplied predicate.
+     *
+     * @param predicate the predicate that terminates the path
+     * @return the matching path, or an empty list
+     */
     public List<TreeContext> pathUpTo(ASTNodePredicate predicate) {
         return pathUpTo(null, predicate);
     }
 
+    /**
+     * Returns the path up to the first node whose class matches {@code node}.
+     *
+     * @param node the node class that terminates the path
+     * @return the matching path, or an empty list
+     */
     public List<TreeContext> pathUpTo(Class<ASTNode> node) {
         return pathUpTo(node, null);
     }
 
+    /**
+     * Returns the path up to the first node that matches the supplied class and predicate.
+     *
+     * @param node the node class that terminates the path, or {@code null}
+     * @param predicate the predicate that terminates the path, or {@code null}
+     * @return the matching path, or an empty list
+     */
     public List<TreeContext> pathUpTo(Class<ASTNode> node, ASTNodePredicate predicate) {
         List<TreeContext> path = new LinkedList<TreeContext>();
         TreeContext current = lastContext;
@@ -613,8 +756,15 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
 
     // ----------------------------- inner classes --------------------------------------
 
+    /**
+     * Creates class-based predicates for the supplied AST node classes.
+     *
+     * @param classes the classes to match
+     * @return the corresponding predicates
+     */
+    @SuppressWarnings("unchecked")
     public static List<ASTNodePredicate> matchByClass(Class<ASTNode>... classes) {
-        ArrayList<ASTNodePredicate> result = new ArrayList<ASTNodePredicate>(classes.length);
+        List<ASTNodePredicate> result = new ArrayList<>(classes.length);
         for (final Class<ASTNode> astNodeClass : classes) {
             result.add(new MatchByClass(astNodeClass));
         }
@@ -628,6 +778,12 @@ public abstract class ContextualClassCodeVisitor extends ClassCodeVisitorSupport
             this.astNodeClass = astNodeClass;
         }
 
+        /**
+         * Checks whether the node class exactly matches the configured class.
+         *
+         * @param node the node to test
+         * @return {@code true} when the node class matches
+         */
         @Override
         public boolean matches(final ASTNode node) {
             return astNodeClass ==node.getClass();

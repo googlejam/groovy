@@ -21,14 +21,14 @@ plugins {
 }
 
 dependencies {
-    implementation rootProject
-    implementation project(':groovy-macro')
-    testImplementation project(':groovy-test')
+    implementation project(':')
+    implementation projects.groovyMacro
+    testImplementation projects.groovyTest
+    testImplementation projects.groovyTypecheckers // MonadicChecker @CompileStatic tests
 }
 
 groovyLibrary {
     optionalModule()
-    withoutBinaryCompatibilityChecks()
     moduleDescriptor {
         extensionClasses = 'org.apache.groovy.macrolib.MacroLibGroovyMethods'
     }

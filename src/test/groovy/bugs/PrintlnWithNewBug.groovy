@@ -16,15 +16,16 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
 import groovy.Foo
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class PrintlnWithNewBug extends GroovyTestCase {
-    
+class PrintlnWithNewBug {
+
+    @Test
     void testBug() {
-        println(new Foo(name:'abc')) 
-        println new Foo(name:'def') 
+        println(new Foo(name:'abc'))
+        println new Foo(name:'def')
     }
 }

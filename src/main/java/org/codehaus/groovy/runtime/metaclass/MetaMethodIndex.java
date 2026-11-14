@@ -18,374 +18,275 @@
  */
 package org.codehaus.groovy.runtime.metaclass;
 
+import groovy.lang.ClosureInvokingMethod;
 import groovy.lang.MetaMethod;
+import org.codehaus.groovy.ast.tools.GeneralUtils;
 import org.codehaus.groovy.reflection.CachedClass;
 import org.codehaus.groovy.reflection.GeneratedMetaMethod;
 import org.codehaus.groovy.util.FastArray;
 
-import java.util.Arrays;
-import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.NoSuchElementException;
-import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Stream;
 
+/**
+ * An index of metamethods for a class, organized by method name and signature.
+ * Provides efficient lookup of methods for static, normal, and super method calls.
+ * Uses caching to optimize method lookup performance.
+ * <p>
+ * This class is for internal use by the Groovy runtime's metaclass system.
+ */
 public class MetaMethodIndex {
-    public final Map<Class, Header> methodHeaders = new LinkedHashMap<>(32);
+    private static final int DEFAULT_CAPACITY = 32;
 
-    public static class Header {
-        public Entry head;
-               Class cls;
-        public Class subclass;
-        public int clsHashCode31;
+    /**
+     * a map of the starter class plus its super classes to save method lists for
+     * static/normal/super method calls. It also provides a simple cache of one
+     * method name and call signature to method per static/normal/super call.
+     */
+    public final Map<Class<?>, Map<String, Cache>> indexMap = new ConcurrentHashMap<>(DEFAULT_CAPACITY);
 
-        public Header(final Class cls) {
-            this(cls, null);
-        }
+    /**
+     * The main class for which this index was created
+     */
+    public final Class<?> mainClass;
 
-        public Header(final Class cls, final Class subclass) {
-            this.cls = cls;
-            this.subclass = subclass;
-            this.clsHashCode31 = 31 * cls.hashCode();
-        }
-    }
-
-    public static class CacheEntry {
-        public final Class[] params;
+    /**
+     * A cache entry for a metamethod with its parameter types.
+     */
+    public static class MetaMethodCache {
+        /**
+         * The parameter types used for this cached method
+         */
+        public final Class<?>[] params;
+        /**
+         * The cached metamethod
+         */
         public final MetaMethod method;
 
-        public CacheEntry(final Class[] params, final MetaMethod method) {
+        /**
+         * Creates a new method entry.
+         *
+         * @param params in case of caching params might not be the same as {@link MetaMethod#getParameterTypes}
+         * @param method the meta method
+         */
+        public MetaMethodCache(final Class<?>[] params, final MetaMethod method) {
             this.params = params;
             this.method = method;
         }
     }
 
-    public static class Entry {
-        public int hash;
-        public Class cls;
-        public String name;
-        public Entry nextHashEntry, nextClassEntry;
-        public Object methods, methodsForSuper, staticMethods;
-        public CacheEntry cachedMethod, cachedMethodForSuper, cachedStaticMethod;
+    /**
+     * A cache of metamethods indexed by name.
+     */
+    public static class Cache {
+        /**
+         * The method name
+         */
+        public final String name;
+        /**
+         * A list of methods or a single method
+         */
+        public Object methods;
+        /**
+         * Methods available for super calls
+         */
+        public Object methodsForSuper;
+        /**
+         * Static methods for this name
+         */
+        public Object staticMethods;
+        /**
+         * Cached method result for normal calls
+         */
+        public MetaMethodCache cachedMethod;
+        /**
+         * Cached method result for super calls
+         */
+        public MetaMethodCache cachedMethodForSuper;
+        /**
+         * Cached static method result
+         */
+        public MetaMethodCache cachedStaticMethod;
+
+        /**
+         * Constructs a new Cache for the given method name.
+         *
+         * @param name the method name
+         */
+        public Cache(String name) {
+            this.name = name;
+        }
 
         @Override
         public String toString() {
-            return "[" + name + ", " + cls.getName() + "]";
+            return "[name=" + name + "]";
         }
-    }
-
-    public interface EntryIterator {
-        boolean hasNext();
-        Entry next();
     }
 
     //--------------------------------------------------------------------------
 
+    /**
+     * Constructs a new MetaMethodIndex for the given class.
+     *
+     * @param theCachedClass the cached class for which to build the index
+     */
     public MetaMethodIndex(final CachedClass theCachedClass) {
-        init(DEFAULT_CAPACITY);
-
-        CachedClass last = null;
+        this.mainClass = theCachedClass.getTheClass();
         if (!theCachedClass.isInterface()) {
             for (CachedClass c = theCachedClass; c != null; c = c.getCachedSuperClass()) {
-                methodHeaders.put(c.getTheClass(), new Header(c.getTheClass(), last == null ? null : last.getTheClass()));
-                last = c;
+                indexMap.put(c.getTheClass(), new ConcurrentHashMap<>());
             }
         } else {
-            methodHeaders.put(Object.class, new Header(Object.class, theCachedClass.getTheClass()));
+            indexMap.put(Object.class, new ConcurrentHashMap<>());
+            indexMap.put(mainClass, new ConcurrentHashMap<>());
         }
     }
 
-    protected Entry[] table;
-
-    protected static final int DEFAULT_CAPACITY = 32;
-    protected static final int MINIMUM_CAPACITY = 4;
-    protected static final int MAXIMUM_CAPACITY = 1 << 28;
-
-    protected int size;
-    protected transient int threshold;
-
-    public static int hash(int h) {
-        h += ~(h << 9);
-        h ^= (h >>> 14);
-        h += (h << 4);
-        h ^= (h >>> 10);
-        return h;
+    /**
+     * Gets the cached methods for a given class and method name.
+     *
+     * @param cls the class to look up
+     * @param name the method name
+     * @return the cache entry or null if not found
+     */
+    public final Cache getMethods(final Class<?> cls, final String name) {
+        var map = indexMap.get(cls);
+        return map == null ? null : map.get(name);
     }
 
-    public int size() {
-        return size;
-    }
+    /**
+     * Adds a metamethod to the index.
+     *
+     * @param method the metamethod to add
+     * @param map the cache map to add the method to
+     */
+    public void addMetaMethod(MetaMethod method, Map<String, Cache> map) {
+        var cache = map.computeIfAbsent(method.getName(), Cache::new);
 
-    public boolean isEmpty() {
-        return size == 0;
-    }
-
-    public void clear() {
-        Object[] tab = table;
-        Arrays.fill(tab, null);
-        size = 0;
-    }
-
-    public void init(final int initCapacity) {
-        threshold = (initCapacity * 6) / 8;
-        table = new Entry[initCapacity];
-    }
-
-    public void resize(final int newLength) {
-        Entry[] oldTable = table;
-        Entry[] newTable = new Entry[newLength];
-
-        for (Entry entry : oldTable) {
-            for (Entry e = entry, next; e != null; e = next) {
-                next = e.nextHashEntry;
-
-                int index = e.hash & (newLength - 1);
-                e.nextHashEntry = newTable[index];
-                newTable[index] = e;
-            }
+        if (method.isStatic()) {
+            cache.staticMethods = addMethodToList(cache.staticMethods, method);
         }
-
-        table = newTable;
-        threshold = (6 * newLength) / 8;
+        cache.methods = addMethodToList(cache.methods, method);
     }
 
-    public Entry[] getTable() {
-        return table;
+    private Cache getOrPutMethods(final String name, final Map<String, Cache> cacheIndex) {
+        return cacheIndex.computeIfAbsent(name, Cache::new);
     }
 
-    public EntryIterator getEntrySetIterator() {
-        return new EntryIterator() {
-            Entry next; // next entry to return
-            int index;  // current slot
-
-            {
-                Entry[] t = table;
-                int i = t.length;
-                Entry n = null;
-                if (size != 0) { // advance to first entry
-                    while (i > 0 && (n = t[--i]) == null) {
-                    }
-                }
-                next = n;
-                index = i;
-            }
-
-            @Override
-            public boolean hasNext() {
-                return next != null;
-            }
-
-            @Override
-            public Entry next() {
-                return nextEntry();
-            }
-
-            Entry nextEntry() {
-                Entry e = next;
-                if (e == null)
-                    throw new NoSuchElementException();
-
-                Entry n = e.nextHashEntry;
-                Entry[] t = table;
-                int i = index;
-                while (n == null && i > 0)
-                    n = t[--i];
-                index = i;
-                next = n;
-                return e;
-            }
-        };
+    /**
+     * Gets the method cache header for the given class.
+     *
+     * @param cls the class
+     * @return the method cache map or null if not found
+     */
+    public Map<String, Cache> getHeader(final Class<?> cls) {
+        return indexMap.get(cls);
     }
 
-    public final Entry getMethods(final Class cls, final String name) {
-        int h = hash(31 * cls.hashCode() + name.hashCode());
-        for (Entry e = table[h & (table.length - 1)]; e != null; e = e.nextHashEntry) {
-            if (e.hash == h && cls == e.cls && Objects.equals(e.name, name)) {
-                return e;
-            }
-        }
-        return null;
-    }
-
-    public Entry getOrPutMethods(final String name, final Header header) {
-        final Class cls = header.cls;
-        int h = hash(header.clsHashCode31 + name.hashCode());
-        final Entry[] t = table;
-        final int index = h & (t.length - 1);
-        for (Entry e = t[index]; e != null; e = e.nextHashEntry) {
-            if (e.hash == h && cls == e.cls && Objects.equals(e.name, name)) {
-                return e;
-            }
-        }
-        Entry entry = new Entry();
-        entry.nextHashEntry = t[index];
-        entry.hash = h;
-        entry.name = name;
-        entry.cls = cls;
-        t[index] = entry;
-
-        entry.nextClassEntry = header.head;
-        header.head = entry;
-
-        if (++size == threshold)
-            resize(2 * t.length);
-
-        return entry;
-    }
-
-    public Header getHeader(final Class cls) {
-        return methodHeaders.computeIfAbsent(cls, k -> new Header(cls));
-    }
-
-    public void copyNonPrivateMethods(final Class from, final Class to) {
-        copyNonPrivateMethods(getHeader(from), getHeader(to));
-    }
-
-    public void copyNonPrivateMethods(final Header from, final Header to) {
-        for (Entry e = from.head; e != null; e = e.nextClassEntry) {
+    /**
+     * Copies all non-private methods from one method cache map to another.
+     *
+     * @param from the source method cache map
+     * @param to the destination method cache map
+     */
+    public  void copyNonPrivateMethods(final Map<String, Cache> from, final Map<String, Cache> to) {
+        for (Cache e : from.values()) {
             copyNonPrivateMethods(e, to);
         }
     }
 
-    public void copyAllMethodsToSuper(final Header from, final Header to) {
-        for (Entry e = from.head; e != null; e = e.nextClassEntry) {
-            copyAllMethodsToSuper(e, to);
-        }
-    }
-
-    public void copyNonPrivateMethodsFromSuper(final Header from) {
-        for (Entry e = from.head; e != null; e = e.nextClassEntry) {
-            copyNonPrivateMethodsFromSuper(e);
-        }
-    }
-
-    private void copyNonPrivateMethods(final Entry from, final Header to) {
-        Object oldListOrMethod = from.methods;
-        if (oldListOrMethod instanceof FastArray) {
-            FastArray oldList = (FastArray) oldListOrMethod;
-            Entry e = null;
-            final int n = oldList.size();
-            Object[] array = oldList.getArray();
+    private void copyNonPrivateMethods(final Cache from, final Map<String, Cache> to) {
+        var fastArrayOrMetaMethod = from.methods;
+        if (fastArrayOrMetaMethod instanceof FastArray fastArray) {
+            Cache e = null;
+            final int n = fastArray.size();
+            Object[] array = fastArray.getArray();
             for (int i = 0; i != n; i += 1) {
                 MetaMethod method = (MetaMethod) array[i];
-                if (method.isPrivate()) continue;
-                if (e == null)
-                    e = getOrPutMethods(from.name, to);
-                e.methods = addMethodToList(e.methods, method);
+                if (isNonPrivate(method)) {
+                    if (e == null)
+                        e = getOrPutMethods(from.name, to);
+                    e.methods = addMethodToList(e.methods, method);
+                }
             }
         } else {
-            MetaMethod method = (MetaMethod) oldListOrMethod;
-            if (!method.isPrivate()) {
-                Entry e = getOrPutMethods(from.name, to);
+            MetaMethod method = (MetaMethod) fastArrayOrMetaMethod;
+            if (isNonPrivate(method)) {
+                Cache e = getOrPutMethods(from.name, to);
                 e.methods = addMethodToList(e.methods, method);
             }
         }
     }
 
-    private void copyAllMethodsToSuper(final Entry from, final Header to) {
-        Object oldListOrMethod = from.methods;
-        if (oldListOrMethod instanceof FastArray) {
-            FastArray oldList = (FastArray) oldListOrMethod;
-            Entry e = null;
-            final int n = oldList.size();
-            Object[] array = oldList.getArray();
-            for (int i = 0; i != n; i += 1) {
-                MetaMethod method = (MetaMethod) array[i];
-                if (e == null)
-                    e = getOrPutMethods(from.name, to);
-                e.methodsForSuper = addMethodToList(e.methodsForSuper, method);
-            }
-        } else {
-            MetaMethod method = (MetaMethod) oldListOrMethod;
-            Entry e = getOrPutMethods(from.name, to);
-            e.methodsForSuper = addMethodToList(e.methodsForSuper, method);
-        }
-    }
-
-    private void copyNonPrivateMethodsFromSuper(final Entry e) {
-        Object oldListOrMethod = e.methodsForSuper;
-        if (oldListOrMethod == null) {
-            return;
-        }
-
-        if (oldListOrMethod instanceof FastArray) {
-            FastArray oldList = (FastArray) oldListOrMethod;
-            final int n = oldList.size();
-            Object[] array = oldList.getArray();
-            for (int i = 0; i != n; i += 1) {
-                MetaMethod method = (MetaMethod) array[i];
-                if (method.isPrivate()) continue;
-                e.methods = addMethodToList(e.methods, method);
-            }
-        } else {
-            MetaMethod method = (MetaMethod) oldListOrMethod;
-            if (!method.isPrivate()) {
-                e.methods = addMethodToList(e.methods, method);
-            }
-        }
-    }
-
-    public void copyNonPrivateMethodsDown(final Class from, final Class to) {
-        copyNonPrivateNonNewMetaMethods(getHeader(from), getHeader(to));
-    }
-
-    public void copyNonPrivateNonNewMetaMethods(final Header from, final Header to) {
-        for (Entry e = from.head; e != null; e = e.nextClassEntry) {
+    /**
+     * Copies all non-private, non-new metamethods from one method cache map to another.
+     *
+     * @param from the source method cache map
+     * @param to the destination method cache map
+     */
+    public  void copyNonPrivateNonNewMetaMethods(final Map<String, Cache> from, final Map<String, Cache> to) {
+        for (Cache e : from.values()) {
             copyNonPrivateNonNewMetaMethods(e, to);
         }
     }
 
-    private void copyNonPrivateNonNewMetaMethods(final Entry from, final Header to) {
-        Object oldListOrMethod = from.methods;
-        if (oldListOrMethod == null) {
-            return;
-        }
-
-        if (oldListOrMethod instanceof FastArray) {
-            FastArray oldList = (FastArray) oldListOrMethod;
-            Entry e = null;
-            final int n = oldList.size();
-            Object[] array = oldList.getArray();
+    private void copyNonPrivateNonNewMetaMethods(final Cache from, final Map<String, Cache> to) {
+        var fastArrayOrMetaMethod = from.methods;
+        if (fastArrayOrMetaMethod instanceof FastArray fastArray) {
+            Cache e = null;
+            final int n = fastArray.size();
+            Object[] array = fastArray.getArray();
             for (int i = 0; i != n; i += 1) {
                 MetaMethod method = (MetaMethod) array[i];
-                if (method instanceof NewMetaMethod || method.isPrivate()) continue;
-                if (e == null)
-                    e = getOrPutMethods(from.name, to);
+                if (isNonPrivate(method) && !(method instanceof NewMetaMethod)) {
+                    if (e == null)
+                        e = getOrPutMethods(from.name, to);
+                    e.methods = addMethodToList(e.methods, method);
+                }
+            }
+        } else if (fastArrayOrMetaMethod != null) {
+            MetaMethod method = (MetaMethod) fastArrayOrMetaMethod;
+            if (isNonPrivate(method) && !(method instanceof NewMetaMethod)) {
+                Cache e = getOrPutMethods(from.name, to);
                 e.methods = addMethodToList(e.methods, method);
             }
-        } else {
-            MetaMethod method = (MetaMethod) oldListOrMethod;
-            if (method instanceof NewMetaMethod || method.isPrivate()) return;
-            Entry e = getOrPutMethods(from.name, to);
-            e.methods = addMethodToList(e.methods, method);
         }
     }
 
+    private boolean isNonPrivate(final MetaMethod method) {
+        return !method.isPrivate() && (!method.isPackagePrivate() || // GROOVY-11357
+                GeneralUtils.inSamePackage(method.getDeclaringClass().getTheClass(), mainClass));
+    }
+
+    /**
+     * Adds a metamethod to a method list, handling overrides and duplicates.
+     * Returns either a single MetaMethod, a FastArray of methods, or the original object.
+     *
+     * @param o the existing method list (can be null, a MetaMethod, or a FastArray)
+     * @param toIndex the metamethod to add
+     * @return the updated method list
+     */
     public Object addMethodToList(final Object o, final MetaMethod toIndex) {
         if (o == null) {
             return toIndex;
         }
 
-        if (o instanceof MetaMethod) {
-            final MetaMethod inIndex = (MetaMethod) o;
+        if (o instanceof MetaMethod inIndex) {
             if (!isMatchingMethod(inIndex, toIndex)) {
                 return new FastArray(new Object[]{inIndex, toIndex});
             }
-
-            if (inIndex != toIndex && isOverridden(inIndex, toIndex)) {
-                return toIndex;
-            }
-            return inIndex;
+            return !isOverridden(inIndex, toIndex) ? inIndex : toIndex;
         }
 
-        if (o instanceof FastArray) {
-            final FastArray index = (FastArray) o;
-            int found = findMatchingMethod(index, toIndex);
+        if (o instanceof FastArray array) {
+            int found = findMatchingMethod(array, toIndex);
             if (found == -1) {
-                index.add(toIndex);
+                array.add(toIndex);
             } else {
-                final MetaMethod inIndex = (MetaMethod) index.get(found);
+                final MetaMethod inIndex = (MetaMethod) array.get(found);
                 if (inIndex != toIndex && isOverridden(inIndex, toIndex)) {
-                    index.set(found, toIndex);
+                    array.set(found, toIndex);
                 }
             }
         }
@@ -394,28 +295,29 @@ public class MetaMethodIndex {
     }
 
     /**
-     * TODO
-     * <p>
      * Note: private methods from parent classes are not handled here, but when
      * doing the multi-method connection step, methods of the parent class will
      * be overwritten with methods of a subclass and in that case private methods
      * should be kept.
      */
     private static boolean isOverridden(final MetaMethod inIndex, final MetaMethod toIndex) {
-        // do not overwrite private methods
-        if (inIndex.isPrivate()) return false;
+        // don't overwrite private method
+        if (inIndex.isPrivate()) {
+            return false;
+        }
 
         CachedClass inIndexDC = inIndex.getDeclaringClass();
         CachedClass toIndexDC = toIndex.getDeclaringClass();
         if (inIndexDC == toIndexDC) {
-            return isNonRealMethod(toIndex);
+            return inIndex.isSynthetic() || isNonRealMethod(toIndex); // GROOVY-10136, GROOVY-10594
         }
 
         // interface vs instance method; be careful...
-        if (!inIndex.isStatic() && !toIndex.isStatic()
-                && inIndexDC.isInterface() != toIndexDC.isInterface()) {
+        if (!inIndex.isStatic() && !toIndex.isStatic() // GROOVY-9815
+                && inIndexDC.isInterface() != toIndexDC.isInterface()
+                && !(toIndex instanceof ClosureMetaMethod || toIndex instanceof ClosureStaticMetaMethod)) { // GROOVY-3493
             // this is the old logic created for GROOVY-2391 and GROOVY-7879, which was labeled as "do not overwrite interface methods with instance methods"
-            return (isNonRealMethod(inIndex) || !inIndexDC.isInterface() || toIndexDC.isInterface()) && !toIndexDC.isAssignableFrom(inIndexDC.getTheClass());
+            return (toIndexDC.isInterface() || !inIndexDC.isInterface() || isNonRealMethod(inIndex)) && !toIndexDC.isAssignableFrom(inIndexDC.getTheClass());
         }
 
         // prefer most-specific or most-recent for type disjunction
@@ -423,13 +325,10 @@ public class MetaMethodIndex {
     }
 
     private static boolean isNonRealMethod(final MetaMethod method) {
-        return method instanceof NewInstanceMetaMethod
-            || method instanceof NewStaticMetaMethod
-            || method instanceof ClosureMetaMethod
+        return method instanceof NewMetaMethod
             || method instanceof GeneratedMetaMethod
-            || method instanceof ClosureStaticMetaMethod
-            || method instanceof MixinInstanceMetaMethod
-            || method instanceof ClosureMetaMethod.AnonymousMetaMethod;
+            || method instanceof ClosureInvokingMethod
+            || method instanceof MixinInstanceMetaMethod;
     }
 
     private static boolean isMatchingMethod(final MetaMethod method1, final MetaMethod method2) {
@@ -458,65 +357,40 @@ public class MetaMethodIndex {
         return -1;
     }
 
+    /**
+     * Copies all methods to their super method counterparts in the cache index.
+     */
     public void copyMethodsToSuper() {
-        for (Entry e : table) {
-            for (; e != null; e = e.nextHashEntry) {
-                if (e.methods instanceof FastArray) {
-                    e.methodsForSuper = ((FastArray) e.methods).copy();
-                } else {
-                    e.methodsForSuper = e.methods;
-                }
+        allEntries().forEach(cacheEntry -> {
+            if (cacheEntry.methods instanceof FastArray) {
+                cacheEntry.methodsForSuper = ((FastArray) cacheEntry.methods).copy();
+            } else {
+                cacheEntry.methodsForSuper = cacheEntry.methods;
             }
-        }
+        });
     }
 
-    public void copy(final Class c, final Header index) {
-        copy(getHeader(c), index);
+    private Stream<Cache> allEntries() {
+        return indexMap.values().stream().flatMap(map -> map.values().stream());
     }
 
-    public void copy(final Header from, final Header to) {
-        for (Entry e = from.head; e != null; e = e.nextClassEntry) {
-            copyAllMethods(e, to);
-        }
-    }
-
-    private void copyAllMethods(final Entry from, final Header to) {
-        Object oldListOrMethod = from.methods;
-        if (oldListOrMethod instanceof FastArray) {
-            FastArray oldList = (FastArray) oldListOrMethod;
-            Entry e = null;
-            final int n = oldList.size();
-            Object[] array = oldList.getArray();
-            for (int i = 0; i != n; i += 1) {
-                MetaMethod method = (MetaMethod) array[i];
-                if (e == null)
-                    e = getOrPutMethods(from.name, to);
-                e.methods = addMethodToList(e.methods, method);
-            }
-        } else {
-            MetaMethod method = (MetaMethod) oldListOrMethod;
-            if (!method.isPrivate()) {
-                Entry e = getOrPutMethods(from.name, to);
-                e.methods = addMethodToList(e.methods, method);
-            }
-        }
-    }
-
+    /**
+     * Clears all cached metamethods across all cache entries.
+     */
     public void clearCaches() {
-        for (Entry e : table) {
-            for (; e != null; e = e.nextHashEntry) {
-                e.cachedMethod = e.cachedMethodForSuper = e.cachedStaticMethod = null;
-            }
-        }
+        allEntries().forEach(e ->
+            e.cachedMethod = e.cachedMethodForSuper = e.cachedStaticMethod = null
+        );
     }
 
+    /**
+     * Clears all cached metamethods for methods with the given name.
+     *
+     * @param name the method name
+     */
     public void clearCaches(String name) {
-        for (Entry e : table) {
-            for (; e != null; e = e.nextHashEntry) {
-                if (e.name.equals(name)) {
-                    e.cachedMethod = e.cachedMethodForSuper = e.cachedStaticMethod = null;
-                }
-            }
-        }
+        allEntries().filter(cache -> cache.name.equals(name)).forEach(e ->
+            e.cachedMethod = e.cachedMethodForSuper = e.cachedStaticMethod = null
+        );
     }
 }

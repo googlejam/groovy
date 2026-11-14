@@ -20,7 +20,9 @@ package org.codehaus.groovy.ast.expr;
 
 import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
+import org.codehaus.groovy.ast.GenericsType;
 import org.codehaus.groovy.ast.GroovyCodeVisitor;
+import org.codehaus.groovy.ast.tools.WideningCategories;
 
 /**
  * Represents a ternary expression (booleanExpression) ? expression : expression
@@ -28,62 +30,97 @@ import org.codehaus.groovy.ast.GroovyCodeVisitor;
 public class TernaryExpression extends Expression {
 
     private final BooleanExpression booleanExpression;
-    private final Expression trueExpression;
+    private final Expression truthExpression;
     private final Expression falseExpression;
 
-    public TernaryExpression(
-        BooleanExpression booleanExpression,
-        Expression trueExpression,
-        Expression falseExpression) {
+    /**
+     * Creates {@code booleanExpression ? truthExpression : falseExpression}.
+     *
+     * @param booleanExpression the condition
+     * @param truthExpression the expression used when the condition is true
+     * @param falseExpression the expression used when the condition is false
+     */
+    public TernaryExpression(final BooleanExpression booleanExpression,
+            final Expression truthExpression, final Expression falseExpression) {
         this.booleanExpression = booleanExpression;
-        this.trueExpression = trueExpression;
+        this.truthExpression = truthExpression;
         this.falseExpression = falseExpression;
     }
-    @Override
-    public void visit(GroovyCodeVisitor visitor) {
-        visitor.visitTernaryExpression(this);
-    }
 
-    @Override
-    public Expression transformExpression(ExpressionTransformer transformer) {
-        Expression ret = new TernaryExpression(
-                (BooleanExpression) transformer.transform(booleanExpression),
-                transformer.transform(trueExpression),
-                transformer.transform(falseExpression)); 
-        ret.setSourcePosition(this);
-        ret.copyNodeMetaData(this);
-        return ret; 
-    }
-
-    @Override
-    public String toString() {
-        return super.toString() +"[" + booleanExpression + " ? " + trueExpression + " : " + falseExpression + "]";
-    }
-    
+    /**
+     * The condition of this conditional.
+     *
+     * @return the boolean expression passed to the constructor
+     */
     public BooleanExpression getBooleanExpression() {
         return booleanExpression;
     }
 
+    /**
+     * The expression used when the condition is true.
+     *
+     * @return the true branch
+     */
+    public Expression getTrueExpression() {
+        return truthExpression;
+    }
+
+    /**
+     * The expression used when the condition is false.
+     *
+     * @return the false branch
+     */
     public Expression getFalseExpression() {
         return falseExpression;
     }
 
-    public Expression getTrueExpression() {
-        return trueExpression;
-    }
-
     @Override
     public String getText() {
-        return "("
-            + booleanExpression.getText()
-            + ") ? "
-            + trueExpression.getText()
-            + " : "
-            + falseExpression.getText();
+        return "(" + getBooleanExpression().getText() + ") ? " + getTrueExpression().getText() + " : " + getFalseExpression().getText();
+    }
+
+    /**
+     * @see org.codehaus.groovy.classgen.asm.BinaryExpressionHelper#evaluateTernaryExpression(TernaryExpression)
+     */
+    @Override
+    public ClassNode getType() {
+        return WideningCategories.lowestUpperBound(valueType(getTrueExpression()), valueType(getFalseExpression()));
+    }
+
+    /**
+     * A class literal evaluates to a {@code java.lang.Class}, not to an instance of the class it names, so it must not
+     * make an enclosing ternary take the common supertype of the named classes.
+     *
+     * @see org.codehaus.groovy.classgen.asm.StatementMetaTypeChooser#resolveType
+     */
+    private static ClassNode valueType(final Expression expression) {
+        if (expression instanceof ClassExpression) {
+            ClassNode type = ClassHelper.CLASS_Type.getPlainNodeReference();
+            type.setGenericsTypes(new GenericsType[]{new GenericsType(expression.getType())});
+            return type;
+        }
+        return expression.getType();
     }
 
     @Override
-    public ClassNode getType() {
-        return ClassHelper.OBJECT_TYPE;
+    public String toString() {
+        return super.toString() + "[" + getBooleanExpression() + " ? " + getTrueExpression() + " : " + getFalseExpression() + "]";
+    }
+
+    @Override
+    public Expression transformExpression(final ExpressionTransformer transformer) {
+        Expression ret = new TernaryExpression(
+                (BooleanExpression) transformer.transform(getBooleanExpression()),
+                                    transformer.transform(getTrueExpression()),
+                                    transformer.transform(getFalseExpression())
+        );
+        ret.setSourcePosition(this);
+        ret.copyNodeMetaData(this);
+        return ret;
+    }
+
+    @Override
+    public void visit(final GroovyCodeVisitor visitor) {
+        visitor.visitTernaryExpression(this);
     }
 }

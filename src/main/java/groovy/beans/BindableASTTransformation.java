@@ -36,10 +36,13 @@ import org.codehaus.groovy.control.SourceUnit;
 import org.codehaus.groovy.control.messages.SimpleMessage;
 import org.codehaus.groovy.transform.ASTTransformation;
 import org.codehaus.groovy.transform.GroovyASTTransformation;
+import org.codehaus.groovy.transform.StubberSupport;
 import org.objectweb.asm.Opcodes;
 
 import java.beans.PropertyChangeListener;
 import java.beans.PropertyChangeSupport;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.apache.groovy.ast.tools.ClassNodeUtils.addGeneratedMethod;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.args;
@@ -74,6 +77,9 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.varX;
 @GroovyASTTransformation(phase = CompilePhase.CANONICALIZATION)
 public class BindableASTTransformation implements ASTTransformation, Opcodes {
 
+    /**
+     * Class node for {@link Bindable}.
+     */
     protected static final ClassNode boundClassNode = ClassHelper.make(Bindable.class);
 
     /**
@@ -99,11 +105,9 @@ public class BindableASTTransformation implements ASTTransformation, Opcodes {
      */
     @Override
     public void visit(ASTNode[] nodes, SourceUnit source) {
-        if (!(nodes[0] instanceof AnnotationNode) || !(nodes[1] instanceof AnnotatedNode)) {
+        if (!(nodes[0] instanceof AnnotationNode node) || !(nodes[1] instanceof AnnotatedNode parent)) {
             throw new RuntimeException("Internal error: wrong types: $node.class / $parent.class");
         }
-        AnnotationNode node = (AnnotationNode) nodes[0];
-        AnnotatedNode parent = (AnnotatedNode) nodes[1];
 
         if (VetoableASTTransformation.hasVetoableAnnotation(parent)) {
             // VetoableASTTransformation will handle both @Bindable and @Vetoable
@@ -147,6 +151,16 @@ public class BindableASTTransformation implements ASTTransformation, Opcodes {
     }
 
     private void addListenerToClass(SourceUnit source, ClassNode classNode) {
+        // GEP-21 Shape C: discard any stubber-emitted placeholder methods so
+        // needsPropertyChangeSupport() correctly detects "no existing
+        // user-written support" and the field + real bodies get installed.
+        // Use removeMethod() rather than removeIf() on the list, since
+        // ClassNode keeps a parallel name->methods map.
+        List<MethodNode> stubs = new ArrayList<>();
+        for (MethodNode m : classNode.getMethods()) {
+            if (StubberSupport.isStub(m)) stubs.add(m);
+        }
+        stubs.forEach(classNode::removeMethod);
         if (needsPropertyChangeSupport(classNode, source)) {
             addPropertyChangeSupport(classNode);
         }
@@ -263,9 +277,9 @@ public class BindableASTTransformation implements ASTTransformation, Opcodes {
         while (consideredClass!= null) {
             for (MethodNode method : consideredClass.getMethods()) {
                 // just check length, MOP will match it up
-                foundAdd = foundAdd || method.getName().equals("addPropertyChangeListener") && method.getParameters().length == 1;
-                foundRemove = foundRemove || method.getName().equals("removePropertyChangeListener") && method.getParameters().length == 1;
-                foundFire = foundFire || method.getName().equals("firePropertyChange") && method.getParameters().length == 3;
+                foundAdd = foundAdd || "addPropertyChangeListener".equals(method.getName()) && method.getParameters().length == 1;
+                foundRemove = foundRemove || "removePropertyChangeListener".equals(method.getName()) && method.getParameters().length == 1;
+                foundFire = foundFire || "firePropertyChange".equals(method.getName()) && method.getParameters().length == 3;
                 if (foundAdd && foundRemove && foundFire) {
                     return false;
                 }

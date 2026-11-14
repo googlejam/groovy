@@ -16,20 +16,19 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-/**
- */
-class Bytecode5Bug extends GroovyTestCase {
+final class Bytecode5Bug {
 
+    @Test
     void testUsingLocalVar() {
         def c = 0
-        getCollection().each { c += it }       
+        getCollection().each { c += it }
         assert c == 10
     }
-    
+
     def getCollection() {
         [1, 2, 3, 4]
     }

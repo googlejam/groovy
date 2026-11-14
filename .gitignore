@@ -1,11 +1,14 @@
 user.gradle
+build.bat
 .gradle/
 target/
 build/
+bin/
 out/
 
 *.DS_Store
 *.class
+*.dat
 *.swp
 *~
 
@@ -13,9 +16,21 @@ out/
 *.iml
 *.ipr
 *.iws
-.shelf
 
 .settings/
 .classpath
 .project
-bin/
+
+.fleet
+.shelf
+.vscode
+.jqwik-database
+verification-metadata.dryrun.xml
+verification-keyring.dryrun.keys
+
+# local Artifactory credentials, read only from the repo root (never commit)
+**/artifactory.properties
+
+.claude/
+.apache-steward/
+.apache-steward.local.lock

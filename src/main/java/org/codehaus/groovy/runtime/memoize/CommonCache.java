@@ -19,6 +19,9 @@
 
 package org.codehaus.groovy.runtime.memoize;
 
+import org.apache.groovy.util.concurrent.concurrentlinkedhashmap.ConcurrentLinkedHashMap;
+
+import java.io.Serial;
 import java.io.Serializable;
 import java.lang.ref.SoftReference;
 import java.lang.ref.WeakReference;
@@ -30,14 +33,14 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Represents a simple key-value cache, which is NOT thread safe and backed by a {@link java.util.Map} instance
+ * Represents a simple key-value cache, which is NOT thread safe and backed by a {@link Map} instance
  *
  * @param <K> type of the keys
  * @param <V> type of the values
  * @since 2.5.0
  */
-public class CommonCache<K, V> implements EvictableCache<K, V>, ValueConvertable<V, Object>, Serializable {
-    private static final long serialVersionUID = 934699400232698324L;
+public class CommonCache<K, V> implements FlexibleCache<K, V>, ValueConvertable<V, Object>, Serializable {
+    @Serial private static final long serialVersionUID = 934699400232698324L;
     /**
      * The default load factor
      */
@@ -61,21 +64,33 @@ public class CommonCache<K, V> implements EvictableCache<K, V>, ValueConvertable
      *
      * @param initialCapacity  initial capacity of the cache
      * @param maxSize          max size of the cache
-     * @param evictionStrategy LRU or FIFO, see {@link org.codehaus.groovy.runtime.memoize.EvictableCache.EvictionStrategy}
+     * @param evictionStrategy LRU or FIFO, see {@link EvictableCache.EvictionStrategy}
      */
     public CommonCache(final int initialCapacity, final int maxSize, final EvictionStrategy evictionStrategy) {
-        this(new LinkedHashMap<K, V>(initialCapacity, DEFAULT_LOAD_FACTOR, EvictionStrategy.LRU == evictionStrategy) {
-            private static final long serialVersionUID = -8012450791479726621L;
+        this(createMap(initialCapacity, maxSize, evictionStrategy));
+    }
+
+    private static <K, V> Map<K, V> createMap(int initialCapacity, int maxSize, EvictionStrategy evictionStrategy) {
+        final boolean lru = EvictionStrategy.LRU == evictionStrategy;
+
+        if (lru) {
+            return new ConcurrentLinkedHashMap.Builder<K, V>()
+                        .initialCapacity(initialCapacity)
+                        .maximumWeightedCapacity(maxSize)
+                        .build();
+        }
+        return new LinkedHashMap<K, V>(initialCapacity, DEFAULT_LOAD_FACTOR, lru) {
+            @Serial private static final long serialVersionUID = -8012450791479726621L;
 
             @Override
             protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {
                 return size() > maxSize;
             }
-        });
+        };
     }
 
     /**
-     * Constructs a LRU cache with the specified initial capacity and max size.
+     * Constructs an LRU cache with the specified initial capacity and max size.
      * The LRU cache is slower than {@link LRUCache}
      *
      * @param initialCapacity initial capacity of the LRU cache
@@ -86,7 +101,7 @@ public class CommonCache<K, V> implements EvictableCache<K, V>, ValueConvertable
     }
 
     /**
-     * Constructs a LRU cache with the default initial capacity
+     * Constructs an LRU cache with the default initial capacity
      *
      * @param maxSize max size of the LRU cache
      * @see #CommonCache(int, int)
@@ -96,9 +111,9 @@ public class CommonCache<K, V> implements EvictableCache<K, V>, ValueConvertable
     }
 
     /**
-     * Constructs a cache backed by the specified {@link java.util.Map} instance
+     * Constructs a cache backed by the specified {@link Map} instance
      *
-     * @param map the {@link java.util.Map} instance
+     * @param map the {@link Map} instance
      */
     public CommonCache(Map<K, V> map) {
         this.map = map;
@@ -128,6 +143,10 @@ public class CommonCache<K, V> implements EvictableCache<K, V>, ValueConvertable
         return getAndPut(key, valueProvider, true);
     }
 
+    /**
+     * {@inheritDoc}
+     */
+    @Override
     public V getAndPut(K key, ValueProvider<? super K, ? extends V> valueProvider, boolean shouldCache) {
         V value = get(key);
         if (null != convertValue(value)) {
@@ -150,6 +169,11 @@ public class CommonCache<K, V> implements EvictableCache<K, V>, ValueConvertable
         return map.values();
     }
 
+    /**
+     * Returns a live view of the cache entries.
+     *
+     * @return the cache entries
+     */
     @Override
     public Set<Entry<K, V>> entrySet() {
         return map.entrySet();
@@ -163,6 +187,12 @@ public class CommonCache<K, V> implements EvictableCache<K, V>, ValueConvertable
         return map.keySet();
     }
 
+    /**
+     * Determines whether the cache contains the specified stored value.
+     *
+     * @param value the value whose presence should be tested
+     * @return {@code true} if the cache contains the value
+     */
     @Override
     public boolean containsValue(Object value) {
         return map.containsValue(value);
@@ -184,6 +214,11 @@ public class CommonCache<K, V> implements EvictableCache<K, V>, ValueConvertable
         return map.size();
     }
 
+    /**
+     * Returns whether the cache currently holds no entries.
+     *
+     * @return {@code true} if the cache is empty
+     */
     @Override
     public boolean isEmpty() {
         return size() == 0;
@@ -197,11 +232,21 @@ public class CommonCache<K, V> implements EvictableCache<K, V>, ValueConvertable
         return map.remove(key);
     }
 
+    /**
+     * Copies all mappings from the supplied map into this cache.
+     *
+     * @param m the mappings to copy
+     */
     @Override
     public void putAll(Map<? extends K, ? extends V> m) {
         map.putAll(m);
     }
 
+    /**
+     * Returns a live view of the keys in this cache.
+     *
+     * @return the cache keys
+     */
     @Override
     public Set<K> keySet() {
         return map.keySet();
@@ -239,13 +284,21 @@ public class CommonCache<K, V> implements EvictableCache<K, V>, ValueConvertable
         }
     }
 
+    /**
+     * Returns a string representation of the current cache contents.
+     *
+     * @return a string form of the backing map
+     */
     @Override
     public String toString() {
         return map.toString();
     }
 
     /**
-     * {@inheritDoc}
+     * Returns the stored value unchanged.
+     *
+     * @param value the stored value
+     * @return {@code value}
      */
     @Override
     public Object convertValue(V value) {

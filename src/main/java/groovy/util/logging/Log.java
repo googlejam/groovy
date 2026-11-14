@@ -33,18 +33,21 @@ import org.codehaus.groovy.transform.GroovyASTTransformationClass;
 import org.codehaus.groovy.transform.LogASTTransformation;
 import org.codehaus.groovy.transform.LogASTTransformation.LoggingStrategy;
 
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.util.Locale;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import static org.codehaus.groovy.ast.tools.GeneralUtils.nullX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.ternaryX;
 
 /**
  * This local transform adds a logging ability to your program using
- * java.util.logging. Every method call on a unbound variable named <i>log</i>
+ * java.util.logging. Every method call on an unbound variable named <i>log</i>
  * will be mapped to a call to the logger. For this a <i>log</i> field will be
  * inserted in the class. If the field already exists the usage of this transform
  * will cause a compilation error. The method name will be used to determine
@@ -56,7 +59,7 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.ternaryX;
  * if (log.isLoggable(Level.NAME) {
  *    log.name(exp)
  * }</pre>
- * Here name is a place holder for info, fine, finer, finest, config, warning, severe.
+ * Here name is a placeholder for info, fine, finer, finest, config, warning, severe.
  * NAME is name transformed to upper case. if anything else is used it will result in
  * an exception at runtime. If the expression exp is a constant or only a variable access
  * the method call will not be transformed. But this will still cause a call on the injected
@@ -64,12 +67,25 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.ternaryX;
  *
  * @since 1.8.0
  */
-@java.lang.annotation.Documented
+@Documented
 @Retention(RetentionPolicy.SOURCE)
-@Target({ElementType.TYPE})
+@Target(ElementType.TYPE)
 @GroovyASTTransformationClass("org.codehaus.groovy.transform.LogASTTransformation")
 public @interface Log {
+    /**
+     * Returns the injected logger field name.
+     * Defaults to {@code "log"}.
+     *
+     * @return the logger field name
+     */
     String value() default "log";
+
+    /**
+     * Returns the logger category name.
+     * Defaults to {@link LogASTTransformation#DEFAULT_CATEGORY_NAME}, which uses the host class name.
+     *
+     * @return the logger category name
+     */
     String category() default LogASTTransformation.DEFAULT_CATEGORY_NAME;
 
     /**
@@ -78,6 +94,12 @@ public @interface Log {
      */
     String visibilityId() default Undefined.STRING;
 
+    /**
+     * Returns the logging strategy implementation used by this transform.
+     * Defaults to {@link JavaUtilLoggingStrategy}.
+     *
+     * @return the logging strategy type
+     */
     Class<? extends LoggingStrategy> loggingStrategy() default JavaUtilLoggingStrategy.class;
 
     /**
@@ -85,13 +107,21 @@ public @interface Log {
      */
     class JavaUtilLoggingStrategy extends LogASTTransformation.AbstractLoggingStrategyV2 {
 
-        private static final ClassNode LOGGER_CLASSNODE = ClassHelper.make(java.util.logging.Logger.class);
-        private static final ClassNode LEVEL_CLASSNODE = ClassHelper.make(java.util.logging.Level.class);
+        private static final ClassNode LOGGER_CLASSNODE = ClassHelper.make(Logger.class);
+        private static final ClassNode LEVEL_CLASSNODE = ClassHelper.make(Level.class);
 
+        /**
+         * Creates a Java Util Logging strategy.
+         *
+         * @param loader the class loader used to resolve logger classes
+         */
         protected JavaUtilLoggingStrategy(final GroovyClassLoader loader) {
             super(loader);
         }
 
+        /**
+         * {@inheritDoc}
+         */
         @Override
         public FieldNode addLoggerFieldToClass(ClassNode classNode, String logFieldName, String categoryName, int fieldModifiers) {
             return classNode.addField(logFieldName,
@@ -103,11 +133,17 @@ public @interface Log {
                                 new ConstantExpression(getCategoryName(classNode, categoryName))));
         }
 
+        /**
+         * {@inheritDoc}
+         */
         @Override
         public boolean isLoggingMethod(String methodName) {
             return methodName.matches("severe|warning|info|fine|finer|finest");
         }
 
+        /**
+         * {@inheritDoc}
+         */
         @Override
         public Expression wrapLoggingMethodCall(Expression logVariable, String methodName, Expression originalExpression) {
             AttributeExpression logLevelExpression = new AttributeExpression(

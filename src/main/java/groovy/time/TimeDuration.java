@@ -33,24 +33,57 @@ import java.util.Date;
  * <p>
  * If you ask Duration to convert itself to milliseconds then it will work on the basis of 60 seconds in a minute.
  * If you add or subtract it from a date it will take leap seconds into account.
+ *
+ * @deprecated Superseded by {@code org.apache.groovy.dateutil.TimeDuration} (the dequirked
+ * {@code java.util.Date} flavor) or {@code java.time.Duration}. This legacy class is retained,
+ * unchanged, for backward compatibility.
  */
-
+@Deprecated
 public class TimeDuration extends Duration {
+    /**
+     * Creates a time duration without a day component.
+     *
+     * @param hours the hour component
+     * @param minutes the minute component
+     * @param seconds the second component
+     * @param millis the millisecond component
+     */
     public TimeDuration(final int hours, final int minutes, final int seconds, final int millis) {
         super(0, hours, minutes, seconds, millis);
      }
-    
+
+    /**
+     * Creates a time duration with an optional day component.
+     *
+     * @param days the day component
+     * @param hours the hour component
+     * @param minutes the minute component
+     * @param seconds the second component
+     * @param millis the millisecond component
+     */
     public TimeDuration(final int days, final int hours, final int minutes, final int seconds, final int millis) {
         super(days, hours, minutes, seconds, millis);
      }
-    
+
+    /**
+     * Adds a fixed duration.
+     *
+     * @param rhs the duration to add
+     * @return the combined duration
+     */
     @Override
     public Duration plus(final Duration rhs) {
         return new TimeDuration(this.getDays() + rhs.getDays(), this.getHours() + rhs.getHours(),
                                 this.getMinutes() + rhs.getMinutes(), this.getSeconds() + rhs.getSeconds(),
                                 this.getMillis() + rhs.getMillis());
     }
-    
+
+    /**
+     * Adds a datum-dependent duration.
+     *
+     * @param rhs the duration to add
+     * @return the combined duration
+     */
     @Override
     public DatumDependentDuration plus(final DatumDependentDuration rhs) {
         return new TimeDatumDependentDuration(rhs.getYears(), rhs.getMonths(),
@@ -58,14 +91,26 @@ public class TimeDuration extends Duration {
                                               this.getMinutes() + rhs.getMinutes(), this.getSeconds() + rhs.getSeconds(),
                                               this.getMillis() + rhs.getMillis());
     }
-    
+
+    /**
+     * Subtracts a fixed duration.
+     *
+     * @param rhs the duration to subtract
+     * @return the resulting duration
+     */
     @Override
     public Duration minus(final Duration rhs) {
         return new TimeDuration(this.getDays() - rhs.getDays(), this.getHours() - rhs.getHours(),
                                 this.getMinutes() - rhs.getMinutes(), this.getSeconds() - rhs.getSeconds(),
                                 this.getMillis() - rhs.getMillis());
     }
-    
+
+    /**
+     * Subtracts a datum-dependent duration.
+     *
+     * @param rhs the duration to subtract
+     * @return the resulting duration
+     */
     @Override
     public DatumDependentDuration minus(final DatumDependentDuration rhs) {
         return new TimeDatumDependentDuration(-rhs.getYears(), -rhs.getMonths(),
@@ -73,7 +118,12 @@ public class TimeDuration extends Duration {
                                               this.getMinutes() - rhs.getMinutes(), this.getSeconds() - rhs.getSeconds(),
                                               this.getMillis() - rhs.getMillis());
     }
-    
+
+    /**
+     * Returns the date represented by this duration ago.
+     *
+     * @return the computed date
+     */
     @Override
     public Date getAgo() {
         final Calendar cal = Calendar.getInstance();
@@ -83,13 +133,26 @@ public class TimeDuration extends Duration {
         cal.add(Calendar.MINUTE, -this.getMinutes());
         cal.add(Calendar.SECOND, -this.getSeconds());
         cal.add(Calendar.MILLISECOND, -this.getMillis());
-        
+
         return cal.getTime();
     }        
 
+    /**
+     * Returns a helper for computing dates relative to now.
+     *
+     * @return the relative-date helper
+     */
     @Override
     public From getFrom() {
+        /**
+         * Relative-date helper for this duration.
+         */
         return new From() {
+            /**
+             * Returns the date obtained by adding this duration to now.
+             *
+             * @return the computed date
+             */
             @Override
             public Date getNow() {
                 final Calendar cal = Calendar.getInstance();
@@ -99,7 +162,7 @@ public class TimeDuration extends Duration {
                 cal.add(Calendar.MINUTE, TimeDuration.this.getMinutes());
                 cal.add(Calendar.SECOND, TimeDuration.this.getSeconds());
                 cal.add(Calendar.MILLISECOND, TimeDuration.this.getMillis());
-                
+
                 return cal.getTime();
             }
         };

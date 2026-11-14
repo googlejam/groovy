@@ -30,10 +30,14 @@ import org.codehaus.groovy.ast.expr.VariableExpression;
  * A {@link TypeChooser} which is aware of statement metadata.
  */
 public class StatementMetaTypeChooser implements TypeChooser {
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public ClassNode resolveType(final Expression exp, final ClassNode current) {
         ClassNode type = null;
-        if (exp instanceof ClassExpression) { type = exp.getType();
+        if (exp instanceof ClassExpression) {
+            type = exp.getType();
             ClassNode classType = ClassHelper.makeWithoutCaching("java.lang.Class");
             classType.setGenericsTypes(new GenericsType[] {new GenericsType(type)});
             classType.setRedirect(ClassHelper.CLASS_Type);
@@ -44,8 +48,7 @@ public class StatementMetaTypeChooser implements TypeChooser {
         if (meta != null) type = meta.type;
         if (type != null) return type;
 
-        if (exp instanceof VariableExpression) {
-            VariableExpression vexp = (VariableExpression) exp;
+        if (exp instanceof VariableExpression vexp) {
             if (vexp.isClosureSharedVariable()) return vexp.getType();
             if (vexp.isSuperExpression()) return current.getSuperClass();
 

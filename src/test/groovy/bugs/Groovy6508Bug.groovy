@@ -16,22 +16,24 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
 import java.util.concurrent.Callable
 
 /**
  * LK-TODO
  */
-class Groovy6508Bug extends GroovyTestCase {
+class Groovy6508Bug {
 
+    @Test
     void testInnerClassAccessingFieldWithCustomGetter() {
         PropertyGetterOverride x = new PropertyGetterOverride()
         assert x.field == x.getFieldViaInner()
     }
 
+    @Test
     void testInnerClassAccessingBaseFieldProperty() {
         BaseFieldBearerSub sub = new BaseFieldBearerSub();
         assert sub.baseField == sub.getBaseFieldViaInner()

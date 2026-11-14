@@ -27,13 +27,10 @@ import org.apache.tools.ant.types.Reference;
 import org.codehaus.groovy.tools.LoaderConfiguration;
 import org.codehaus.groovy.tools.RootLoader;
 
-import java.security.AccessController;
-import java.security.PrivilegedAction;
-
 /**
  * Sets the RootLoader as reference.
  * Re-execution of this task will set a new instance of RootLoader for
- * the reference. 
+ * the reference.
  *
  * arguments:
  * <ul>
@@ -52,7 +49,7 @@ import java.security.PrivilegedAction;
  * the logging jar starts with "commons-logging-".
  *
  * This was needed because if ant wants to access a task argument that uses for example a Path
- * it look for a matching method which includes a matching class. But two classes of the same name
+ * it looks for a matching method which includes a matching class. But two classes of the same name
  * with different class loaders are different, so ant would not be able to find the method.
  *
  * @see org.codehaus.groovy.tools.RootLoader
@@ -68,9 +65,14 @@ public class RootLoaderRef extends MatchingTask {
         name = n;
     }
 
+    /**
+     * Creates the referenced loader and stores it in the current Ant project.
+     *
+     * @throws BuildException if the classpath has not been configured
+     */
     @Override
     public void execute() throws BuildException {
-        if (taskClasspath == null || taskClasspath.size() == 0) {
+        if (taskClasspath == null || taskClasspath.isEmpty()) {
             throw new BuildException("no classpath given");
         }
         Project project = getProject();
@@ -88,7 +90,9 @@ public class RootLoaderRef extends MatchingTask {
             }
             lc.addFile(s);
         }
-        AntClassLoader loader = AccessController.doPrivileged((PrivilegedAction<AntClassLoader>) () -> new AntClassLoader(new RootLoader(lc), true));
+
+        AntClassLoader loader = new AntClassLoader(new RootLoader(lc), true);
+
         project.addReference(name, loader);
     }
 

@@ -1,5 +1,3 @@
-import groovy.test.GroovyTestCase
-
 /*
  *  Licensed to the Apache Software Foundation (ASF) under one
  *  or more contributor license agreements.  See the NOTICE file
@@ -18,21 +16,28 @@ import groovy.test.GroovyTestCase
  *  specific language governing permissions and limitations
  *  under the License.
  */
-class PrimitiveTest extends GroovyTestCase {
 
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.assertScript
+
+final class PrimitiveTest {
+
+    @Test
     void testPrimitiveReferences() {
         assertScript '''
             // tag::primitive_references[]
             class Foo {
-              static int i
+                static int i
             }
 
-            assert Foo.class.getDeclaredField('i').type == int.class
-            assert Foo.i.class != int.class && Foo.i.class == Integer.class
+            assert Foo.class.getDeclaredField('i').type == int.class           //<1>
+            assert Foo.i.class != int.class && Foo.i.class == Integer.class    //<2>
             // end::primitive_references[]
         '''
     }
 
+    @Test
     void testPrimitiveWideningVsBoxing() {
         assertScript '''
             // tag::widening_vs_boxing[]
@@ -40,16 +45,17 @@ class PrimitiveTest extends GroovyTestCase {
             m(i)
 
             void m(long l) {           //<1>
-              println "in m(long)"
+                println "in m(long)"
             }
 
             void m(Integer i) {        //<2>
-              println "in m(Integer)"
+                println "in m(Integer)"
             }
             // end::widening_vs_boxing[]
         '''
     }
 
+    @Test
     void testPrimitiveVsWrapperPosNegZero() {
         assertScript '''
             // tag::pos_neg_zero[]

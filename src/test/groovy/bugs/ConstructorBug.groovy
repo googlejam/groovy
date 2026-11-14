@@ -16,13 +16,14 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
 import org.codehaus.groovy.runtime.InvokerHelper
+import org.junit.jupiter.api.Test
 
-class ConstructorBug extends GroovyTestCase {
-    
+final class ConstructorBug {
+
+    @Test
     void testBug() {
         def type = new GroovyClassLoader().parseClass(new File("src/test/groovy/bugs/TestBase.groovy"))
         assert type != null
@@ -34,14 +35,14 @@ class ConstructorBug extends GroovyTestCase {
         assert mytest.foo == "Hello"
         /** @todo fix bug
         */
-        
+
         /*
         def test = type.newInstance()
         assert test.foo == null
         */
-        
-//foo = new type('hello')
+
         /*
+        foo = new type('hello')
         */
         mytest = new TestDerived("Hello")
         assert mytest.foo == "Hello"

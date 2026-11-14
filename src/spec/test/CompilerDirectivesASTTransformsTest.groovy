@@ -1,5 +1,3 @@
-import groovy.test.GroovyTestCase
-
 /*
  *  Licensed to the Apache Software Foundation (ASF) under one
  *  or more contributor license agreements.  See the NOTICE file
@@ -18,7 +16,15 @@ import groovy.test.GroovyTestCase
  *  specific language governing permissions and limitations
  *  under the License.
  */
-class CompilerDirectivesASTTransformsTest extends GroovyTestCase {
+
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.assertScript
+import static groovy.test.GroovyAssert.shouldFail
+
+final class CompilerDirectivesASTTransformsTest {
+
+    @Test
     void testFieldXForm() {
         shouldFail(MissingPropertyException) {
             assertScript '''
@@ -98,6 +104,7 @@ new MyScript().run()
 '''
     }
 
+    @Test
     void testAutoFinalClass() {
         assertScript '''
 // tag::autofinal_class[]
@@ -111,11 +118,11 @@ class Person {
         this.first = first
         this.last = last
     }
-    
+
     String fullName(String separator) {
         "$first$separator$last"
     }
-    
+
     String greeting(String salutation) {
         "$salutation, $first"
     }
@@ -127,6 +134,7 @@ assert john.greeting('Hello') == 'Hello, John'
 '''
     }
 
+    @Test
     void testAutoFinalMethod() {
         assertScript '''
 import groovy.transform.AutoFinal
@@ -144,6 +152,25 @@ assert calc.mult(3, 6) == 18
 '''
     }
 
+    @Test
+    void testFinalAnnotation() {
+        assertScript '''
+import groovy.transform.*
+import java.lang.reflect.Modifier
+// tag::final_annotation[]
+@AnnotationCollector([Singleton,Final]) @interface MySingleton {}
+
+@MySingleton
+class GreetingService {
+    String greeting(String name) { "Hello, $name!" }
+}
+assert GreetingService.instance.greeting('Bob') == 'Hello, Bob!'
+assert Modifier.isFinal(GreetingService.modifiers)
+// end::final_annotation[]
+'''
+    }
+
+    @Test
     void testPackageScope() {
         assertScript '''import java.lang.reflect.Modifier
 // tag::packagescope_property[]

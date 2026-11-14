@@ -62,17 +62,30 @@ public class NodeChildren extends GPathResult {
         this(parent, "*", namespaceTagHints);
     }
 
+    /** {@inheritDoc} */
     @Override
     public Iterator childNodes() {
         return new Iterator() {
             private final Iterator iter = nodeIterator();
             private Iterator childIter = nextChildIter();
 
+            /**
+             * Returns whether a child iterator is still assigned.
+             *
+             * @return {@code true} when {@code childIter} is non-null
+             */
             @Override
             public boolean hasNext() {
                 return childIter != null;
             }
 
+            /**
+             * Returns the next child node, moving to the next parent that
+             * still has children. Returns {@code null} once those parents
+             * are exhausted.
+             *
+             * @return the next child node, or {@code null}
+             */
             @Override
             public Object next() {
                 while (childIter != null) {
@@ -89,6 +102,9 @@ public class NodeChildren extends GPathResult {
                 return null;
             }
 
+            /**
+             * Refuses removal. Child traversal does not modify the tree.
+             */
             @Override
             public void remove() {
                 throw new UnsupportedOperationException();
@@ -105,21 +121,36 @@ public class NodeChildren extends GPathResult {
         };
     }
 
+    /** {@inheritDoc} */
     @Override
     public Iterator iterator() {
         return new Iterator() {
             final Iterator iter = nodeIterator();
 
+            /**
+             * Returns whether another matching node remains.
+             *
+             * @return the node iterator's {@code hasNext} result
+             */
             @Override
             public boolean hasNext() {
                 return iter.hasNext();
             }
 
+            /**
+             * Wraps the next node as a child whose parent is this result's
+             * parent and whose namespace prefix is unrestricted.
+             *
+             * @return the wrapped child
+             */
             @Override
             public Object next() {
                 return new NodeChild((Node) iter.next(), pop(), namespaceTagHints);
             }
 
+            /**
+             * Refuses removal. Node iteration does not modify the tree.
+             */
             @Override
             public void remove() {
                 throw new UnsupportedOperationException();
@@ -127,12 +158,23 @@ public class NodeChildren extends GPathResult {
         };
     }
 
+    /** {@inheritDoc} */
     @Override
     public Iterator nodeIterator() {
         if ("*".equals(name)) {
             return parent.childNodes();
         } else {
             return new NodeIterator(parent.childNodes()) {
+                /**
+                 * Returns the next child with this result's name whose namespace
+                 * matches the prefix. A prefix of {@code *} accepts any namespace.
+                 * An empty prefix accepts an empty namespace URI. Otherwise the
+                 * node's namespace URI must equal the URI mapped from the prefix.
+                 * Returns {@code null} when no such child remains.
+                 *
+                 * @param iter source iterator of child nodes
+                 * @return the next matching child, or {@code null}
+                 */
                 @Override
                 protected Object getNextNode(Iterator iter) {
                     while (iter.hasNext()) {
@@ -160,6 +202,7 @@ public class NodeChildren extends GPathResult {
         throw new GroovyRuntimeException("parents() not implemented yet");
     }
 
+    /** {@inheritDoc} */
     @Override
     public synchronized int size() {
         if (this.size == -1) {
@@ -173,6 +216,7 @@ public class NodeChildren extends GPathResult {
         return this.size;
     }
 
+    /** {@inheritDoc} */
     @Override
     public String text() {
         final StringBuilder buf = new StringBuilder();
@@ -183,6 +227,7 @@ public class NodeChildren extends GPathResult {
         return buf.toString();
     }
 
+    /** {@inheritDoc} */
     @Override
     public GPathResult find(final Closure closure) {
         for (Object node : this) {
@@ -193,11 +238,13 @@ public class NodeChildren extends GPathResult {
         return new NoChildren(this, this.name, namespaceTagHints);
     }
 
+    /** {@inheritDoc} */
     @Override
     public GPathResult findAll(final Closure closure) {
         return new FilteredNodeChildren(this, closure, namespaceTagHints);
     }
 
+    /** {@inheritDoc} */
     @Override
     public void build(final GroovyObject builder) {
         final Iterator iter = nodeIterator();
@@ -211,9 +258,7 @@ public class NodeChildren extends GPathResult {
         }
     }
 
-    /* (non-Javadoc)
-    * @see groovy.lang.Writable#writeTo(java.io.Writer)
-    */
+    /** {@inheritDoc} */
     @Override
     public Writer writeTo(final Writer out) throws IOException {
         final Iterator iter = nodeIterator();
@@ -223,6 +268,7 @@ public class NodeChildren extends GPathResult {
         return out;
     }
 
+    /** {@inheritDoc} */
     @Override
     protected void replaceNode(final Closure newValue) {
         for (Object o : this) {
@@ -231,6 +277,7 @@ public class NodeChildren extends GPathResult {
         }
     }
 
+    /** {@inheritDoc} */
     @Override
     protected void replaceBody(final Object newValue) {
         for (Object o : this) {
@@ -239,6 +286,7 @@ public class NodeChildren extends GPathResult {
         }
     }
 
+    /** {@inheritDoc} */
     @Override
     protected void appendNode(final Object newValue) {
         for (Object o : this) {

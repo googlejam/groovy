@@ -22,7 +22,6 @@ import groovy.lang.ReadOnlyPropertyException;
 import groovy.transform.stc.POJO;
 import org.apache.groovy.ast.tools.ImmutablePropertyUtils;
 import org.codehaus.groovy.ast.AnnotationNode;
-import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.FieldNode;
 import org.codehaus.groovy.ast.Parameter;
@@ -42,10 +41,7 @@ import org.codehaus.groovy.transform.ImmutableASTTransformation;
 import org.codehaus.groovy.transform.MapConstructorASTTransformation;
 import org.codehaus.groovy.transform.NullCheckASTTransformation;
 
-import java.util.Collection;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
 import java.util.SortedMap;
 import java.util.SortedSet;
 
@@ -54,8 +50,13 @@ import static org.apache.groovy.ast.tools.ImmutablePropertyUtils.cloneArrayOrClo
 import static org.apache.groovy.ast.tools.ImmutablePropertyUtils.cloneDateExpr;
 import static org.apache.groovy.ast.tools.ImmutablePropertyUtils.derivesFromDate;
 import static org.apache.groovy.ast.tools.ImmutablePropertyUtils.implementsCloneable;
+import static org.codehaus.groovy.ast.ClassHelper.CLONEABLE_TYPE;
+import static org.codehaus.groovy.ast.ClassHelper.COLLECTION_TYPE;
+import static org.codehaus.groovy.ast.ClassHelper.LIST_TYPE;
+import static org.codehaus.groovy.ast.ClassHelper.MAP_TYPE;
+import static org.codehaus.groovy.ast.ClassHelper.SET_TYPE;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveType;
 import static org.codehaus.groovy.ast.ClassHelper.make;
-import static org.codehaus.groovy.ast.ClassHelper.makeWithoutCaching;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.args;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.assignNullS;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.assignS;
@@ -65,14 +66,14 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.castX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.classList2args;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.constX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.ctorX;
-import static org.codehaus.groovy.ast.tools.GeneralUtils.equalsNullX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.findArg;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.ifElseS;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.ifS;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.isInstanceOfX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.isNullX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.isOrImplements;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.list2args;
-import static org.codehaus.groovy.ast.tools.GeneralUtils.notX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.notNullX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.propX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.safeExpression;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.stmt;
@@ -80,19 +81,22 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.ternaryX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.throwS;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.varX;
 
+/**
+ * Property handler used by immutable-style transforms.
+ *
+ * @since 2.5.0
+ */
 public class ImmutablePropertyHandler extends PropertyHandler {
-    private static final ClassNode CLONEABLE_TYPE = make(Cloneable.class);
-    private static final ClassNode COLLECTION_TYPE = makeWithoutCaching(Collection.class, false);
-    private static final ClassNode DGM_TYPE = make(DefaultGroovyMethods.class);
-    private static final ClassNode SELF_TYPE = make(ImmutableASTTransformation.class);
-    private static final ClassNode MAP_TYPE = makeWithoutCaching(Map.class, false);
-    private static final ClassNode SORTEDSET_CLASSNODE = make(SortedSet.class);
-    private static final ClassNode SORTEDMAP_CLASSNODE = make(SortedMap.class);
-    private static final ClassNode SET_CLASSNODE = make(Set.class);
-    private static final ClassNode MAP_CLASSNODE = make(Map.class);
-    private static final ClassNode READONLYEXCEPTION_TYPE = make(ReadOnlyPropertyException.class);
     private static final ClassNode POJO_TYPE = make(POJO.class);
+    private static final ClassNode SORTEDMAP_TYPE = make(SortedMap.class);
+    private static final ClassNode SORTEDSET_TYPE = make(SortedSet.class);
+    private static final ClassNode DGM_TYPE = make(DefaultGroovyMethods.class);
+    private static final ClassNode XFORM_TYPE = make(ImmutableASTTransformation.class);
+    private static final ClassNode READONLYEXCEPTION_TYPE = make(ReadOnlyPropertyException.class);
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public Statement createPropGetter(final PropertyNode pNode) {
         FieldNode fNode = pNode.getField();
@@ -110,27 +114,39 @@ public class ImmutablePropertyHandler extends PropertyHandler {
         return body;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public Statement createPropSetter(final PropertyNode pNode) {
         return null;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public boolean validateAttributes(final AbstractASTTransformation xform, final AnnotationNode anno) {
         return isValidAttribute(xform, anno, "useSuper");
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public boolean validateProperties(final AbstractASTTransformation xform, final BlockStatement body, final ClassNode cNode, final List<PropertyNode> props) {
         if (xform instanceof MapConstructorASTTransformation) {
             VariableExpression namedArgs = varX("args");
-            body.addStatement(ifS(equalsNullX(namedArgs), assignS(namedArgs, new MapExpression())));
+            body.addStatement(ifS(isNullX(namedArgs), assignS(namedArgs, new MapExpression())));
             boolean pojo = !cNode.getAnnotations(POJO_TYPE).isEmpty();
             body.addStatement(checkPropNamesS(namedArgs, pojo, props));
         }
         return super.validateProperties(xform, body, cNode, props);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public Statement createPropInit(final AbstractASTTransformation xform, final AnnotationNode anno, final ClassNode cNode, final PropertyNode pNode, final Parameter namedArgsMap) {
         FieldNode fNode = pNode.getField();
@@ -158,27 +174,48 @@ public class ImmutablePropertyHandler extends PropertyHandler {
         return safeExpression(fieldExpr, expression);
     }
 
+    /**
+     * Returns an immutable defensive-copy expression for the supplied collection value.
+     *
+     * @param fieldExpr the original field expression
+     * @param type the declared property type
+     * @return an expression yielding an immutable collection view
+     */
     protected Expression cloneCollectionExpr(final Expression fieldExpr, final ClassNode type) {
-        return castX(type, createIfInstanceOfAsImmutableS(fieldExpr, SORTEDSET_CLASSNODE,
-                createIfInstanceOfAsImmutableS(fieldExpr, SORTEDMAP_CLASSNODE,
-                        createIfInstanceOfAsImmutableS(fieldExpr, SET_CLASSNODE,
-                                createIfInstanceOfAsImmutableS(fieldExpr, MAP_CLASSNODE,
-                                        createIfInstanceOfAsImmutableS(fieldExpr, ClassHelper.LIST_TYPE,
-                                                createAsImmutableX(fieldExpr, COLLECTION_TYPE))
-                                )
-                        )
-                )
-        ));
+        // priority is low to high -- SortedSet comes first and Collection is last
+        Expression  asImmutableX = createAsImmutableX(fieldExpr, COLLECTION_TYPE);
+        asImmutableX = createIfInstanceOfAsImmutableS(fieldExpr, LIST_TYPE, asImmutableX);
+        asImmutableX = createIfInstanceOfAsImmutableS(fieldExpr, MAP_TYPE , asImmutableX);
+        asImmutableX = createIfInstanceOfAsImmutableS(fieldExpr, SET_TYPE , asImmutableX);
+        asImmutableX = createIfInstanceOfAsImmutableS(fieldExpr, SORTEDMAP_TYPE, asImmutableX);
+        asImmutableX = createIfInstanceOfAsImmutableS(fieldExpr, SORTEDSET_TYPE, asImmutableX);
+        return castX(type, asImmutableX);
     }
 
     private Expression createIfInstanceOfAsImmutableS(final Expression expr, final ClassNode type, final Expression elseStatement) {
         return ternaryX(isInstanceOfX(expr, type), createAsImmutableX(expr, type), elseStatement);
     }
 
+    /**
+     * Creates an {@code asImmutable()} call for the supplied expression and target type.
+     *
+     * @param expr the source expression
+     * @param type the type used for the cast before invoking {@code asImmutable()}
+     * @return the immutable-conversion expression
+     */
     protected Expression createAsImmutableX(final Expression expr, final ClassNode type) {
         return callX(DGM_TYPE, "asImmutable", castX(type, expr));
     }
 
+    /**
+     * Creates the constructor statement used to initialize an immutable property.
+     *
+     * @param xform the active transform
+     * @param cNode the owning class
+     * @param pNode the property being initialized
+     * @param namedArgsMap the named-argument map, or {@code null}
+     * @return the initialization statement
+     */
     protected Statement createConstructorStatement(final AbstractASTTransformation xform, final ClassNode cNode, final PropertyNode pNode, final Parameter namedArgsMap) {
         final List<String> knownImmutableClasses = ImmutablePropertyUtils.getKnownImmutableClasses(xform, cNode);
         final List<String> knownImmutables = ImmutablePropertyUtils.getKnownImmutables(xform, cNode);
@@ -209,12 +246,12 @@ public class ImmutablePropertyHandler extends PropertyHandler {
         Expression param = getParam(fNode, namedArgsMap != null);
         Statement assignStmt = assignS(fieldExpr, castX(fType, param));
         if (shouldNullCheck) {
-            assignStmt = ifElseS(equalsNullX(param), NullCheckASTTransformation.makeThrowStmt(fNode.getName()), assignStmt);
+            assignStmt = ifElseS(isNullX(param), NullCheckASTTransformation.makeThrowStmt(fNode.getName()), assignStmt);
         }
         Expression initExpr = fNode.getInitialValueExpression();
         Statement assignInit;
         if (initExpr == null || (initExpr instanceof ConstantExpression && ((ConstantExpression) initExpr).isNullExpression())) {
-            if (ClassHelper.isPrimitiveType(fType)) {
+            if (isPrimitiveType(fType)) {
                 assignInit = EmptyStatement.INSTANCE;
             } else {
                 assignInit = shouldNullCheck ? NullCheckASTTransformation.makeThrowStmt(fNode.getName()) : assignNullS(fieldExpr);
@@ -230,11 +267,14 @@ public class ImmutablePropertyHandler extends PropertyHandler {
             return assignStmt;
         }
         ArgumentListExpression nameArg = args(constX(fNode.getName()));
-        MethodCallExpression var = callX(varX(map), "get", nameArg);
-        var.setImplicitThis(false);
+        MethodCallExpression get = callX(varX(map), "get", nameArg);
+        get.setImplicitThis(false);
         MethodCallExpression containsKey = callX(varX(map), "containsKey", nameArg);
         containsKey.setImplicitThis(false);
-        fNode.getDeclaringClass().getField(fNode.getName()).setInitialValueExpression(null); // to avoid default initialization
+        // avoid NPE if no declaring class - can be the case for traits
+        if (fNode.getDeclaringClass() != null) {
+            fNode.getDeclaringClass().getField(fNode.getName()).setInitialValueExpression(null); // to avoid default initialization
+        }
         return ifElseS(containsKey, assignStmt, assignInit);
     }
 
@@ -243,7 +283,7 @@ public class ImmutablePropertyHandler extends PropertyHandler {
         Expression param = getParam(fNode, namedArgsMap != null);
         Statement assignStmt = assignS(fieldExpr, createCheckImmutable(fNode, param, knownImmutables, knownImmutableClasses));
         assignStmt = ifElseS(
-                equalsNullX(param),
+                isNullX(param),
                 shouldNullCheck ? NullCheckASTTransformation.makeThrowStmt(fNode.getName()) : assignNullS(fieldExpr),
                 assignStmt);
         Expression initExpr = fNode.getInitialValueExpression();
@@ -259,7 +299,7 @@ public class ImmutablePropertyHandler extends PropertyHandler {
     // check at runtime since classes might not be resolved
     private static Expression createCheckImmutable(final FieldNode fNode, final Expression value, final List<String> knownImmutables, final List<String> knownImmutableClasses) {
         Expression args = args(callThisX("getClass"), constX(fNode.getName()), value, list2args(knownImmutables), classList2args(knownImmutableClasses));
-        return callX(SELF_TYPE, "checkImmutable", args);
+        return callX(XFORM_TYPE, "checkImmutable", args);
     }
 
     private Statement createConstructorStatementCollection(final FieldNode fNode, final Parameter namedArgsMap, final boolean shouldNullCheck) {
@@ -271,7 +311,7 @@ public class ImmutablePropertyHandler extends PropertyHandler {
                 assignS(fieldExpr, cloneCollectionExpr(cloneArrayOrCloneableExpr(param, fieldType), fieldType)),
                 assignS(fieldExpr, cloneCollectionExpr(param, fieldType)));
         assignStmt = ifElseS(
-                equalsNullX(param),
+                isNullX(param),
                 shouldNullCheck ? NullCheckASTTransformation.makeThrowStmt(fNode.getName()) : assignNullS(fieldExpr),
                 assignStmt);
         Expression initExpr = fNode.getInitialValueExpression();
@@ -290,7 +330,7 @@ public class ImmutablePropertyHandler extends PropertyHandler {
         final Expression param = getParam(fNode, namedArgsMap != null);
         Statement assignStmt = assignS(fieldExpr, cloneArrayOrCloneableExpr(param, fieldType));
         assignStmt = ifElseS(
-                equalsNullX(param),
+                isNullX(param),
                 shouldNullCheck ? NullCheckASTTransformation.makeThrowStmt(fNode.getName()) : assignNullS(fieldExpr),
                 assignStmt);
         final Statement assignInit;
@@ -312,7 +352,7 @@ public class ImmutablePropertyHandler extends PropertyHandler {
         final Expression param = getParam(fNode, namedArgsMap != null);
         Statement assignStmt = assignS(fieldExpr, cloneDateExpr(param));
         assignStmt = ifElseS(
-                equalsNullX(param),
+                isNullX(param),
                 shouldNullCheck ? NullCheckASTTransformation.makeThrowStmt(fNode.getName()) : assignNullS(fieldExpr),
                 assignStmt);
         final Statement assignInit;
@@ -329,11 +369,18 @@ public class ImmutablePropertyHandler extends PropertyHandler {
         return knownImmutables.contains(fieldName);
     }
 
+    /**
+     * Creates a statement that rejects overriding a final property value via constructor arguments.
+     *
+     * @param cNode the owning class
+     * @param fNode the final field
+     * @return the generated guard statement
+     */
     protected Statement checkFinalArgNotOverridden(final ClassNode cNode, final FieldNode fNode) {
         String name = fNode.getName();
         Expression value = findArg(name);
         return ifS(
-                notX(equalsNullX(value)),
+                notNullX(value),
                 throwS(
                         ctorX(READONLYEXCEPTION_TYPE, args(constX(name), constX(cNode.getName())))
                 )

@@ -18,14 +18,17 @@
  */
 package metaprogramming
 
-import groovy.test.GroovyTestCase
 import groovy.time.TimeCategory
+import org.junit.jupiter.api.Test
 
-class CategoryTest extends GroovyTestCase {
+import static groovy.test.GroovyAssert.assertScript
 
+final class CategoryTest {
+
+    @Test
     void testApplyTimeCategory() {
         // tag::time_category[]
-        use(TimeCategory)  {
+        use(TimeCategory) {
             println 1.minute.from.now       // <1>
             println 10.hours.ago
 
@@ -35,6 +38,7 @@ class CategoryTest extends GroovyTestCase {
         // end::time_category[]
     }
 
+    @Test
     void testCategoryAnnotation() {
         assertScript '''
             // tag::time_category_anno[]
@@ -50,7 +54,7 @@ class CategoryTest extends GroovyTestCase {
                 }
             }
 
-            use (NumberCategory)  {
+            use(NumberCategory) {
                 assert 42.meters.toString() == '42m'
             }
             // end::time_category_anno[]

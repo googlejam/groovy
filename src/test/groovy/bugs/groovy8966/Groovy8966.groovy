@@ -16,19 +16,19 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs.groovy8966
+package bugs.groovy8966
 
-import groovy.test.GroovyTestCase
-import groovy.transform.CompileStatic
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
-@CompileStatic
-final class Groovy8966 extends GroovyTestCase {
+import static groovy.test.GroovyAssert.assertScript
+
+final class Groovy8966 {
+
     @Test
     void test() {
         assertScript '''
             def array = [0, 1, 2]
-            int a = 2 
+            int a = 2
             long b = 3
             assert array[a..<b] == [2]
         '''

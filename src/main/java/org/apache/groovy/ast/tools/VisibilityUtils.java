@@ -38,6 +38,9 @@ import static org.objectweb.asm.Opcodes.ACC_PRIVATE;
 import static org.objectweb.asm.Opcodes.ACC_PROTECTED;
 import static org.objectweb.asm.Opcodes.ACC_PUBLIC;
 
+/**
+ * Utility methods for resolving visibility customizations from {@link VisibilityOptions}.
+ */
 public class VisibilityUtils {
     private static final ClassNode VISIBILITY_OPTIONS_TYPE = makeWithoutCaching(VisibilityOptions.class, false);
 
@@ -94,9 +97,8 @@ public class VisibilityUtils {
     }
 
     private static Visibility getVisibility(final Expression e) {
-        if (e instanceof PropertyExpression) {
-            PropertyExpression pe = (PropertyExpression) e;
-            if (pe.getObjectExpression() instanceof ClassExpression && pe.getObjectExpression().getText().equals("groovy.transform.options.Visibility")) {
+        if (e instanceof PropertyExpression pe) {
+            if (pe.getObjectExpression() instanceof ClassExpression && "groovy.transform.options.Visibility".equals(pe.getObjectExpression().getText())) {
                 return Visibility.valueOf(pe.getPropertyAsString());
             }
         }

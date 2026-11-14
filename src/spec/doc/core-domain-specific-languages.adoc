@@ -132,7 +132,7 @@ This allows you to provide your own Java or Groovy objects which can take advant
 
 [options="header"]
 |======================
-|Operator | Method 
+|Operator | Method
 | `a + b` | a.plus(b)
 | `a - b` | a.minus(b)
 | `a * b` | a.multiply(b)
@@ -226,6 +226,14 @@ the base script class as a member of the `@BaseScript` annotation itself:
 include::../test/BaseScriptSpecTest.groovy[tags=use_basescript_alt,indent=0]
 ----
 
+When using the special no-args `run` method, you can even annotate
+that method as shown here:
+
+[source,groovy]
+----
+include::../test/BaseScriptSpecTest.groovy[tags=jep445_example,indent=0]
+----
+
 === Alternate abstract method
 
 We have seen that the base script class is a single abstract method type that needs to implement the `run` method. The
@@ -263,7 +271,7 @@ include::../test/BaseScriptSpecTest.groovy[tags=custom_run_parse,indent=0]
 
 In Groovy number types are considered equal to any other types. As such, it is possible to enhance numbers by adding
 properties or methods to them. This can be very handy when dealing with measurable quantities for example. Details about
-how existing classes can be enhanced in Groovy are found in the link:core-metaprogramming.html#_extension_modules[extension
+how existing classes can be enhanced in Groovy are found in the link:core-metaprogramming.html#extension-modules[extension
 modules] section or the link:core-metaprogramming.html#categories[categories] section.
 
 An illustration of this can be found in Groovy using the `TimeCategory`:
@@ -273,7 +281,7 @@ An illustration of this can be found in Groovy using the `TimeCategory`:
 include::../test/metaprogramming/CategoryTest.groovy[tags=time_category,indent=0]
 ----
 <1> using the `TimeCategory`, a property `minute` is added to the `Integer` class
-<2> similarily, the `months` method returns a `groovy.time.DatumDependentDuration` which can be used in calculus
+<2> similarly, the `months` method returns a `groovy.time.DatumDependentDuration` which can be used in calculus
 
 Categories are lexically bound, making them a great fit for internal DSLs.
 
@@ -351,7 +359,7 @@ include::../test/DelegatesToSpecTest.groovy[tags=email_builder_usage,indent=0]
 ---------------------------------------
 
 Then the type checker will know that there’s an `email` method accepting
-a `Closure`, but it will complain for every method call *inside* the
+a `Closure`, but it will complain about every method call *inside* the
 closure, because `from`, for example, is not a method which is defined
 in the class. Indeed, it’s defined in the `EmailSpec` class and it has
 absolutely no hint to help it knowing that the closure delegate will, at
@@ -718,11 +726,23 @@ For a complete list of options, please refer to gapi:org.codehaus.groovy.control
 
 === Secure AST customizer
 
+CAUTION: Despite its name, this customizer is *not* a sandbox and *not* a security
+boundary. It secures the *grammar* not the *execution* - it is a best-effort restriction of the grammar available to a DSL, and nothing
+more. It cannot constrain what otherwise-permitted code does at runtime, its coverage of
+the source is deliberately partial (see <<secure-ast-limitations,Limitations>> below), and
+an author of the source being compiled can work around it. The Apache Groovy
+https://github.com/apache/groovy/blob/master/THREAT_MODEL.md[threat model] treats it as a
+hardening aid rather than a security boundary: a demonstrated bypass is expected
+behaviour, not a vulnerability. If you must run partially-trusted scripts, layer real
+isolation *outside* the language — a separate process or JVM, an OS or container sandbox,
+least-privilege credentials, and network egress controls — and treat this customizer as
+one layer within that, never the perimeter.
+
 This customizer will allow the developer of a DSL to restrict the
 *grammar* of the language, for example, to prevent users from using particular constructs.
 It is only ``secure'' in that one aspect, i.e. limiting the allowable constructs within a DSL.
-It does *not* replace a security manager which might additionally
-be needed as an orthogonal aspect of overall security.
+It does *not* replace other aspects of security which might additionally
+be needed.
 The only reason for it to exist is to limit the expressiveness of the
 language. This customizer only works at the AST (abstract syntax tree)
 level, not at runtime! It can be strange at first glance, but it makes
@@ -792,6 +812,45 @@ include::../test/CustomizersTest.groovy[tags=secure_cz_custom_assert,indent=4]
 
 Statements can be checked using gapi:org.codehaus.groovy.control.customizers.SecureASTCustomizer.StatementChecker[]
 Expressions can be checked using gapi:org.codehaus.groovy.control.customizers.SecureASTCustomizer.ExpressionChecker[]
+
+[[secure-ast-limitations]]
+==== Limitations of the secure AST customizer
+
+Coverage is partial by design, so it is worth knowing where the checks do and do not
+reach. The customizer visits the script statement block, method and constructor bodies,
+static and instance initializer blocks, and field initializer expressions. It does *not*
+visit the following, so restrictions such as `disallowedReceivers`, the statement and
+expression allow/disallow lists, and your own custom checkers do not apply to code
+appearing there:
+
+* annotation members, including closure arguments to annotations
+* code carrying no source position, which is how constructors, initializers and fields
+  added by the compiler or by an AST transformation are told apart from those written by
+  the author of the source being secured — a script class always has generated
+  constructors, for example, and checking those would reject valid programs
+
+A generated member may still *contain* code you wrote, because a transformation can move it
+there: `@TupleConstructor(pre=...)` and `@MapConstructor(pre=...)` relocate the supplied
+closure body into the constructor they generate, and `@ConditionalInterrupt` relocates its
+condition into a synthetic method. Such code keeps its original source position and is
+checked wherever it was moved to.
+
+Note that a constructor is not a ``method definition'' as far as `methodDefinitionAllowed`
+is concerned: its body is checked, but declaring one remains permitted.
+
+Import restrictions apply to actual `import` statements, so they have no effect on a
+fully-qualified reference such as `new java.lang.ProcessBuilder(...)`. The
+`indirectImportCheckEnabled` flag exists to catch some of those, but only within the code
+the customizer visits.
+
+More fundamentally, *compiling* Groovy source is itself code execution, whether or not you
+subsequently run the result: global AST transforms found on the compile classpath,
+`@groovy.transform.ASTTest`, `@Grab` dependency resolution and static initializers all run
+during compilation, before and independently of any customizer you configure. Restricting
+the grammar of source that you nevertheless compile does not change this. When compiling
+source you do not fully trust, you should also set the `groovy.grape.enable` system
+property to `false`, keep the compile classpath under your control, and apply the
+out-of-language isolation described above.
 
 === Source aware customizer
 
@@ -967,32 +1026,33 @@ withConfig(configuration) {
 }
 ---------------------------
 
-=== Config script flag
+=== The `configscript` commandline parameter
 
 So far, we have described how you can customize compilation using
 a `CompilationConfiguration` class, but this is only possible if you
 embed Groovy and that you create your own instances
 of `CompilerConfiguration` (then use it to create a
-`GroovyShell`, `GroovyScriptEngine`, …).
+`GroovyShell`, `GroovyScriptEngine`, …).
 
 If you want it to be applied on the classes you compile with the normal
-Groovy compiler (that is to say with  `groovyc`, `ant` or `gradle`,
-for example), it is possible to use a compilation flag named `configscript`
+Groovy compiler (that is to say with `groovyc`, `ant` or `gradle`,
+for example), it is possible to use a commandline parameter named `configscript`
 that takes a Groovy configuration script as argument.
 
-This script gives you access to the `CompilerConfiguration` instance *before*
+This script gives you access to the `CompilerConfiguration` instance *before*
 the files are compiled (exposed into the configuration script as a variable named `configuration`),
 so that you can tweak it.
 
 It also transparently integrates the compiler configuration builder above. As an example, let's see
 how you would activate static compilation by default on all classes.
 
-==== Static compilation by default
+==== Configscript example: Static compilation by default
 
 Normally, classes in Groovy are compiled with a dynamic runtime. You can activate static compilation
 by placing an annotation named `@CompileStatic` on any class. Some people would like to have this
-mode activated by default, that is to say not having to annotated classes. Using `configscript`,
-this is possible. First of all, you need to create a file named `config.groovy` into `src/conf` with
+mode activated by default, that is to say not having to annotate (potentially many) classes.
+Using `configscript`,  makes this possible.
+First of all, you need to create a file named `config.groovy` into say `src/conf` with
 the following contents:
 
 [source,groovy]
@@ -1013,11 +1073,25 @@ groovyc -configscript src/conf/config.groovy src/main/groovy/MyClass.groovy
 We strongly recommend you to separate configuration files from classes,
 hence why we suggest using the `src/main` and `src/conf` directories above.
 
+==== Configscript example: Setting system properties
+
+In a configuration script you can also set system properties, e.g.:
+
+[source,groovy]
+--------------------------------------
+System.setProperty('spock.iKnowWhatImDoing.disableGroovyVersionCheck', 'true')
+--------------------------------------
+
+If you have numerous system properties to set, then using a configuration file
+will reduce the need to set a bunch of system properties with a long command line
+or appropriately defined environment variable.
+You can also share all the settings by simply sharing the config file.
+
 === AST transformations
 
 If:
 
-* runtime metaprogramming doesn't allow you do do what you want
+* runtime metaprogramming doesn't allow you to do what you want
 * you need to improve the performance of the execution of your DSLs
 * you want to leverage the same syntax as Groovy but with different semantics
 * you want to improve support for type checking in your DSLs
@@ -1034,27 +1108,20 @@ metaprogramming] section of this manual.
 It may be interesting, in some circumstances, to provide feedback about wrong code to the user as soon as possible,
 that is to say when the DSL script is compiled, rather than having to wait for the execution of the script. However,
 this is not often possible with dynamic code. Groovy actually provides a practical answer to this known as
-link:type-checking-extensions.html[type checking extensions].
+link:core-semantics.html#type-checking-extensions[type checking extensions].
 
 == Builders
 
-(TBD)
-
-=== Creating a builder
-
-(TBD)
-
-==== BuilderSupport
-
-(TBD)
-
-==== FactoryBuilderSupport
-
-(TBD)
+Many tasks require building things and the builder pattern is one technique
+used by developers to make building things easier, especially building
+of structures which are hierarchical in nature.
+This pattern is so ubiquitous that Groovy has special built-in support.
+Firstly, there are many built-in builders. Secondly, there are
+classes which make it easier to write your own builders.
 
 === Existing builders
 
-(TBD)
+Groovy comes with many built-in builders. Let's look at some of them.
 
 ==== MarkupBuilder
 
@@ -1072,7 +1139,7 @@ include::../../../subprojects/groovy-xml/src/spec/doc/_dom-builder.adoc[leveloff
 
 ==== NodeBuilder
 
-`NodeBuilder` is used for creating nested trees of gapi:groovy.util.Node[Node] objects for handling arbitrary data. 
+`NodeBuilder` is used for creating nested trees of gapi:groovy.util.Node[Node] objects for handling arbitrary data.
 To create a simple user list you use a `NodeBuilder` like this:
 
 [source,groovy]
@@ -1089,9 +1156,11 @@ include::../test/builder/NodeBuilderTest.groovy[tags=node_builder_gpath_assert,i
 
 include::../../../subprojects/groovy-json/src/spec/doc/_json-builder.adoc[leveloffset=+3]
 
-include::../../../subprojects/groovy-json/src/spec/doc/_streaming-jason-builder.adoc[leveloffset=+3]
+include::../../../subprojects/groovy-json/src/spec/doc/_streaming-json-builder.adoc[leveloffset=+3]
 
 include::../../../subprojects/groovy-swing/src/spec/doc/_swing-builder.adoc[leveloffset=+3]
+
+include::../../../subprojects/groovy-fx/src/spec/doc/_groovyfx.adoc[leveloffset=+3]
 
 include::../../../subprojects/groovy-ant/src/spec/doc/_ant-builder.adoc[leveloffset=+3]
 
@@ -1182,7 +1251,8 @@ When creating the `CliBuilder` instance in the above example, we set the optiona
 within the constructor call. This follows Groovy's normal ability to set additional properties
 of the instance during construction. There are numerous other properties which can be set
 such as `header` and `footer`. For the complete set of available properties, see the
-available properties for the gapi:groovy.util.CliBuilder[CliBuilder] class.
+available properties for the gapi:groovy.cli.picocli.CliBuilder[picocli `CliBuilder`] class.
+`groovy.cli.commons.CliBuilder` is the other implementation. `groovy.util.CliBuilder` was removed in Groovy 3.0.
 
 When defining an allowed commandline option, both a short name (e.g. "h" for the `help` option shown previously)
 and a short description (e.g. "display usage" for the `help` option) must be supplied.
@@ -1773,7 +1843,7 @@ gapi:groovy.util.FileTreeBuilder[FileTreeBuilder] is a builder for generating a 
         |--- groovy
                |--- FooTest.groovy
 ---------
- 
+
 You can use a `FileTreeBuilder` like this:
 
 [source,groovy]
@@ -1800,4 +1870,123 @@ This produces the same directory structure as above, as shown by these `assert`s
 [source,groovy]
 ----
 include::../test/builder/FileTreeBuilderTest.groovy[tags=shorthand_syntax_assert,indent=0]
+----
+
+=== Creating a builder
+
+While Groovy has many built-in builders, the builder pattern is so common,
+you will no doubt eventually come across a building requirement that
+hasn't been catered for by those built-in builders.
+The good news is that you can build your own.
+You can do everything from scratch by relying on Groovy's
+metaprogramming capabilities. Alternatively, the `BuilderSupport`
+and `FactoryBuilderSupport` classes make designing your own
+builders much easier.
+
+==== BuilderSupport
+
+One approach to building a builder is to subclass `BuilderSupport`.
+With this approach, the general idea is to override one or more of a number of
+_lifecycle_ methods including `setParent`, `nodeCompleted` and some or
+all of the `createNode` methods from the `BuilderSupport` abstract class.
+
+As an example, suppose we want to create a builder of
+tracking athletic training programs. Each program is made
+up of a number of sets and each set has its own steps.
+A step might itself be a set of smaller steps.
+For each `set` or `step`, we might wish to record
+the `distance` required (or `time`), whether to `repeat`
+the steps a certain number of times, whether to take a `break`
+between each step and so forth.
+
+For the simplicity of this example, we'll capture the training
+programming using maps and lists. A set has a list of steps.
+Information like `repeat` count or `distance` will be tracked
+in a map of attributes for each step and set.
+
+The builder implementation is as follows:
+
+* Override a couple of the `createNode` methods.
+We'll create a map capturing the set name, an empty list of steps,
+and potentially some attributes.
+* Whenever we complete a node we'll add the node to the list of steps
+for the parent (if any).
+
+The code looks like this:
+
+[source,groovy]
+----
+include::../test/builder/BuilderSpecTest.groovy[tags=define_builder1,indent=0]
+----
+
+Next, we'll write a little helper method which recursively
+adds up the distances of all substeps, accounting for repeated steps
+as needed.
+
+[source,groovy]
+----
+include::../test/builder/BuilderSpecTest.groovy[tags=define_total_helper1,indent=0]
+----
+
+Finally, we can now use our builder and helper method to create a
+swimming training program and check its total distance:
+
+[source,groovy]
+----
+include::../test/builder/BuilderSpecTest.groovy[tags=use_builder1,indent=0]
+----
+
+==== FactoryBuilderSupport
+
+A second approach to building a builder is to subclass `FactoryBuilderSupport`.
+This builder has similar goals to `BuilderSupport` but with extra features
+to simplify domain class construction.
+
+With this approach, the general idea is to override one or more of a number of
+_lifecycle_ methods including `resolveFactory`, `nodeCompleted` and `postInstantiate` methods from the `FactoryBuilderSupport` abstract class.
+
+We'll use the same example as for the previous `BuilderSupport` example;
+a builder of tracking athletic training programs.
+
+For this example, rather than capturing the training
+programming using maps and lists, we'll use some simple domain classes.
+
+The builder implementation is as follows:
+
+* Override the `resolveFactory` method to return a special
+factory which returns classes by capitalizing the names used in our mini DSL.
+* Whenever we complete a node we'll add the node to the list of steps
+for the parent (if any).
+
+The code, including the code for the special factory class, looks like this:
+
+[source,groovy]
+----
+include::../test/builder/BuilderSpecTest.groovy[tags=define_builder2,indent=0]
+----
+
+Rather than using lists and maps, we'll have some simple domain classes
+and related traits:
+
+[source,groovy]
+----
+include::../test/builder/BuilderSpecTest.groovy[tags=define_domain_classes2,indent=0]
+----
+
+Just like for the `BuilderSupport` example, it is useful to have a helper method
+to calculate the total distance covered during the training session.
+The implementation is very similar to our earlier example, but is adjusted
+to work well with our newly defined traits.
+
+[source,groovy]
+----
+include::../test/builder/BuilderSpecTest.groovy[tags=define_total_helper2,indent=0]
+----
+
+Finally, we can now use our new builder and helper methods to create a
+cycling training program and check its total distance:
+
+[source,groovy]
+----
+include::../test/builder/BuilderSpecTest.groovy[tags=use_builder2,indent=0]
 ----

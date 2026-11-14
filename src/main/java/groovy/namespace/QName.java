@@ -18,6 +18,7 @@
  */
 package groovy.namespace;
 
+import java.io.Serial;
 import java.io.Serializable;
 
 /**
@@ -30,7 +31,7 @@ import java.io.Serializable;
  * namespaceURI is a URI reference identifying the namespace.
  */
 public class QName implements Serializable {
-    private static final long serialVersionUID = -9029109610006696081L;
+    @Serial private static final long serialVersionUID = -9029109610006696081L;
 
     /** comment/shared empty string */
     private static final String EMPTY_STRING = "";
@@ -172,14 +173,12 @@ public class QName implements Serializable {
     public boolean equals(Object o) {
         if (this == o) return true;
         if (o == null) return false;
-        if (o instanceof QName) {
-            final QName qName = (QName) o;
+        if (o instanceof QName qName) {
             if (!namespaceURI.equals(qName.namespaceURI)) return false;
             return localPart.equals(qName.localPart);
 
-        } else if (o instanceof String) {
-            final String string = (String)o;
-            if (string.length() == 0) return false;
+        } else if (o instanceof String string) {
+            if (string.isEmpty()) return false;
             int lastColonIndex = string.lastIndexOf(':');
             if (lastColonIndex < 0 || lastColonIndex == string.length() - 1) return false;
             final String stringPrefix = string.substring(0,lastColonIndex);
@@ -213,21 +212,19 @@ public class QName implements Serializable {
     public boolean matches(Object o) {
         if (this == o) return true;
         if (o == null) return false;
-        if (o instanceof QName) {
-            final QName qName = (QName) o;
-            if (!namespaceURI.equals(qName.namespaceURI) && !namespaceURI.equals("*") && !qName.namespaceURI.equals("*")) return false;
-            return localPart.equals(qName.localPart) || localPart.equals("*") || qName.localPart.equals("*");
-        } else if (o instanceof String) {
-            final String string = (String)o;
-            if (string.length() == 0) return false;
+        if (o instanceof QName qName) {
+            if (!namespaceURI.equals(qName.namespaceURI) && !"*".equals(namespaceURI) && !"*".equals(qName.namespaceURI)) return false;
+            return localPart.equals(qName.localPart) || "*".equals(localPart) || "*".equals(qName.localPart);
+        } else if (o instanceof String string) {
+            if (string.isEmpty()) return false;
             // try matching against 'prefix:localname'
             int lastColonIndex = string.lastIndexOf(':');
-            if (lastColonIndex < 0 && prefix.length() == 0) return string.equals(localPart);
+            if (lastColonIndex < 0 && prefix.isEmpty()) return string.equals(localPart);
             if (lastColonIndex < 0 || lastColonIndex == string.length() - 1) return false;
             final String stringPrefix = string.substring(0,lastColonIndex);
             final String stringLocalPart = string.substring(lastColonIndex + 1);
-            if (stringPrefix.equals(prefix) || stringPrefix.equals(namespaceURI) || stringPrefix.equals("*")) {
-                return localPart.equals(stringLocalPart) || stringLocalPart.equals("*");
+            if (stringPrefix.equals(prefix) || stringPrefix.equals(namespaceURI) || "*".equals(stringPrefix)) {
+                return localPart.equals(stringLocalPart) || "*".equals(stringLocalPart);
             }
         }
         return false;
@@ -287,4 +284,4 @@ public class QName implements Serializable {
         result = 29 * result + localPart.hashCode();
         return result;
     }
-} 
+}

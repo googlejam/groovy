@@ -30,32 +30,41 @@ import java.util.Set;
  * A visitor which collects the list of variable expressions which are closure shared.
  */
 public class SharedVariableCollector extends ClassCodeVisitorSupport {
-    private final SourceUnit unit;
-    private final Set<VariableExpression> closureSharedExpressions = new LinkedHashSet<VariableExpression>();
-    private boolean visited = false;
 
+    private final Set<VariableExpression> closureSharedExpressions = new LinkedHashSet<VariableExpression>();
+    private final SourceUnit unit;
+    private boolean visited;
+
+    /**
+     * Creates a collector for the supplied source unit.
+     */
     public SharedVariableCollector(final SourceUnit unit) {
         this.unit = unit;
     }
 
+    /** {@inheritDoc} */
     @Override
     protected SourceUnit getSourceUnit() {
         return unit;
     }
 
+    /**
+     * Returns the collected closure-shared variable expressions.
+     */
     public Set<VariableExpression> getClosureSharedExpressions() {
         return Collections.unmodifiableSet(closureSharedExpressions);
     }
 
+    /**
+     * Records closure-shared variables while avoiding recursive closure traversal.
+     */
     @Override
     public void visitVariableExpression(final VariableExpression expression) {
         if (visited) {
-            // we should not visit embedded closures recursively
-            return;
+            return; // we should not visit embedded closures recursively
         }
         visited = true;
         if (expression.isClosureSharedVariable()) closureSharedExpressions.add(expression);
         super.visitVariableExpression(expression);
     }
-
 }

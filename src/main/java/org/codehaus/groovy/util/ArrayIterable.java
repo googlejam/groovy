@@ -21,17 +21,23 @@ package org.codehaus.groovy.util;
 import java.util.Iterator;
 
 /**
- * Allow an array to be used where an Iterable is expected.
+ * Allows an array to be used where an Iterable is expected.
  *
  * @since 3.0.8
  */
 public class ArrayIterable<T> implements Iterable<T> {
     private final T[] array;
 
-    public ArrayIterable(T[] array) {
+    /**
+     * Creates an iterable view that traverses the supplied array in index order.
+     *
+     * @param array the backing array to iterate
+     */
+    public ArrayIterable(final T[] array) {
         this.array = array;
     }
 
+    /** {@inheritDoc} */
     @Override
     public Iterator<T> iterator() {
         return new ArrayIterator<>(array);

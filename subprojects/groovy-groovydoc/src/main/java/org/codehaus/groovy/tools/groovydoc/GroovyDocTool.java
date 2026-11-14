@@ -18,21 +18,34 @@
  */
 package org.codehaus.groovy.tools.groovydoc;
 
+import com.github.javaparser.JavaParser;
+import com.github.javaparser.ParserConfiguration;
+import org.apache.groovy.groovydoc.tools.GroovyDocUtil;
 import org.codehaus.groovy.groovydoc.GroovyRootDoc;
 import org.codehaus.groovy.tools.shell.util.Logger;
 
 import java.io.File;
 import java.io.IOException;
+import java.lang.management.ManagementFactory;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Properties;
 
+/**
+ * Coordinates source parsing and template-driven rendering for GroovyDoc generation.
+ */
 public class GroovyDocTool {
     private final Logger log = Logger.create(GroovyDocTool.class);
     private final GroovyRootDocBuilder rootDocBuilder;
     private final GroovyDocTemplateEngine templateEngine;
+    private final String[] sourcepaths;
 
+    /**
+     * Rendering properties shared with the parser and template engine.
+     */
     protected Properties properties;
 
     /**
@@ -44,23 +57,45 @@ public class GroovyDocTool {
         this(null, sourcepaths, null);
     }
 
+    /**
+     * Creates a GroovyDocTool with a resource manager, source paths, and a single class-level template.
+     */
     public GroovyDocTool(ResourceManager resourceManager, String[] sourcepaths, String classTemplate) {
-        this(resourceManager, sourcepaths, new String[]{}, new String[]{}, new String[]{classTemplate}, new ArrayList<LinkArgument>(), new Properties());
+        this(resourceManager, sourcepaths, new String[]{}, new String[]{}, new String[]{classTemplate}, new ArrayList<LinkArgument>(), null, new Properties());
     }
 
-    public GroovyDocTool(ResourceManager resourceManager, String[] sourcepaths, String[] docTemplates, String[] packageTemplates, String[] classTemplates, List<LinkArgument> links, Properties properties) {
-        rootDocBuilder = new GroovyRootDocBuilder(sourcepaths, links, properties);
+    /**
+     * Constructs a GroovyDocTool instance with the specified parameters.
+     *
+     * @param resourceManager  the resource manager for handling resources, or null if not required
+     * @param sourcepaths      the paths to the source files to be processed
+     * @param docTemplates     the templates for generating documentation
+     * @param packageTemplates the templates for generating package-level documentation
+     * @param classTemplates   the templates for generating class-level documentation
+     * @param links            a list of link arguments for external references
+     * @param javaVersion      the Java version to be used for parsing and processing Java source files
+     * @param properties       additional properties to be used when generating the groovydoc
+     */
+    public GroovyDocTool(ResourceManager resourceManager, String[] sourcepaths, String[] docTemplates, String[] packageTemplates, String[] classTemplates, List<LinkArgument> links, String javaVersion, Properties properties) {
+        this.sourcepaths = sourcepaths == null ? new String[0] : Arrays.copyOf(sourcepaths, sourcepaths.length);
+        ParserConfiguration.LanguageLevel javaLanguageLevel = calculateLanguageLevel(javaVersion);
+        rootDocBuilder = new GroovyRootDocBuilder(
+                sourcepaths,
+                links,
+                properties,
+                new JavaParser(new ParserConfiguration().setLanguageLevel(javaLanguageLevel))
+        );
 
         String defaultCharset = Charset.defaultCharset().name();
 
         String fileEncoding = properties.getProperty("fileEncoding");
         String charset = properties.getProperty("charset");
 
-        if (fileEncoding == null || fileEncoding.length() == 0) fileEncoding = charset;
-        if (charset == null || charset.length() == 0) charset = fileEncoding;
+        if (fileEncoding == null || fileEncoding.isEmpty()) fileEncoding = charset;
+        if (charset == null || charset.isEmpty()) charset = fileEncoding;
 
-        properties.setProperty("fileEncoding", fileEncoding != null && fileEncoding.length() != 0 ? fileEncoding : defaultCharset);
-        properties.setProperty("charset", charset != null && charset.length() != 0 ? charset : defaultCharset);
+        properties.setProperty("fileEncoding", fileEncoding != null && !fileEncoding.isEmpty() ? fileEncoding : defaultCharset);
+        properties.setProperty("charset", charset != null && !charset.isEmpty() ? charset : defaultCharset);
 
         this.properties = properties;
 
@@ -71,34 +106,93 @@ public class GroovyDocTool {
         }
     }
 
+    private ParserConfiguration.LanguageLevel calculateLanguageLevel(String javaVersion) {
+        String version = javaVersion;
+        if (version != null) {
+            version = version.trim().toUpperCase(Locale.ROOT);
+            if (version.isEmpty()) version = null;
+        }
+
+        if (version == null) {
+            version = "JAVA_" + Runtime.version().feature();
+            boolean previewEnabled = ManagementFactory.getRuntimeMXBean().getInputArguments().contains("--enable-preview");
+            if (previewEnabled) version += "_PREVIEW";
+
+            try {
+                return ParserConfiguration.LanguageLevel.valueOf(version);
+            } catch (IllegalArgumentException e) {
+                return ParserConfiguration.LanguageLevel.BLEEDING_EDGE;
+            }
+        }
+
+        try {
+            return ParserConfiguration.LanguageLevel.valueOf(version);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Unsupported Java Version: " + javaVersion);
+        }
+    }
+
+    /**
+     * Adds source files to the documentation set.
+     *
+     * @param filenames relative source file paths to process
+     * @throws IOException if a file cannot be read
+     */
     public void add(List<String> filenames) throws IOException {
         if (templateEngine != null) {
             // only print out if we are being used for template generation
             log.debug("Loading source files for " + filenames);
         }
+
         rootDocBuilder.buildTree(filenames);
     }
 
+    /**
+     * Returns the root documentation object built from all added source files.
+     */
     public GroovyRootDoc getRootDoc() {
         return rootDocBuilder.getRootDoc();
     }
 
+    /**
+     * @return the number of source files that could not be parsed
+     *
+     * @since 6.0.0
+     */
+    public int getErrorCount() {
+        return rootDocBuilder.getErrorCount();
+    }
+
+    /**
+     * Renders the collected documentation to the given output using the configured templates.
+     *
+     * @param output the output destination
+     * @param destdir the destination directory path
+     * @throws Exception if rendering fails
+     */
     public void renderToOutput(OutputTool output, String destdir) throws Exception {
         // expect just one scope to be set on the way in but now also set higher levels of visibility
         if ("true".equals(properties.getProperty("privateScope"))) properties.setProperty("packageScope", "true");
         if ("true".equals(properties.getProperty("packageScope"))) properties.setProperty("protectedScope", "true");
         if ("true".equals(properties.getProperty("protectedScope"))) properties.setProperty("publicScope", "true");
-        if (templateEngine != null) {
-            GroovyDocWriter writer = new GroovyDocWriter(output, templateEngine, properties);
-            GroovyRootDoc rootDoc = rootDocBuilder.getRootDoc();
-            writer.writeRoot(rootDoc, destdir);
-            writer.writePackages(rootDoc, destdir);
-            writer.writeClasses(rootDoc, destdir);
-        } else {
-            throw new UnsupportedOperationException("No template engine was found");
+        try (AutoCloseable ignored = ExternalJavadocSupport.openCacheSession()) {
+            if (templateEngine != null) {
+                GroovyDocWriter writer = new GroovyDocWriter(output, templateEngine, properties, sourcepaths);
+                GroovyRootDoc rootDoc = rootDocBuilder.getRootDoc();
+                writer.writeRoot(rootDoc, destdir);
+                writer.writePackages(rootDoc, destdir);
+                writer.writeClasses(rootDoc, destdir);
+            } else {
+                throw new UnsupportedOperationException("No template engine was found");
+            }
         }
     }
 
+    /**
+     * Returns the directory component of the given filename, or {@code "DefaultPackage"} if the file is in the default package.
+     *
+     * @deprecated use {@link GroovyDocUtil#getPath}
+     */
     @Deprecated
     static String getPath(String filename) {
         String path = new File(filename).getParent();
@@ -109,6 +203,11 @@ public class GroovyDocTool {
         return path;
     }
 
+    /**
+     * Returns the filename component (basename) of the given path.
+     *
+     * @deprecated use {@link GroovyDocUtil#getFile}
+     */
     @Deprecated
     static String getFile(String filename) {
         return new File(filename).getName();

@@ -20,6 +20,8 @@ package groovy.console.ui.text;
 
 import javax.swing.event.SwingPropertyChangeSupport;
 import javax.swing.event.UndoableEditEvent;
+import javax.swing.undo.CannotRedoException;
+import javax.swing.undo.CannotUndoException;
 import javax.swing.undo.CompoundEdit;
 import javax.swing.undo.UndoManager;
 import javax.swing.undo.UndoableEdit;
@@ -41,16 +43,37 @@ public class TextUndoManager extends UndoManager {
 
     private UndoableEdit modificationMarker = editToBeUndone();
 
+    private boolean recording = true;
+
     /**
      * Creates a new instance of TextUndoManager.
      */
     public TextUndoManager() {
     }
 
+    /**
+     * Toggle recording of undoable edits. Used to suppress capture of
+     * programmatic style changes (e.g. a theme switch re-parsing the
+     * document) that shouldn't be reachable via user-initiated Undo.
+     *
+     * @since 6.0.0
+     */
+    public void setRecording(boolean recording) {
+        this.recording = recording;
+    }
+
+    /**
+     * Registers a listener for undo/redo state changes.
+     *
+     * @param pcl the listener to add
+     */
     public void addPropertyChangeListener(PropertyChangeListener pcl) {
         propChangeSupport.addPropertyChangeListener(pcl);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void die() {
         boolean undoable = canUndo();
@@ -58,6 +81,9 @@ public class TextUndoManager extends UndoManager {
         firePropertyChangeEvent(UndoManager.UndoName, undoable, canUndo());
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void discardAllEdits() {
         boolean undoable = canUndo();
@@ -71,18 +97,33 @@ public class TextUndoManager extends UndoManager {
         firePropertyChangeEvent(UndoManager.UndoName, redoable, canRedo());
     }
 
+    /**
+     * Fires an undo-state property change event.
+     *
+     * @param name the property name
+     * @param oldValue the previous value
+     * @param newValue the new value
+     */
     protected void firePropertyChangeEvent(String name,
                                            boolean oldValue,
                                            boolean newValue) {
         propChangeSupport.firePropertyChange(name, oldValue, newValue);
     }
 
+    /**
+     * Indicates whether the document differs from the last reset point.
+     *
+     * @return {@code true} if undo history contains unreset edits
+     */
     public boolean hasChanged() {
         return modificationMarker != editToBeUndone();
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
-    public void redo() throws javax.swing.undo.CannotRedoException {
+    public void redo() throws CannotRedoException {
         compoundEdit.end();
 
         if (firstModified == 0) {
@@ -97,6 +138,9 @@ public class TextUndoManager extends UndoManager {
         firePropertyChangeEvent(UndoManager.UndoName, undoable, canUndo());
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void redoTo(UndoableEdit edit) {
         compoundEdit.end();
@@ -114,10 +158,18 @@ public class TextUndoManager extends UndoManager {
 
     }
 
+    /**
+     * Removes a listener for undo/redo state changes.
+     *
+     * @param pcl the listener to remove
+     */
     public void removePropertyChangeListener(PropertyChangeListener pcl) {
         propChangeSupport.removePropertyChangeListener(pcl);
     }
 
+    /**
+     * Marks the current undo position as the unmodified state.
+     */
     public void reset() {
         boolean changed = modificationMarker != editToBeUndone();
         if (changed) {
@@ -125,6 +177,9 @@ public class TextUndoManager extends UndoManager {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void trimEdits(int from, int to) {
         boolean undoable = canUndo();
@@ -137,8 +192,11 @@ public class TextUndoManager extends UndoManager {
         firePropertyChangeEvent(UndoManager.RedoName, redoable, canRedo());
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
-    public void undo() throws javax.swing.undo.CannotUndoException {
+    public void undo() throws CannotUndoException {
         compoundEdit.end();
 
         UndoableEdit edit = editToBeUndone();
@@ -155,8 +213,14 @@ public class TextUndoManager extends UndoManager {
         firePropertyChangeEvent(UndoManager.RedoName, redoable, canRedo());
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void undoableEditHappened(UndoableEditEvent uee) {
+        if (!recording) {
+            return;
+        }
         UndoableEdit edit = uee.getEdit();
         boolean undoable = canUndo();
 
@@ -184,6 +248,13 @@ public class TextUndoManager extends UndoManager {
 
         private long editedTime;
 
+        /**
+         * Accepts {@code edit} into this compound edit. The first acceptance
+         * records the current time.
+         *
+         * @param edit the edit to add
+         * @return whether the compound edit accepted {@code edit}
+         */
         @Override
         public boolean addEdit(UndoableEdit edit) {
             boolean result = super.addEdit(edit);
@@ -193,15 +264,31 @@ public class TextUndoManager extends UndoManager {
             return result;
         }
 
+        /**
+         * Returns whether this compound edit contains at least one child edit.
+         *
+         * @return {@code true} when {@code edits} is not empty
+         */
         @Override
         public boolean canUndo() {
             return !edits.isEmpty();
         }
 
+        /**
+         * Returns the time in milliseconds recorded when the first child edit
+         * was accepted, or {@code 0} when no edit has been accepted.
+         *
+         * @return the recorded edit time
+         */
         protected long editedTime() {
             return editedTime;
         }
 
+        /**
+         * Returns {@code false} so this compound edit is treated as already closed.
+         *
+         * @return {@code false}
+         */
         @Override
         public boolean isInProgress() {
             return false;

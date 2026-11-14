@@ -18,6 +18,7 @@
  */
 package org.codehaus.groovy.transform.trait;
 
+import groovy.transform.Virtual;
 import org.codehaus.groovy.ast.ASTNode;
 import org.codehaus.groovy.ast.ClassCodeExpressionTransformer;
 import org.codehaus.groovy.ast.ClassHelper;
@@ -38,29 +39,28 @@ import org.codehaus.groovy.ast.expr.Expression;
 import org.codehaus.groovy.ast.expr.FieldExpression;
 import org.codehaus.groovy.ast.expr.MethodCallExpression;
 import org.codehaus.groovy.ast.expr.PropertyExpression;
-import org.codehaus.groovy.ast.expr.StaticMethodCallExpression;
 import org.codehaus.groovy.ast.expr.TupleExpression;
 import org.codehaus.groovy.ast.expr.VariableExpression;
 import org.codehaus.groovy.control.SourceUnit;
 import org.codehaus.groovy.syntax.SyntaxException;
 import org.codehaus.groovy.syntax.Token;
+import org.codehaus.groovy.syntax.Types;
 
-import java.lang.reflect.Modifier;
 import java.util.Collection;
-import java.util.List;
 
-import static org.codehaus.groovy.ast.tools.GeneralUtils.INSTANCEOF;
+import static org.apache.groovy.ast.tools.AnnotatedNodeUtils.hasAnnotation;
+import static org.apache.groovy.ast.tools.ExpressionUtils.isSuperExpression;
+import static org.apache.groovy.ast.tools.ExpressionUtils.isThisExpression;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.args;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.binX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.callX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.castX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.classX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.propX;
-import static org.codehaus.groovy.ast.tools.GeneralUtils.ternaryX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.varX;
 
 /**
- * This expression transformer is used internally by the {@link org.codehaus.groovy.transform.trait.TraitASTTransformation
+ * This expression transformer is used internally by the {@link TraitASTTransformation
  * trait} AST transformation to change the receiver of a message on "this" into a static method call on the trait helper
  * class.
  * <p>
@@ -71,75 +71,115 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.varX;
  */
 class TraitReceiverTransformer extends ClassCodeExpressionTransformer {
 
+    private static final ClassNode VIRTUAL_TYPE = ClassHelper.make(Virtual.class);
+
     private final VariableExpression weaved;
     private final SourceUnit unit;
     private final ClassNode traitClass;
-    private final ClassNode traitHelperClass;
+    private final ClassNode traitHelper;
     private final ClassNode fieldHelper;
     private final Collection<String> knownFields;
 
     private boolean inClosure;
 
+    /**
+     * Creates a transformer that rewrites trait receiver access against the woven receiver.
+     *
+     * @param thisObject the synthetic receiver expression used for rewritten calls
+     * @param unit the source unit that receives transformation errors
+     * @param traitClass the trait currently being transformed
+     * @param traitHelper the helper class generated for the trait
+     * @param fieldHelper the helper class generated for trait field access
+     * @param knownFields the trait field names that require remapping
+     */
     public TraitReceiverTransformer(final VariableExpression thisObject, final SourceUnit unit, final ClassNode traitClass,
-                                    final ClassNode traitHelperClass, final ClassNode fieldHelper, final Collection<String> knownFields) {
+                                    final ClassNode traitHelper, final ClassNode fieldHelper, final Collection<String> knownFields) {
         this.weaved = thisObject;
         this.unit = unit;
         this.traitClass = traitClass;
-        this.traitHelperClass = traitHelperClass;
+        this.traitHelper = traitHelper;
         this.fieldHelper = fieldHelper;
         this.knownFields = knownFields;
     }
 
+    /**
+     * Returns the source unit used for diagnostics.
+     *
+     * @return the current source unit
+     */
     @Override
     protected SourceUnit getSourceUnit() {
         return unit;
     }
 
+    /**
+     * Rewrites trait expressions that reference {@code this}, {@code super}, or trait fields.
+     *
+     * @param exp the expression to transform
+     * @return the transformed expression
+     */
     @Override
     public Expression transform(final Expression exp) {
-        ClassNode weavedType = weaved.getOriginType();
         if (exp instanceof BinaryExpression) {
-            return transformBinaryExpression((BinaryExpression) exp, weavedType);
-        } else if (exp instanceof StaticMethodCallExpression) {
-            StaticMethodCallExpression call = (StaticMethodCallExpression) exp;
-            ClassNode ownerType = call.getOwnerType();
-            if (traitClass.equals(ownerType)) {
-                MethodCallExpression mce = callX(
-                        varX(weaved),
-                        call.getMethod(),
-                        transform(call.getArguments())
-                );
-                mce.setSafe(false);
-                mce.setSpreadSafe(false);
-                mce.setImplicitThis(false);
-                mce.setSourcePosition(exp);
+            return transformBinaryExpression((BinaryExpression) exp);
+        } else if (exp instanceof MethodCallExpression mce) {
+            // GROOVY-12104: T.this.m() inside trait code (where T is the
+            // enclosing trait) compiles successfully today but generates
+            // invalid or mis-typed bytecode that fails at runtime — Verify-
+            // Error on 4.x ("Class not assignable to Closure"), ClassCast-
+            // Exception on 5.x/6.x. T.this has no coherent meaning for
+            // traits anyway (per GEP-22 § this, super, and stackable traits
+            // item 1, this is the implementing instance, and the trait is
+            // not an enclosing scope of its implementer). Reject the
+            // qualifier at compile time pointing at the existing supported
+            // alternatives.
+            if (isTraitThisQualifier(mce.getObjectExpression())) {
+                unit.addError(new SyntaxException(
+                        "'" + traitClass.getNameWithoutPackage() + ".this' is not allowed inside trait code; use 'this." + mce.getMethodAsString() + "(...)' for normal dispatch, or '" + traitClass.getNameWithoutPackage() + ".super." + mce.getMethodAsString() + "(...)' for explicit trait-anchored dispatch",
+                        mce.getLineNumber(), mce.getColumnNumber()));
                 return mce;
             }
-        } else if (exp instanceof MethodCallExpression) {
-            MethodCallExpression mce = (MethodCallExpression) exp;
-            String obj = mce.getObjectExpression().getText();
-            if (mce.isImplicitThis() || "this".equals(obj)) {
-                return transformMethodCallOnThis(mce);
-            } else if ("super".equals(obj)) {
-                return transformSuperMethodCall(mce);
+            // GROOVY-12105: in a static trait method, the parser/resolver
+            // rewrites `super.m(...)` to a static call on the trait's
+            // declared superclass (typically Object) before we see it. Reject
+            // that pattern at compile time, pointing at `T.super.m(...)` as
+            // the supported explicit form. The discriminator is
+            // `mce.isImplicitThis()`: the rewritten super call carries
+            // `isImplicitThis=true` (because the user wrote no explicit
+            // receiver — the ClassExpression was synthesised by the
+            // resolver), while an explicit `ClassName.m()` call from
+            // user source has `isImplicitThis=false`. The synthesised
+            // ClassExpression also has no source position (line=-1), an
+            // independent signal of the same fact.
+            if (ClassHelper.isClassType(weaved.getOriginType())
+                && mce.isImplicitThis()
+                && mce.getObjectExpression() instanceof ClassExpression ce
+                && traitClass.getSuperClass() != null
+                && ce.getType().equals(traitClass.getSuperClass())) {
+                unit.addError(new SyntaxException(
+                    "'super' is not allowed in a static trait method; use '" + traitClass.getNameWithoutPackage() + ".super." + mce.getMethodAsString() + "(...)' for explicit trait-anchored dispatch",
+                    mce.getLineNumber(), mce.getColumnNumber()));
+                return mce;
+            }
+            if (isSuperExpression(mce.getObjectExpression())) {
+                return transformSuperMethodCall(mce); // super.m(x) --> $self.Ttrait$super$m(x)
+            } else if (isThisExpression(mce.getObjectExpression())) {
+                return transformMethodCallOnThis(mce); // this.m(x) --> $self.m(x) or this.m($self, x)
             }
         } else if (exp instanceof FieldExpression) {
-            FieldNode fn = ((FieldExpression) exp).getField();
-            return transformFieldReference(exp, fn, fn.isStatic());
-        } else if (exp instanceof VariableExpression) {
-            VariableExpression vexp = (VariableExpression) exp;
+            return transformFieldReference(exp, ((FieldExpression) exp).getField(), null);
+        } else if (exp instanceof VariableExpression vexp) {
             Variable accessedVariable = vexp.getAccessedVariable();
             if (accessedVariable instanceof FieldNode || accessedVariable instanceof PropertyNode) {
                 if (knownFields.contains(vexp.getName())) {
-                    boolean isStatic = Modifier.isStatic(accessedVariable.getModifiers());
                     return transformFieldReference(exp, accessedVariable instanceof FieldNode
-                            ? (FieldNode) accessedVariable : ((PropertyNode) accessedVariable).getField(), isStatic);
+                            ? (FieldNode) accessedVariable : ((PropertyNode) accessedVariable).getField(), null);
                 } else {
                     PropertyExpression propertyExpression = propX(varX(weaved), vexp.getName());
                     propertyExpression.getProperty().setSourcePosition(exp);
                     return propertyExpression;
                 }
-            } else if (accessedVariable instanceof DynamicVariable && !inClosure) { // GROOVY-9386
+            } else if (accessedVariable instanceof DynamicVariable && !inClosure) { // GROOVY-8049, GROOVY-9386
                 PropertyExpression propertyExpression = propX(varX(weaved), vexp.getName());
                 propertyExpression.getProperty().setSourcePosition(exp);
                 return propertyExpression;
@@ -152,14 +192,21 @@ class TraitReceiverTransformer extends ClassCodeExpressionTransformer {
             if (vexp.isSuperExpression()) {
                 throwSuperError(vexp);
             }
-        } else if (exp instanceof PropertyExpression) {
-            PropertyExpression pexp = (PropertyExpression) exp;
+        } else if (exp instanceof PropertyExpression pexp) {
             String obj = pexp.getObjectExpression().getText();
+            // GROOVY-12104: T.this.field qualifier — same rejection rationale
+            // as the method-call form above. Reject at compile time.
+            if (isTraitThisQualifier(pexp.getObjectExpression())) {
+                unit.addError(new SyntaxException(
+                        "'" + traitClass.getNameWithoutPackage() + ".this' is not allowed inside trait code; use 'this." + pexp.getPropertyAsString() + "' for the field reference",
+                        pexp.getLineNumber(), pexp.getColumnNumber()));
+                return pexp;
+            }
             if (pexp.isImplicitThis() || "this".equals(obj)) {
                 String propName = pexp.getPropertyAsString();
                 if (knownFields.contains(propName)) {
-                    FieldNode fn = new FieldNode(propName, 0, ClassHelper.OBJECT_TYPE, weavedType, null);
-                    return transformFieldReference(exp, fn, false);
+                    // GROOVY-12587: use the declared field, so a static one is read through the implementing class
+                    return transformFieldReference(exp, traitClass.getDeclaredField(propName), null);
                 }
             }
         } else if (exp instanceof ClosureExpression) {
@@ -169,6 +216,7 @@ class TraitReceiverTransformer extends ClassCodeExpressionTransformer {
                     varX(weaved)
             ));
             mce.setImplicitThis(false);
+            mce.setMethodTarget(ClassHelper.CLOSURE_TYPE.getMethods("rehydrate").get(0));
             mce.setSourcePosition(exp);
             boolean oldInClosure = inClosure;
             inClosure = true;
@@ -185,13 +233,12 @@ class TraitReceiverTransformer extends ClassCodeExpressionTransformer {
         return super.transform(exp);
     }
 
-    private Expression transformBinaryExpression(final BinaryExpression exp, final ClassNode weavedType) {
+    private Expression transformBinaryExpression(final BinaryExpression exp) {
         Expression leftExpression = exp.getLeftExpression();
         Expression rightExpression = exp.getRightExpression();
         Token operation = exp.getOperation();
-        if (operation.getText().equals("=")) {
+        if (operation.getType() == Types.ASSIGN) {
             String leftFieldName = null;
-            // it's an assignment
             if (leftExpression instanceof VariableExpression && ((VariableExpression) leftExpression).getAccessedVariable() instanceof FieldNode) {
                 leftFieldName = ((VariableExpression) leftExpression).getAccessedVariable().getName();
             } else if (leftExpression instanceof FieldExpression) {
@@ -199,34 +246,18 @@ class TraitReceiverTransformer extends ClassCodeExpressionTransformer {
             } else if (leftExpression instanceof PropertyExpression
                     && (((PropertyExpression) leftExpression).isImplicitThis() || "this".equals(((PropertyExpression) leftExpression).getObjectExpression().getText()))) {
                 leftFieldName = ((PropertyExpression) leftExpression).getPropertyAsString();
-                FieldNode fn = tryGetFieldNode(weavedType, leftFieldName);
-                if (fieldHelper == null || fn == null && !fieldHelper.hasPossibleMethod(Traits.helperSetterName(new FieldNode(leftFieldName, 0, ClassHelper.OBJECT_TYPE, weavedType, null)), rightExpression)) {
-                    return binX(propX(varX(weaved), leftFieldName), operation, transform(rightExpression));
-                }
             }
             if (leftFieldName != null) {
-                FieldNode fn = weavedType.getDeclaredField(leftFieldName);
-                FieldNode staticField = tryGetFieldNode(weavedType, leftFieldName);
-                if (fn == null) {
-                    fn = new FieldNode(leftFieldName, 0, ClassHelper.OBJECT_TYPE, weavedType, null);
+                ClassNode weavedType = weaved.getOriginType();
+                FieldNode traitField = tryGetFieldNode(weavedType, leftFieldName);
+                FieldNode dummyField = new FieldNode(leftFieldName, 0, ClassHelper.OBJECT_TYPE, weavedType, null);
+                if (fieldHelper == null || traitField == null && !fieldHelper.hasPossibleMethod(Traits.helperSetterName(dummyField), rightExpression)) {
+                    return binX(propX(varX(weaved), leftFieldName), operation, transform(rightExpression)); // GROOVY-7342, GROOVY-7456, GROOVY-9739, GROOVY-10143, et al.
                 }
-                Expression receiver = createFieldHelperReceiver();
-                boolean isStatic = staticField != null && staticField.isStatic();
-                if (fn.isStatic()) { // DO NOT USE isStatic variable here!
-                    receiver = propX(receiver, "class");
-                }
-                String method = Traits.helperSetterName(fn);
-                MethodCallExpression mce = callX(
-                        receiver,
-                        method,
-                        args(super.transform(rightExpression))
-                );
-                mce.setImplicitThis(false);
-                mce.setSourcePosition(exp);
-                markDynamicCall(mce, staticField, isStatic);
-                return mce;
+                return transformFieldReference(exp, traitField != null ? traitField : dummyField, rightExpression);
             }
         }
+
         Expression leftTransform = transform(leftExpression);
         Expression rightTransform = transform(rightExpression);
         Expression ret = exp instanceof DeclarationExpression ?
@@ -236,29 +267,37 @@ class TraitReceiverTransformer extends ClassCodeExpressionTransformer {
         return ret;
     }
 
-    private Expression transformFieldReference(final Expression exp, final FieldNode fn, final boolean isStatic) {
-        Expression receiver = createFieldHelperReceiver();
-        if (isStatic) {
-            Expression isClass = binX(receiver, INSTANCEOF, classX(ClassHelper.CLASS_Type));
-            receiver = ternaryX(isClass, receiver, callX(receiver, "getClass"));
+    private Expression transformFieldReference(final Expression exp, final FieldNode fn, final Expression value) {
+        Expression receiver;
+        if (ClassHelper.isClassType(weaved.getOriginType())) {
+            receiver = varX(weaved); // $static$self
+        } else if (fn.isStatic()) {
+            var call = callX(varX(weaved), "getClass"); // $self.getClass()
+            call.setImplicitThis(false);
+            call.setMethodTarget(ClassHelper.OBJECT_TYPE.getGetterMethod("getClass", false));
+            receiver = call;
+        } else {
+            receiver = castX(fieldHelper, varX(weaved)); // (<trait class>$Trait$FieldHelper) $self
         }
 
-        MethodCallExpression mce = callX(receiver, Traits.helperGetterName(fn));
+        MethodCallExpression mce;
+        if (value == null) {
+            mce = callX(receiver, Traits.helperGetterName(fn));
+        } else {
+            mce = callX(receiver, Traits.helperSetterName(fn), transform(value));
+        }
         mce.setImplicitThis(false);
         mce.setSourcePosition(exp);
-        markDynamicCall(mce, fn, isStatic);
-        return mce;
-    }
 
-    private static void markDynamicCall(final MethodCallExpression mce, final FieldNode fn, final boolean isStatic) {
-        if (isStatic) {
-            mce.putNodeMetaData(TraitASTTransformation.DO_DYNAMIC, fn.getOriginType());
-        }
+        // GROOVY-7255: static fields are available via the implementing class, which is not checkable
+        if (fn.isStatic()) mce.putNodeMetaData(TraitASTTransformation.DO_DYNAMIC, fn.getOriginType());
+
+        return mce;
     }
 
     private static FieldNode tryGetFieldNode(final ClassNode weavedType, final String fieldName) {
         FieldNode fn = weavedType.getDeclaredField(fieldName);
-        if (fn == null && ClassHelper.CLASS_Type.equals(weavedType)) {
+        if (fn == null && ClassHelper.isClassType(weavedType)) {
             GenericsType[] genericsTypes = weavedType.getGenericsTypes();
             if (genericsTypes != null && genericsTypes.length == 1) {
                 // for static properties
@@ -272,6 +311,21 @@ class TraitReceiverTransformer extends ClassCodeExpressionTransformer {
         unit.addError(new SyntaxException("Call to super is not allowed in a trait", node.getLineNumber(), node.getColumnNumber()));
     }
 
+    /**
+     * Returns {@code true} if the given expression has the shape
+     * {@code <traitClass>.this} — i.e. a {@link PropertyExpression} whose
+     * object is a {@link ClassExpression} of the enclosing trait class
+     * and whose property is the literal "this". Used by GROOVY-12104's
+     * compile-time rejection of {@code T.this.*} qualifier syntax in
+     * trait code.
+     */
+    private boolean isTraitThisQualifier(final Expression exp) {
+        if (!(exp instanceof PropertyExpression pe)) return false;
+        if (!"this".equals(pe.getPropertyAsString())) return false;
+        if (!(pe.getObjectExpression() instanceof ClassExpression ce)) return false;
+        return ce.getType().equals(traitClass);
+    }
+
     private Expression transformSuperMethodCall(final MethodCallExpression call) {
         String method = call.getMethodAsString();
         if (method == null) {
@@ -280,119 +334,107 @@ class TraitReceiverTransformer extends ClassCodeExpressionTransformer {
 
         Expression arguments = transform(call.getArguments());
         ArgumentListExpression superCallArgs = new ArgumentListExpression();
-        if (arguments instanceof ArgumentListExpression) {
-            ArgumentListExpression list = (ArgumentListExpression) arguments;
+        if (arguments instanceof ArgumentListExpression list) {
             for (Expression expression : list) {
                 superCallArgs.addExpression(expression);
             }
         } else {
             superCallArgs.addExpression(arguments);
         }
-        MethodCallExpression transformed = new MethodCallExpression(
+        MethodCallExpression newCall = callX(
                 weaved,
                 Traits.getSuperTraitMethodName(traitClass, method),
                 superCallArgs
         );
-        transformed.setSourcePosition(call);
-        transformed.setSafe(call.isSafe());
-        transformed.setSpreadSafe(call.isSpreadSafe());
-        transformed.setImplicitThis(false);
-        return transformed;
+        newCall.setSourcePosition(call);
+        newCall.setSafe(call.isSafe());
+        newCall.setSpreadSafe(call.isSpreadSafe());
+        newCall.setImplicitThis(false);
+        return newCall;
     }
 
     private Expression transformMethodCallOnThis(final MethodCallExpression call) {
-        Expression method = call.getMethod();
+        Expression method    = call.getMethod();
         Expression arguments = call.getArguments();
+        Expression thisExpr  = call.getObjectExpression();
+
         if (method instanceof ConstantExpression) {
-            String methodName = method.getText();
-            List<MethodNode> methods = traitClass.getMethods(methodName);
-            for (MethodNode methodNode : methods) {
-                if (methodName.equals(methodNode.getName()) && methodNode.isPrivate()) {
-                    if (inClosure) {
-                        return transformPrivateMethodCallOnThisInClosure(call, arguments, methodName);
-                    }
-                    return transformPrivateMethodCallOnThis(call, arguments, methodName);
+            // GROOVY-7213, GROOVY-7214, GROOVY-8282, GROOVY-8859, GROOVY-10106, GROOVY-10312
+            MethodNode methodNode = findConcreteMethod(traitClass, call.getMethodAsString());
+            if (methodNode != null) {
+                MethodCallExpression newCall;
+                if (methodNode.isStatic() && !methodNode.isPrivate() && !inClosure && hasAnnotation(methodNode, VIRTUAL_TYPE)) {
+                    // Default dispatch for trait static methods is
+                    // declarer-bound; per-implementer override visibility
+                    // is opt-in via `@Virtual`. Annotating a public trait
+                    // static with @Virtual emits the dynamic-dispatch
+                    // path so the implementer's override (if any) is
+                    // visible from trait code.
+
+                    // GROOVY-11985: this.m(x) --> ($static$self or (Class)$self.getClass()).m(x)
+                    Expression selfClass = ClassHelper.isClassType(weaved.getOriginType()) ? varX(weaved) : castX(ClassHelper.CLASS_Type.getPlainNodeReference(), callX(varX(weaved), "getClass"));
+                    newCall = callX(selfClass, method, transform(arguments));
+                    newCall.setImplicitThis(false);
+                    newCall.putNodeMetaData(TraitASTTransformation.DO_DYNAMIC, methodNode.getReturnType());
+                } else {
+                    // Reached for: plain (non-@Virtual) static, private static,
+                    // instance method, or any call inside a closure.
+
+                    // this.m(x) --> (this or T$Trait$Helper).m($self or $static$self or (Class)$self.getClass(), x)
+                    Expression selfClassOrObject = methodNode.isStatic() && !ClassHelper.isClassType(weaved.getOriginType()) ? castX(ClassHelper.CLASS_Type.getPlainNodeReference(), callX(weaved, "getClass")) : weaved;
+                    newCall = callX(!inClosure ? thisExpr : classX(traitHelper), method, createArgumentList(selfClassOrObject, arguments));
+                }
+                newCall.setGenericsTypes(call.getGenericsTypes());
+                newCall.setSpreadSafe(call.isSpreadSafe());
+                newCall.setSourcePosition(call);
+                return newCall;
+            }
+        }
+
+        // this.m(x) --> (this or $self or $static$self).m(x)
+        MethodCallExpression newCall = callX(inClosure ? thisExpr : weaved, method, transform(arguments));
+        newCall.setGenericsTypes(call.getGenericsTypes()); // GROOVY-11302: this.<T>m(x)
+        newCall.setImplicitThis(inClosure ? call.isImplicitThis() : false);
+        newCall.setSafe(inClosure ? call.isSafe() : false);
+        newCall.setSpreadSafe(call.isSpreadSafe());
+        newCall.setSourcePosition(call);
+        return newCall;
+    }
+
+    private static MethodNode findConcreteMethod(final ClassNode traitClass, final String methodName) {
+        for (MethodNode methodNode : traitClass.getDeclaredMethods(methodName)) {
+            if (methodNode.isPrivate() || methodNode.isStatic()) {
+                return methodNode;
+            }
+        }
+
+        // GROOVY-8272, GROOVY-10312: public static method from super trait
+        var traits = Traits.findTraits(traitClass); traits.remove(traitClass);
+
+        for (ClassNode superTrait : traits) {
+            ClassNode traitHelper = Traits.findHelper(superTrait);
+            for (MethodNode methodNode : traitHelper.getDeclaredMethods(methodName)) {
+                if (methodNode.isPublic() && methodNode.isStatic()
+                        // exclude public method with body as it's included in trait interface
+                        && ClassHelper.isClassType(methodNode.getParameters()[0].getType())) {
+                    return methodNode;
                 }
             }
         }
-        if (inClosure) {
-            return transformMethodCallOnThisInClosure(call);
-        }
-        return transformMethodCallOnThisFallBack(call, method, arguments);
+
+        return null;
     }
 
-    private Expression transformMethodCallOnThisFallBack(final MethodCallExpression call,
-                                                         final Expression method, final Expression arguments) {
-        MethodCallExpression transformed = new MethodCallExpression(
-                weaved,
-                method,
-                transform(arguments)
-        );
-        transformed.setSourcePosition(call);
-        transformed.setSafe(call.isSafe());
-        transformed.setSpreadSafe(call.isSpreadSafe());
-        transformed.setImplicitThis(false);
-        return transformed;
-    }
-
-    private Expression transformMethodCallOnThisInClosure(final MethodCallExpression call) {
-        MethodCallExpression transformed = new MethodCallExpression(
-                (Expression) call.getReceiver(),
-                call.getMethod(),
-                transform(call.getArguments())
-        );
-        transformed.setSourcePosition(call);
-        transformed.setSafe(call.isSafe());
-        transformed.setSpreadSafe(call.isSpreadSafe());
-        transformed.setImplicitThis(call.isImplicitThis());
-        return transformed;
-    }
-
-    private Expression transformPrivateMethodCallOnThis(final MethodCallExpression call,
-                                                        final Expression arguments, final String methodName) {
-        ArgumentListExpression newArgs = createArgumentList(arguments);
-        MethodCallExpression transformed = new MethodCallExpression(
-                new VariableExpression("this"),
-                methodName,
-                newArgs
-        );
-        transformed.setSourcePosition(call);
-        transformed.setSafe(call.isSafe());
-        transformed.setSpreadSafe(call.isSpreadSafe());
-        transformed.setImplicitThis(true);
-        return transformed;
-    }
-
-    private Expression transformPrivateMethodCallOnThisInClosure(final MethodCallExpression call,
-                                                                 final Expression arguments, final String methodName) {
-        ArgumentListExpression newArgs = createArgumentList(arguments);
-        MethodCallExpression transformed = new MethodCallExpression(
-                new ClassExpression(traitHelperClass),
-                methodName,
-                newArgs
-        );
-        transformed.setSourcePosition(call);
-        transformed.setSafe(call.isSafe());
-        transformed.setSpreadSafe(call.isSpreadSafe());
-        transformed.setImplicitThis(true);
-        return transformed;
-    }
-
-    private ArgumentListExpression createArgumentList(final Expression origCallArgs) {
+    private ArgumentListExpression createArgumentList(final Expression self, final Expression arguments) {
         ArgumentListExpression newArgs = new ArgumentListExpression();
-        newArgs.addExpression(new VariableExpression(weaved));
-        if (origCallArgs instanceof TupleExpression) {
-            List<Expression> expressions = ((TupleExpression) origCallArgs).getExpressions();
-            for (Expression expression : expressions) {
-                newArgs.addExpression(transform(expression));
+        newArgs.addExpression(self);
+        if (arguments instanceof TupleExpression) {
+            for (Expression argument : (TupleExpression) arguments) {
+                newArgs.addExpression(transform(argument));
             }
         } else {
-            newArgs.addExpression(origCallArgs);
+            newArgs.addExpression(transform(arguments));
         }
         return newArgs;
-    }
-
-    private Expression createFieldHelperReceiver() {
-        return weaved.getOriginType().equals(ClassHelper.CLASS_Type) ? weaved : castX(fieldHelper, weaved);
     }
 }

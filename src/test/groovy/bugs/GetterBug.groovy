@@ -16,62 +16,60 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-/**
- */
-class GetterBug extends GroovyTestCase {
-     
+final class GetterBug {
+
     String foo
     def bar
 
     String getFoo() {
-        if (foo == null) { 
+        if (foo == null) {
             foo = "James"
         }
         return foo
     }
-    
+
     void setFoo(String foo) {
         this.foo = foo
-       }
-    
+    }
+
+    @Test
     void testTypedGetterAndSetter() {
         def value = getFoo()
-        
+
         assert value == "James"
-        
+
         setFoo("Bob")
-        
+
         value = getFoo()
-        
+
         assert value == "Bob"
     }
-    
+
     def getBar() {
         if (this.bar == null) {
             this.bar = "James"
         }
         bar
     }
-    
+
     void setBar(bar) {
         this.bar = bar
     }
-    
-    
+
+    @Test
     void testUntypedGetterAndSetter() {
         def value = getBar()
-        
+
         assert value == "James"
-        
+
         setBar("Bob")
-        
+
         value = getBar()
-        
+
         assert value == "Bob"
     }
-    
 }

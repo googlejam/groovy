@@ -18,7 +18,6 @@
  */
 package org.codehaus.groovy.control.customizers
 
-import groovy.test.GroovyTestCase
 import groovy.transform.ConditionalInterrupt
 import org.codehaus.groovy.ast.ASTNode
 import org.codehaus.groovy.ast.ClassNode
@@ -29,6 +28,8 @@ import org.codehaus.groovy.control.SourceUnit
 import org.codehaus.groovy.transform.ASTTransformation
 import org.codehaus.groovy.transform.GroovyASTTransformation
 import org.codehaus.groovy.transform.GroovyASTTransformationClass
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
 import org.objectweb.asm.Opcodes
 
 import java.lang.annotation.ElementType
@@ -36,17 +37,21 @@ import java.lang.annotation.Retention
 import java.lang.annotation.RetentionPolicy
 import java.lang.annotation.Target
 
+import static groovy.test.GroovyAssert.shouldFail
+
 /**
  * Tests the {@link ASTTransformationCustomizer} for cases which rely on AST Builder.
  */
-class ASTTransformationCustomizerTest extends GroovyTestCase {
+class ASTTransformationCustomizerTest {
     CompilerConfiguration configuration
     ASTTransformationCustomizer customizer
 
+    @BeforeEach
     void setUp() {
         configuration = new CompilerConfiguration()
     }
 
+    @Test
     void testLocalTransformationWithClosureAnnotationParameter() {
         // add @Contract({distance = 1 })
         customizer = new ASTTransformationCustomizer(Contract)
@@ -66,6 +71,7 @@ class ASTTransformationCustomizerTest extends GroovyTestCase {
         assert result.distance == 1
     }
 
+    @Test
     void testLocalTransformationWithClosureAnnotationParameter_notAnnotatedAsASTInterface() {
         // add @Contract2({distance = 1 })
         customizer = new ASTTransformationCustomizer(Contract2, "org.codehaus.groovy.control.customizers.ContractAnnotation")
@@ -85,6 +91,7 @@ class ASTTransformationCustomizerTest extends GroovyTestCase {
         assert result.distance == 1
     }
 
+    @Test
     void testLocalTransformationWithClassAnnotationParameter() {
         // add @ConditionalInterrupt(value={ true }, thrown=SecurityException)
         final expression = new AstBuilder().buildFromCode(CompilePhase.CONVERSION) {->
@@ -108,12 +115,12 @@ class ASTTransformationCustomizerTest extends GroovyTestCase {
 @Retention(RetentionPolicy.SOURCE)
 @Target([ElementType.TYPE])
 @GroovyASTTransformationClass("org.codehaus.groovy.control.customizers.ContractAnnotation")
-protected @interface Contract {
+@interface Contract {
     Class value();
 }
 
 @GroovyASTTransformation(phase=CompilePhase.CONVERSION)
-protected class ContractAnnotation implements ASTTransformation, Opcodes {
+class ContractAnnotation implements ASTTransformation, Opcodes {
     void visit(ASTNode[] nodes, SourceUnit source) {
         def node = nodes[0]
         def member = node.getMember("value")
@@ -123,6 +130,6 @@ protected class ContractAnnotation implements ASTTransformation, Opcodes {
 
 @Retention(RetentionPolicy.SOURCE)
 @Target([ElementType.TYPE])
-protected @interface Contract2 {
+@interface Contract2 {
     Class value();
 }

@@ -24,11 +24,13 @@ import groovy.util.ResourceException;
 import groovy.util.ScriptException;
 import org.codehaus.groovy.runtime.GroovyCategorySupport;
 
-import javax.servlet.ServletConfig;
-import javax.servlet.ServletException;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
+import jakarta.servlet.ServletConfig;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+
+import static java.lang.System.Logger.Level.ERROR;
 
 /**
  * This servlet will run Groovy scripts as Groovlets.  Groovlets are scripts
@@ -73,6 +75,8 @@ import java.io.IOException;
  */
 public class GroovyServlet extends AbstractHttpServlet {
 
+    private static final System.Logger LOGGER = System.getLogger(GroovyServlet.class.getName());
+
     /**
      * The script engine executing the Groovy scripts for this servlet
      */
@@ -112,7 +116,12 @@ public class GroovyServlet extends AbstractHttpServlet {
 
         // Run the script
         try {
-            Closure<?> closure = new Closure<Object>(gse) {
+            Closure<?> closure = new Closure<>(gse) {
+                /**
+                 * Runs {@code scriptUri} with {@code binding}.
+                 * {@link ResourceException} and {@link ScriptException} are
+                 * wrapped in {@link RuntimeException}.
+                 */
                 @Override
                 public Object call() {
                     try {
@@ -139,9 +148,13 @@ public class GroovyServlet extends AbstractHttpServlet {
                 if (runtimeException.getStackTrace().length > 0)
                     error.append(runtimeException.getStackTrace()[0].toString());
                 servletContext.log(error.toString());
-                System.err.println(error.toString());
-                runtimeException.printStackTrace(System.err);
-                response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR, error.toString());
+                LOGGER.log(ERROR, error.toString());
+                LOGGER.log(ERROR, "Script processing failed", runtimeException);
+                if (isVerboseErrors()) {
+                    response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR, error.toString());
+                } else {
+                    response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+                }
                 return;
             }
             /*
@@ -150,7 +163,7 @@ public class GroovyServlet extends AbstractHttpServlet {
             if (e instanceof ResourceException) {
                 error.append(" Script not found, sending 404.");
                 servletContext.log(error.toString());
-                System.err.println(error.toString());
+                LOGGER.log(ERROR, error.toString());
                 response.sendError(HttpServletResponse.SC_NOT_FOUND);
                 return;
             }
@@ -162,17 +175,33 @@ public class GroovyServlet extends AbstractHttpServlet {
             if (e.getStackTrace().length > 0)
                 error.append(e.getStackTrace()[0].toString());
             servletContext.log(e.toString());
-            System.err.println(e.toString());
-            runtimeException.printStackTrace(System.err);
-            response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR, e.toString());
+            LOGGER.log(ERROR, e.toString());
+            LOGGER.log(ERROR, "Internal error", runtimeException);
+            if (isVerboseErrors()) {
+                response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR, e.toString());
+            } else {
+                response.sendError(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
+            }
         }
     }
 
     /**
-     * Hook method to setup the GroovyScriptEngine to use.<br>
+     * Hook method to set up the GroovyScriptEngine to use.<br>
      * Subclasses may override this method to provide a custom engine.
      */
     protected GroovyScriptEngine createGroovyScriptEngine(){
         return new GroovyScriptEngine(this);
+    }
+
+    /**
+     * Whether error responses sent to the client include the script path, the
+     * exception message and the top stack frame. {@code false} by default, so
+     * internal detail is not disclosed to callers; the full error is written to
+     * the servlet and application logs regardless. Override this method, or set
+     * the {@code groovy.servlet.verbose.errors} system property to {@code true},
+     * to re-enable the detailed client responses while debugging.
+     */
+    protected boolean isVerboseErrors() {
+        return Boolean.getBoolean("groovy.servlet.verbose.errors");
     }
 }

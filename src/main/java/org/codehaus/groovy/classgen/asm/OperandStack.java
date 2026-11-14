@@ -18,12 +18,11 @@
  */
 package org.codehaus.groovy.classgen.asm;
 
+import groovy.lang.Reference;
 import org.apache.groovy.ast.tools.ClassNodeUtils;
 import org.codehaus.groovy.GroovyBugError;
 import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
-import org.codehaus.groovy.ast.ConstructorNode;
-import org.codehaus.groovy.ast.MethodNode;
 import org.codehaus.groovy.ast.Variable;
 import org.codehaus.groovy.ast.expr.CastExpression;
 import org.codehaus.groovy.ast.expr.ConstantExpression;
@@ -38,15 +37,23 @@ import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 
+import static java.lang.System.Logger.Level.ERROR;
+
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveBoolean;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveByte;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveChar;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveDouble;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveFloat;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveInt;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveLong;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveShort;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveVoid;
 import static org.objectweb.asm.Opcodes.ACONST_NULL;
 import static org.objectweb.asm.Opcodes.ALOAD;
-import static org.objectweb.asm.Opcodes.BIPUSH;
 import static org.objectweb.asm.Opcodes.CHECKCAST;
 import static org.objectweb.asm.Opcodes.D2F;
 import static org.objectweb.asm.Opcodes.D2I;
 import static org.objectweb.asm.Opcodes.D2L;
-import static org.objectweb.asm.Opcodes.DCONST_0;
-import static org.objectweb.asm.Opcodes.DCONST_1;
 import static org.objectweb.asm.Opcodes.DUP;
 import static org.objectweb.asm.Opcodes.DUP2;
 import static org.objectweb.asm.Opcodes.DUP2_X1;
@@ -55,9 +62,6 @@ import static org.objectweb.asm.Opcodes.DUP_X2;
 import static org.objectweb.asm.Opcodes.F2D;
 import static org.objectweb.asm.Opcodes.F2I;
 import static org.objectweb.asm.Opcodes.F2L;
-import static org.objectweb.asm.Opcodes.FCONST_0;
-import static org.objectweb.asm.Opcodes.FCONST_1;
-import static org.objectweb.asm.Opcodes.FCONST_2;
 import static org.objectweb.asm.Opcodes.GETSTATIC;
 import static org.objectweb.asm.Opcodes.I2B;
 import static org.objectweb.asm.Opcodes.I2C;
@@ -65,33 +69,48 @@ import static org.objectweb.asm.Opcodes.I2D;
 import static org.objectweb.asm.Opcodes.I2F;
 import static org.objectweb.asm.Opcodes.I2L;
 import static org.objectweb.asm.Opcodes.I2S;
-import static org.objectweb.asm.Opcodes.ICONST_0;
-import static org.objectweb.asm.Opcodes.ICONST_1;
 import static org.objectweb.asm.Opcodes.INVOKESPECIAL;
 import static org.objectweb.asm.Opcodes.INVOKEVIRTUAL;
 import static org.objectweb.asm.Opcodes.L2D;
 import static org.objectweb.asm.Opcodes.L2F;
 import static org.objectweb.asm.Opcodes.L2I;
-import static org.objectweb.asm.Opcodes.LCONST_0;
-import static org.objectweb.asm.Opcodes.LCONST_1;
 import static org.objectweb.asm.Opcodes.NEW;
 import static org.objectweb.asm.Opcodes.POP;
 import static org.objectweb.asm.Opcodes.POP2;
 import static org.objectweb.asm.Opcodes.SWAP;
 
+/**
+ * Tracks the JVM operand stack during bytecode generation, maintaining a
+ * parallel list of {@link ClassNode} type descriptors for each slot.
+ * Used to emit correct pop/cast/box instructions and to verify stack discipline.
+ */
 public class OperandStack {
+
+    private static final System.Logger LOGGER = System.getLogger(OperandStack.class.getName());
 
     private final List<ClassNode> stack = new ArrayList<>();
     private final WriterController controller;
 
+    /**
+     * Creates an operand stack tracker backed by the given controller.
+     *
+     * @param controller the writer controller for the current compilation
+     */
     public OperandStack(final WriterController controller) {
         this.controller = controller;
     }
 
+    /** Returns the number of tracked entries on the operand stack. */
     public int getStackLength() {
         return stack.size();
     }
 
+    /**
+     * Pops all stack entries above {@code elements}, emitting the appropriate
+     * {@code POP} or {@code POP2} instruction for each popped value.
+     *
+     * @param elements the target stack depth to reduce to
+     */
     public void popDownTo(final int elements) {
         int last = stack.size();
         MethodVisitor mv = controller.getMethodVisitor();
@@ -109,7 +128,7 @@ public class OperandStack {
     private ClassNode popWithMessage(final int last) {
         try {
             return stack.remove(last);
-        } catch (ArrayIndexOutOfBoundsException ai) {
+        } catch (IndexOutOfBoundsException e) { //GROOVY-10458
             String method = controller.getMethodNode() != null
                     ? controller.getMethodNode().getTypeDescriptor()
                     : controller.getConstructorNode().getTypeDescriptor();
@@ -121,7 +140,7 @@ public class OperandStack {
      * returns true for long and double
      */
     private static boolean isTwoSlotType(final ClassNode type) {
-        return type == ClassHelper.long_TYPE || type == ClassHelper.double_TYPE;
+        return isPrimitiveLong(type) || isPrimitiveDouble(type);
     }
 
     /**
@@ -137,16 +156,12 @@ public class OperandStack {
         MethodVisitor mv = controller.getMethodVisitor();
         if (mark == size) {
             // no element, so use emptyDefault
-            if (emptyDefault) {
-                mv.visitIntInsn(BIPUSH, 1);
-            } else {
-                mv.visitIntInsn(BIPUSH, 0);
-            }
+            mv.visitLdcInsn(emptyDefault ? 1 : 0);
             stack.add(null);
         } else if (mark == size - 1) {
             ClassNode last = stack.get(size - 1);
             // nothing to do in that case
-            if (last == ClassHelper.boolean_TYPE) return;
+            if (isPrimitiveBoolean(last)) return;
             if (ClassHelper.isPrimitiveType(last)) {
                 BytecodeHelper.convertPrimitiveToBoolean(mv, last);
             } else {
@@ -165,12 +180,26 @@ public class OperandStack {
         popDownTo(stack.size() - 1);
     }
 
+    /**
+     * Emits a conditional jump instruction and returns the newly created target label.
+     * The boolean operand is removed from the tracked stack.
+     *
+     * @param ifIns the branch opcode (e.g. {@code IFEQ}, {@code IFNE})
+     * @return the label that the jump will branch to
+     */
     public Label jump(final int ifIns) {
         Label label = new Label();
         jump(ifIns,label);
         return label;
     }
 
+    /**
+     * Emits a conditional jump to the given label.
+     * The boolean operand is removed from the tracked stack.
+     *
+     * @param ifIns the branch opcode (e.g. {@code IFEQ}, {@code IFNE})
+     * @param label the branch target
+     */
     public void jump(final int ifIns, final Label label) {
         controller.getMethodVisitor().visitJumpInsn(ifIns, label);
         // remove the boolean from the operand stack tracker
@@ -191,11 +220,17 @@ public class OperandStack {
         }
     }
 
+    /**
+     * Boxes the top operand if it is a primitive type, emitting the appropriate
+     * wrapper-creation bytecode, and returns the resulting (possibly wrapped) type.
+     *
+     * @return the type of the top operand after boxing
+     */
     public ClassNode box() {
         MethodVisitor mv = controller.getMethodVisitor();
         int size = stack.size();
         ClassNode type = stack.get(size - 1);
-        if (ClassHelper.isPrimitiveType(type) && ClassHelper.VOID_TYPE != type) {
+        if (ClassHelper.isPrimitiveType(type) && !isPrimitiveVoid(type)) {
             ClassNode wrapper = ClassHelper.getWrapper(type);
             BytecodeHelper.doCastToWrappedType(mv, type, wrapper);
             type = wrapper;
@@ -261,6 +296,30 @@ public class OperandStack {
     }
 
     /**
+     * Duplicates the top operand and inserts the copy beneath the two
+     * operands immediately under it.
+     * <p>
+     * Those two operands are one word each, as with an array reference and
+     * an int index under a store value. The duplicated operand is one word,
+     * or two when it is a {@code long} or a {@code double}
+     * ({@code DUP_X2} or {@code DUP2_X2}). The inserted copy is the preserved
+     * value; the original stays on top to be consumed.
+     */
+    public void dupUnderTwo() {
+        int size = stack.size();
+        if (size < 3) {
+            throw new GroovyBugError("dupUnderTwo requires three operands but the operand stack has " + size);
+        }
+        ClassNode top = stack.get(size - 1);
+        if (isTwoSlotType(stack.get(size - 2)) || isTwoSlotType(stack.get(size - 3))) {
+            throw new GroovyBugError("dupUnderTwo requires two one-word operands under the value");
+        }
+        controller.getMethodVisitor().visitInsn(isTwoSlotType(top) ? DUP2_X2 : DUP_X2);
+        // [below, under, top] -> [top, below, under, top]
+        stack.add(size - 3, top);
+    }
+
+    /**
      * replace top level element with new element of given type
      */
     public void replace(final ClassNode type) {
@@ -274,7 +333,7 @@ public class OperandStack {
         try {
             if (size == 0) throw new ArrayIndexOutOfBoundsException("size==0");
         } catch (ArrayIndexOutOfBoundsException ai) {
-            System.err.println("index problem in " + controller.getSourceUnit().getName());
+            LOGGER.log(ERROR, "Index problem in {0}", controller.getSourceUnit().getName());
             throw ai;
         }
 
@@ -296,44 +355,58 @@ public class OperandStack {
         doConvertAndCast(targetType, false);
     }
 
+    /**
+     * Performs a Groovy cast of the top operand to the declared origin type of {@code v}.
+     *
+     * @param v the variable whose origin type is the cast target
+     */
     public void doGroovyCast(final Variable v) {
         doConvertAndCast(v.getOriginType(), false);
     }
 
+    /**
+     * Performs an {@code as}-coercion of the top operand to {@code targetType}.
+     *
+     * @param targetType the target type
+     */
     public void doAsType(final ClassNode targetType) {
         doConvertAndCast(targetType,true);
     }
 
-    private void throwExceptionForNoStackElement(final int size, final ClassNode targetType, final boolean coerce) {
-        if (size > 0) return;
-        StringBuilder sb = new StringBuilder();
-        sb.append("Internal compiler error while compiling ").append(controller.getSourceUnit().getName()).append("\n");
-        MethodNode methodNode = controller.getMethodNode();
-        if (methodNode!=null) {
-            sb.append("Method: ");
-            sb.append(methodNode);
-            sb.append("\n");
-        }
-        ConstructorNode constructorNode = controller.getConstructorNode();
-        if (constructorNode!=null) {
+    private String missingOperand(final ClassNode targetType, final boolean coerce) {
+        var sb = new StringBuilder("Internal compiler error while compiling ");
+        sb.append(controller.getSourceUnit().getName());
+        sb.append("\n");
+        var constructorNode = controller.getConstructorNode();
+        if (constructorNode != null) {
             sb.append("Constructor: ");
-            sb.append(methodNode);
+            sb.append(constructorNode);
             sb.append("\n");
+        } else {
+            var methodNode = controller.getMethodNode();
+            if (methodNode != null) {
+                sb.append("Method: ");
+                sb.append(methodNode);
+                sb.append("\n");
+            }
         }
-        sb.append("Line ").append(controller.getLineNumber()).append(",");
-        sb.append(" expecting ").append(coerce ? "coercion" : "casting").append(" to ").append(targetType.toString(false));
+        sb.append("Line ").append(controller.getLineNumber()).append(", expecting ").append(coerce ? "coercion" : "casting");
+        sb.append(" to ").append(ClassNodeUtils.formatTypeName(targetType));
         sb.append(" but operand stack is empty");
-        throw new ArrayIndexOutOfBoundsException(sb.toString());
+        return sb.toString();
     }
 
     private void doConvertAndCast(ClassNode targetType, final boolean coerce) {
         int size = stack.size();
-        throwExceptionForNoStackElement(size, targetType, coerce);
+        if (size == 0) {
+            throw new ArrayIndexOutOfBoundsException(missingOperand(targetType, coerce));
+        }
 
         ClassNode top = stack.get(size - 1);
-        targetType = targetType.redirect();
-        if (top == targetType /* for better performance */
-                || ClassNodeUtils.isCompatibleWith(top, targetType)) return;
+        if (top == (targetType = targetType.redirect()) // quick check
+                || ClassNodeUtils.isCompatibleWith(top, targetType)) {
+            return;
+        }
 
         if (coerce) {
             controller.getInvocationWriter().coerce(top, targetType);
@@ -360,13 +433,13 @@ public class OperandStack {
         }
 
         MethodVisitor mv = controller.getMethodVisitor();
-        if (primTarget && !ClassHelper.boolean_TYPE.equals(targetType)
+        if (primTarget && !isPrimitiveBoolean(targetType)
                 && !primTop && ClassHelper.getWrapper(targetType).equals(top)) {
             BytecodeHelper.doCastToPrimitive(mv, top, targetType);
         } else {
             top = stack.get(size - 1);
             if (!WideningCategories.implementsInterfaceOrSubclassOf(top, targetType)) {
-                BytecodeHelper.doCast(mv,targetType);
+                BytecodeHelper.doCast(mv, targetType);
             }
         }
         replace(targetType);
@@ -374,17 +447,17 @@ public class OperandStack {
 
     private boolean convertFromInt(final ClassNode target) {
         int convertCode;
-        if (target == ClassHelper.char_TYPE) {
+        if (isPrimitiveChar(target)) {
             convertCode = I2C;
-        } else if (target == ClassHelper.byte_TYPE) {
+        } else if (isPrimitiveByte(target)) {
             convertCode = I2B;
-        } else if (target == ClassHelper.short_TYPE) {
+        } else if (isPrimitiveShort(target)) {
             convertCode = I2S;
-        } else if (target == ClassHelper.long_TYPE) {
+        } else if (isPrimitiveLong(target)) {
             convertCode = I2L;
-        } else if (target == ClassHelper.float_TYPE) {
+        } else if (isPrimitiveFloat(target)) {
             convertCode = I2F;
-        } else if (target == ClassHelper.double_TYPE) {
+        } else if (isPrimitiveDouble(target)) {
             convertCode = I2D;
         } else {
             return false;
@@ -395,18 +468,18 @@ public class OperandStack {
 
     private boolean convertFromLong(final ClassNode target) {
         MethodVisitor mv = controller.getMethodVisitor();
-        if (target == ClassHelper.int_TYPE) {
+        if (isPrimitiveInt(target)) {
             mv.visitInsn(L2I);
             return true;
-        } else if (target == ClassHelper.char_TYPE
-                || target == ClassHelper.byte_TYPE
-                || target == ClassHelper.short_TYPE) {
+        } else if (isPrimitiveChar(target)
+                || isPrimitiveByte(target)
+                || isPrimitiveShort(target)) {
             mv.visitInsn(L2I);
             return convertFromInt(target);
-        } else if (target == ClassHelper.double_TYPE) {
+        } else if (isPrimitiveDouble(target)) {
             mv.visitInsn(L2D);
             return true;
-        } else if (target == ClassHelper.float_TYPE) {
+        } else if (isPrimitiveFloat(target)) {
             mv.visitInsn(L2F);
             return true;
         }
@@ -415,18 +488,18 @@ public class OperandStack {
 
     private boolean convertFromDouble(final ClassNode target) {
         MethodVisitor mv = controller.getMethodVisitor();
-        if (target == ClassHelper.int_TYPE) {
+        if (isPrimitiveInt(target)) {
             mv.visitInsn(D2I);
             return true;
-        } else if (target == ClassHelper.char_TYPE
-                || target == ClassHelper.byte_TYPE
-                || target == ClassHelper.short_TYPE) {
+        } else if (isPrimitiveChar(target)
+                || isPrimitiveByte(target)
+                || isPrimitiveShort(target)) {
             mv.visitInsn(D2I);
             return convertFromInt(target);
-        } else if (target == ClassHelper.long_TYPE) {
+        } else if (isPrimitiveLong(target)) {
             mv.visitInsn(D2L);
             return true;
-        } else if (target == ClassHelper.float_TYPE) {
+        } else if (isPrimitiveFloat(target)) {
             mv.visitInsn(D2F);
             return true;
         }
@@ -435,18 +508,18 @@ public class OperandStack {
 
     private boolean convertFromFloat(final ClassNode target) {
         MethodVisitor mv = controller.getMethodVisitor();
-        if (target == ClassHelper.int_TYPE) {
+        if (isPrimitiveInt(target)) {
             mv.visitInsn(F2I);
             return true;
-        } else if (target == ClassHelper.char_TYPE
-                || target == ClassHelper.byte_TYPE
-                || target == ClassHelper.short_TYPE) {
+        } else if (isPrimitiveChar(target)
+                || isPrimitiveByte(target)
+                || isPrimitiveShort(target)) {
             mv.visitInsn(F2I);
             return convertFromInt(target);
-        } else if (target == ClassHelper.long_TYPE) {
+        } else if (isPrimitiveLong(target)) {
             mv.visitInsn(F2L);
             return true;
-        } else if (target == ClassHelper.double_TYPE) {
+        } else if (isPrimitiveDouble(target)) {
             mv.visitInsn(F2D);
             return true;
         }
@@ -456,17 +529,17 @@ public class OperandStack {
     private boolean convertPrimitive(final ClassNode top, final ClassNode target) {
         if (top == target)
             return true;
-        if (top == ClassHelper.int_TYPE) {
+        if (isPrimitiveInt(top)) {
             return convertFromInt(target);
-        } else if (top == ClassHelper.char_TYPE
-                || top == ClassHelper.byte_TYPE
-                || top == ClassHelper.short_TYPE) {
-            return target == ClassHelper.int_TYPE || convertFromInt(target);
-        } else if (top == ClassHelper.float_TYPE) {
+        } else if (isPrimitiveChar(top)
+                || isPrimitiveByte(top)
+                || isPrimitiveShort(top)) {
+            return isPrimitiveInt(target) || convertFromInt(target);
+        } else if (isPrimitiveFloat(top)) {
             return convertFromFloat(target);
-        } else if (top == ClassHelper.double_TYPE) {
+        } else if (isPrimitiveDouble(top)) {
             return convertFromDouble(target);
-        } else if (top == ClassHelper.long_TYPE) {
+        } else if (isPrimitiveLong(top)) {
             return convertFromLong(target);
         }
         return false;
@@ -478,21 +551,20 @@ public class OperandStack {
     public void pushConstant(final ConstantExpression expression) {
         MethodVisitor mv = controller.getMethodVisitor();
         Object value = expression.getValue();
-        ClassNode origType = expression.getType().redirect();
-        ClassNode type = ClassHelper.getUnwrapper(origType);
-        boolean boxing = origType != type;
-        boolean asPrimitive = boxing || ClassHelper.isPrimitiveType(type);
+        ClassNode exprType = expression.getType();
+        ClassNode type = ClassHelper.getUnwrapper(exprType);
+        boolean boxing = !exprType.equals(type);
+        boolean primitive = boxing || ClassHelper.isPrimitiveType(type);
 
         if (value == null) {
             mv.visitInsn(ACONST_NULL);
-        } else if (boxing && value instanceof Boolean) {
-            // special path for boxed boolean
-            Boolean bool = (Boolean) value;
-            String text = bool ? "TRUE" : "FALSE";
+            type = ClassHelper.OBJECT_TYPE;
+        } else if (boxing && value instanceof Boolean) { // load static value
+            String text = (Boolean) value ? "TRUE" : "FALSE";
             mv.visitFieldInsn(GETSTATIC, "java/lang/Boolean", text, "Ljava/lang/Boolean;");
             boxing = false;
-            type = origType;
-        } else if (asPrimitive) {
+            type = exprType;
+        } else if (primitive) {
             pushPrimitiveConstant(mv, value, type);
         } else if (value instanceof BigDecimal) {
             newInstance(mv, value);
@@ -518,56 +590,31 @@ public class OperandStack {
     }
 
     private static void pushPrimitiveConstant(final MethodVisitor mv, final Object value, final ClassNode type) {
-        boolean isInt = ClassHelper.int_TYPE.equals(type);
-        boolean isShort = ClassHelper.short_TYPE.equals(type);
-        boolean isByte = ClassHelper.byte_TYPE.equals(type);
-        boolean isChar = ClassHelper.char_TYPE.equals(type);
+        boolean isInt = isPrimitiveInt(type);
+        boolean isShort = isPrimitiveShort(type);
+        boolean isByte = isPrimitiveByte(type);
+        boolean isChar = isPrimitiveChar(type);
         if (isInt || isShort || isByte || isChar) {
             int val = isInt ? (Integer) value : isShort ? (Short) value : isChar ? (Character) value : (Byte) value;
-            BytecodeHelper.pushConstant(mv, val);
-        } else if (ClassHelper.long_TYPE.equals(type)) {
-            if ((Long) value == 0L) {
-                mv.visitInsn(LCONST_0);
-            } else if ((Long) value == 1L) {
-                mv.visitInsn(LCONST_1);
-            } else {
-                mv.visitLdcInsn(value);
-            }
-        } else if (ClassHelper.float_TYPE.equals(type)) {
-            // GROOVY-9797: Use Float.equals to differentiate between positive and negative zero
-            if (value.equals(0f)) {
-                mv.visitInsn(FCONST_0);
-            } else if ((Float) value == 1f) {
-                mv.visitInsn(FCONST_1);
-            } else if ((Float) value == 2f) {
-                mv.visitInsn(FCONST_2);
-            } else {
-                mv.visitLdcInsn(value);
-            }
-        } else if (ClassHelper.double_TYPE.equals(type)) {
-            // GROOVY-9797: Use Double.equals to differentiate between positive and negative zero
-            if (value.equals(0d)) {
-                mv.visitInsn(DCONST_0);
-            } else if ((Double) value == 1d) {
-                mv.visitInsn(DCONST_1);
-            } else {
-                mv.visitLdcInsn(value);
-            }
-        } else if (ClassHelper.boolean_TYPE.equals(type)) {
-            boolean b = (Boolean) value;
-            if (b) {
-                mv.visitInsn(ICONST_1);
-            } else {
-                mv.visitInsn(ICONST_0);
-            }
+            mv.visitLdcInsn(val);
+        } else if (isPrimitiveLong(type) || isPrimitiveFloat(type) || isPrimitiveDouble(type)) {
+            mv.visitLdcInsn(value);
+        } else if (isPrimitiveBoolean(type)) {
+            mv.visitLdcInsn((Boolean) value ? 1 : 0);
         } else {
             mv.visitLdcInsn(value);
         }
     }
 
+    /**
+     * Pushes the name expression as a {@code String} onto the operand stack.
+     * Constant string expressions are pushed as LDC literals; other expressions
+     * are cast to {@code String} via the Groovy runtime.
+     *
+     * @param name the expression representing the method or property name
+     */
     public void pushDynamicName(final Expression name) {
-        if (name instanceof ConstantExpression) {
-            ConstantExpression ce = (ConstantExpression) name;
+        if (name instanceof ConstantExpression ce) {
             Object value = ce.getValue();
             if (value instanceof String) {
                 pushConstant(ce);
@@ -577,6 +624,15 @@ public class OperandStack {
         new CastExpression(ClassHelper.STRING_TYPE, name).visit(controller.getAcg());
     }
 
+    /**
+     * Either loads or stores a local variable depending on the current LHS flag.
+     * If in LHS context, stores the top of the operand stack into {@code variable};
+     * otherwise loads the variable's value onto the stack.
+     *
+     * @param variable              the bytecode variable to load or store
+     * @param useReferenceDirectly  if {@code true}, loads the {@link Reference}
+     *                              wrapper directly rather than unboxing it
+     */
     public void loadOrStoreVariable(final BytecodeVariable variable, final boolean useReferenceDirectly) {
         CompileStack compileStack = controller.getCompileStack();
         if (compileStack.isLHS()) {
@@ -601,43 +657,69 @@ public class OperandStack {
         }
     }
 
+    /**
+     * Stores the top operand stack value into {@code variable}, casting to the variable's
+     * declared type. Handles both plain variables and {@link Reference}-wrapped
+     * closure-shared variables.
+     *
+     * @param variable the bytecode variable slot to store into
+     */
     public void storeVar(final BytecodeVariable variable) {
         MethodVisitor mv = controller.getMethodVisitor();
-        int idx = variable.getIndex();
         ClassNode type = variable.getType();
-        // value is on stack
+
+        doGroovyCast(type);
         if (variable.isHolder()) {
-            doGroovyCast(type);
             box();
-            mv.visitVarInsn(ALOAD, idx);
+            mv.visitVarInsn(ALOAD, variable.getIndex());
             mv.visitTypeInsn(CHECKCAST, "groovy/lang/Reference");
             mv.visitInsn(SWAP);
             mv.visitMethodInsn(INVOKEVIRTUAL, "groovy/lang/Reference", "set", "(Ljava/lang/Object;)V", false);
         } else {
-            doGroovyCast(type);
-            BytecodeHelper.store(mv, type, idx);
+            if (!getTopOperand().equals(type) && controller.getCompileStack().hasBlockRecorder()) {
+                // GROOVY-9805: force type in the stackmap
+                mv.visitTypeInsn(CHECKCAST, type.isArray()
+                        ? BytecodeHelper.getTypeDescription(type)
+                        : BytecodeHelper.getClassInternalName(type.getName()));
+            }
+            BytecodeHelper.store(mv, type, variable.getIndex());
         }
-        // remove RHS value from operand stack
-        remove(1);
+
+        remove(1); // remove RHS value from operand stack
     }
 
+    /**
+     * Emits a load instruction for the given type from the specified local variable slot
+     * and pushes the type onto the tracked stack.
+     *
+     * @param type the type of the value to load
+     * @param idx  the local variable slot index
+     */
     public void load(final ClassNode type, final int idx) {
         MethodVisitor mv = controller.getMethodVisitor();
         BytecodeHelper.load(mv, type, idx);
         push(type);
     }
 
-    public void pushBool(final boolean inclusive) {
+    /**
+     * Pushes an integer literal ({@code 0} or {@code 1}) representing a boolean value
+     * and tracks it as {@code boolean} on the operand stack.
+     *
+     * @param value the boolean value to push
+     */
+    public void pushBool(final boolean value) {
         MethodVisitor mv = controller.getMethodVisitor();
-        mv.visitLdcInsn(inclusive);
+        mv.visitLdcInsn(value ? 1 : 0);
         push(ClassHelper.boolean_TYPE);
     }
 
+    /** {@inheritDoc} */
     @Override
     public String toString() {
         return "OperandStack(size=" + stack.size() + ":" + stack.toString() + ")";
     }
 
+    /** Returns the type of the top element on the tracked operand stack without removing it. */
     public ClassNode getTopOperand() {
         int size = ensureStackNotEmpty(stack);
         return stack.get(size - 1);

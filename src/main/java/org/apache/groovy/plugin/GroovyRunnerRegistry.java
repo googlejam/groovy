@@ -18,7 +18,6 @@
  */
 package org.apache.groovy.plugin;
 
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
@@ -282,7 +281,7 @@ public class GroovyRunnerRegistry implements Map<String, GroovyRunner>, Iterable
     /**
      * Returns the registered runner for the specified key.
      *
-     * @param key used to lookup the runner
+     * @param key used to look up the runner
      * @return the runner registered with the given key
      */
     @Override
@@ -424,7 +423,7 @@ public class GroovyRunnerRegistry implements Map<String, GroovyRunner>, Iterable
             readLock.lock();
             try {
                 if ((values = cachedValues) == null) {
-                    cachedValues = values = Collections.unmodifiableList(new ArrayList<>(map.values()));
+                    cachedValues = values = List.copyOf(map.values());
                 }
             } finally {
                 readLock.unlock();

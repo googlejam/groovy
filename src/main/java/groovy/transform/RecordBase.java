@@ -20,6 +20,7 @@ package groovy.transform;
 
 import org.codehaus.groovy.transform.GroovyASTTransformationClass;
 
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -32,11 +33,16 @@ import java.lang.annotation.Target;
  * @see MapConstructor
  * @see TupleConstructor
  * @see PropertyOptions
+ * @see RecordOptions
  * @since 4.0.0
  */
-@java.lang.annotation.Documented
+@Documented
 @Retention(RetentionPolicy.SOURCE)
-@Target({ElementType.TYPE})
-@GroovyASTTransformationClass("org.codehaus.groovy.transform.RecordTypeASTTransformation")
+@Target(ElementType.TYPE)
+@GroovyASTTransformationClass({
+        "org.codehaus.groovy.transform.RecordBaseASTStubber",
+        "org.codehaus.groovy.transform.RecordTypeASTTransformation",
+        "org.codehaus.groovy.transform.RecordCompletionASTTransformation"
+})
 public @interface RecordBase {
 }

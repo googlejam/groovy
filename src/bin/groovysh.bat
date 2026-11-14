@@ -29,6 +29,8 @@ if "%DIRNAME%" == "" set DIRNAME=.\
 
 set CLASSNAME=org.apache.groovy.groovysh.Main
 
+set NATIVE_FLAG=true
+
 "%DIRNAME%\startGroovy.bat" "%DIRNAME%" %CLASSNAME% %*
 
 @rem End local scope for the variables with windows NT shell

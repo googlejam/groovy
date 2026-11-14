@@ -26,6 +26,7 @@ import org.codehaus.groovy.ast.AnnotationNode;
 import org.codehaus.groovy.ast.ClassCodeVisitorSupport;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.expr.Expression;
+import org.codehaus.groovy.ast.stmt.Statement;
 import org.codehaus.groovy.control.CompilePhase;
 import org.codehaus.groovy.control.SourceUnit;
 import org.codehaus.groovy.control.messages.ExceptionMessage;
@@ -42,7 +43,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.stream.Stream;
 
 import static org.codehaus.groovy.transform.stc.StaticTypeCheckingSupport.evaluateExpression;
@@ -60,6 +60,13 @@ public class ASTTransformationCollectorCodeVisitor extends ClassCodeVisitorSuppo
     private final SourceUnit source;
     private final GroovyClassLoader transformLoader;
 
+    /**
+     * Creates a visitor for one source unit. Transform classes named by
+     * annotations are loaded with {@code transformLoader}.
+     *
+     * @param source source unit whose AST is walked
+     * @param transformLoader loader used to resolve those transform classes
+     */
     public ASTTransformationCollectorCodeVisitor(final SourceUnit source, final GroovyClassLoader transformLoader) {
         this.source = source;
         this.transformLoader = transformLoader;
@@ -109,6 +116,17 @@ public class ASTTransformationCollectorCodeVisitor extends ClassCodeVisitorSuppo
         }
 
         for (AnnotationNode annotation : nodeAnnotations) {
+            addTransformsToClassNode(annotation);
+        }
+    }
+
+    /**
+     * Collects AST transforms from statement-level annotations (e.g. annotations placed
+     * directly on {@code for}/{@code while}/{@code do-while} loop statements).
+     */
+    @Override
+    protected void visitStatementAnnotations(final Statement statement) {
+        for (AnnotationNode annotation : statement.getStatementAnnotations()) {
             addTransformsToClassNode(annotation);
         }
     }
@@ -182,16 +200,17 @@ public class ASTTransformationCollectorCodeVisitor extends ClassCodeVisitorSuppo
         for (AnnotationNode annotation : alias.getClassNode().getAnnotations()) {
             if (annotation.getClassNode().getName().equals(AnnotationCollector.class.getName())) {
                 Expression mode = annotation.getMember("mode");
-                modes.put(index, Optional.ofNullable(mode)
-                    .map(exp -> evaluateExpression(exp, source.getConfiguration()))
-                    .map(val -> (AnnotationCollectorMode) val)
-                    .orElse(AnnotationCollectorMode.DUPLICATE)
-                );
+                AnnotationCollectorMode collectorMode = AnnotationCollectorMode.DUPLICATE;
+                if (mode != null) {
+                    Object val = evaluateExpression(mode, source.getConfiguration(), transformLoader);
+                    if (val != null) collectorMode = (AnnotationCollectorMode) val;
+                }
+                modes.put(index, collectorMode);
 
                 Expression processor = annotation.getMember("processor");
                 AnnotationCollectorTransform act = null;
                 if (processor != null) {
-                    String className = (String) evaluateExpression(processor, source.getConfiguration());
+                    String className = (String) evaluateExpression(processor, source.getConfiguration(), transformLoader);
                     Class<?> klass = loadTransformClass(className, alias);
                     if (klass != null) {
                         try {
@@ -280,21 +299,28 @@ public class ASTTransformationCollectorCodeVisitor extends ClassCodeVisitorSuppo
         if (!ASTTransformation.class.isAssignableFrom(transformClass)) {
             String error = "Not an ASTTransformation: " + transformClass.getName() + " declared by " + annotation.getClassNode().getName();
             source.getErrorCollector().addError(new SimpleMessage(error, source));
+            return;
         }
 
         GroovyASTTransformation transformationClass = transformClass.getAnnotation(GroovyASTTransformation.class);
         if (transformationClass == null) {
             String error = "AST transformation implementation classes must be annotated with " + GroovyASTTransformation.class.getName() + ". " + transformClass.getName() + " lacks this annotation.";
             source.getErrorCollector().addError(new SimpleMessage(error, source));
+            return;
         }
 
         CompilePhase specifiedCompilePhase = transformationClass.phase();
-        if (specifiedCompilePhase.getPhaseNumber() < CompilePhase.SEMANTIC_ANALYSIS.getPhaseNumber()) {
-            String error = annotation.getClassNode().getName() + " is defined to be run in compile phase " + specifiedCompilePhase + ". Local AST transformations must run in SEMANTIC_ANALYSIS or later!";
+        // CONVERSION-phase local transforms only fire during joint compilation
+        // (JavaAwareCompilationUnit invokes them before stub generation). They
+        // are silently inert in pure-Groovy compilation, so authors of split
+        // transforms must ensure a later piece is authoritative.
+        if (specifiedCompilePhase.getPhaseNumber() < CompilePhase.CONVERSION.getPhaseNumber()) {
+            String error = annotation.getClassNode().getName() + " is defined to be run in compile phase " + specifiedCompilePhase + ". Local AST transformations must run in CONVERSION or later!";
             source.getErrorCollector().addError(new SimpleMessage(error, source));
+            return;
         }
 
-        if (!Traits.isTrait(classNode) || transformClass == TraitASTTransformation.class) {
+        if (!Traits.isTrait(classNode) || transformClass == TraitASTTransformation.class || transformClass == SealedASTTransformation.class || transformClass == LogASTTransformation.class) {
             classNode.addTransform((Class<? extends ASTTransformation>) transformClass, annotation);
         }
     }

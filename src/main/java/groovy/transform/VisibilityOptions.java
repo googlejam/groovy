@@ -20,6 +20,7 @@ package groovy.transform;
 
 import groovy.transform.options.Visibility;
 
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -30,14 +31,48 @@ import java.lang.annotation.Target;
  *
  * @since 2.5.0
  */
-@java.lang.annotation.Documented
+@Documented
 @Retention(RetentionPolicy.SOURCE)
 @Target({ElementType.TYPE, ElementType.CONSTRUCTOR, ElementType.METHOD})
 public @interface VisibilityOptions {
+    /**
+     * Returns the default visibility to apply when no more specific member is set.
+     * Defaults to {@link Visibility#UNDEFINED}.
+     *
+     * @return the default visibility
+     */
     Visibility value() default Visibility.UNDEFINED;
+
+    /**
+     * Returns the identifier used to match other annotations that reference these options.
+     * Defaults to {@link Undefined#STRING}, meaning no identifier.
+     *
+     * @return the visibility options identifier
+     */
     String id() default Undefined.STRING;
+
+    /**
+     * Returns the visibility to apply to generated types.
+     * Defaults to {@link Visibility#UNDEFINED}.
+     *
+     * @return the type visibility
+     */
     Visibility type() default Visibility.UNDEFINED;
+
+    /**
+     * Returns the visibility to apply to generated methods.
+     * Defaults to {@link Visibility#UNDEFINED}.
+     *
+     * @return the method visibility
+     */
     Visibility method() default Visibility.UNDEFINED;
+
+    /**
+     * Returns the visibility to apply to generated constructors.
+     * Defaults to {@link Visibility#UNDEFINED}.
+     *
+     * @return the constructor visibility
+     */
     Visibility constructor() default Visibility.UNDEFINED;
 //    Visibility field() default Visibility.UNDEFINED;
 }

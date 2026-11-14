@@ -22,6 +22,7 @@ import groovy.lang.MetaMethod;
 import org.codehaus.groovy.reflection.CachedClass;
 import org.codehaus.groovy.reflection.CachedMethod;
 import org.codehaus.groovy.reflection.ReflectionCache;
+import org.codehaus.groovy.runtime.DefaultGroovyMethods;
 import org.codehaus.groovy.runtime.metaclass.NewInstanceMetaMethod;
 import org.codehaus.groovy.runtime.metaclass.NewStaticMetaMethod;
 
@@ -30,7 +31,7 @@ import java.util.List;
 import java.util.logging.Logger;
 
 /**
- * An extension module which provides extension methods using a {@link org.codehaus.groovy.runtime.DefaultGroovyMethods}-like implementation, that
+ * An extension module which provides extension methods using a {@link DefaultGroovyMethods}-like implementation, that
  * is to say using static methods defined in an "extension class".
  * <p>
  * For commodity, multiple extension classes may be defined in a single module, including classes used to define new
@@ -87,11 +88,23 @@ public abstract class SimpleExtensionModule extends ExtensionModule {
 
     private static final Logger LOG = Logger.getLogger(SimpleExtensionModule.class.getName());
 
+    /**
+     * Constructs a new SimpleExtensionModule.
+     *
+     * @param moduleName the name of this extension module
+     * @param moduleVersion the version of this extension module
+     */
     public SimpleExtensionModule(final String moduleName, final String moduleVersion) {
         super(moduleName, moduleVersion);
     }
 
-
+    /**
+     * Returns the list of all metamethods provided by this extension module.
+     * This method introspects the instance and static extension classes to extract
+     * metamethods from their public static methods.
+     *
+     * @return a list of metamethods provided by this module
+     */
     @Override
     public List<MetaMethod> getMetaMethods() {
         List<MetaMethod> metaMethods = new LinkedList<MetaMethod>();

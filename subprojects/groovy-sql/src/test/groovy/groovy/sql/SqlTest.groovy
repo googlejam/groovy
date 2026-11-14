@@ -18,12 +18,13 @@
  */
 package groovy.sql
 
-import org.junit.Before
-import org.junit.Rule
-import org.junit.Test
-import org.junit.rules.TestName
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.TestInfo
 
+import javax.sql.DataSource
 import java.sql.Connection
+import java.sql.SQLException
 
 import static groovy.sql.SqlTestConstants.DB_DATASOURCE
 import static groovy.sql.SqlTestConstants.DB_DS_KEY
@@ -31,6 +32,7 @@ import static groovy.sql.SqlTestConstants.DB_PASSWORD
 import static groovy.sql.SqlTestConstants.DB_URL_PREFIX
 import static groovy.sql.SqlTestConstants.DB_USER
 import static groovy.test.GroovyAssert.assertScript
+import static groovy.test.GroovyAssert.shouldFail
 
 /**
  * This is more of a sample program than a unit test and is here as an easy
@@ -39,9 +41,11 @@ import static groovy.test.GroovyAssert.assertScript
 final class SqlTest {
 
     private Sql sql
+    private String testMethodName
 
-    @Before
-    void setUp() {
+    @BeforeEach
+    void setUp(TestInfo testInfo) {
+        testMethodName = testInfo.testMethod.get().name
         sql = createSql()
     }
 
@@ -92,11 +96,17 @@ final class SqlTest {
         assert result.name == 'brie'
     }
 
+    // GROOVY-12118: quoting a dynamic expression prevents safe parameter binding, so it is rejected by default.
+    // The complementary lenient (insecure) behaviour is verified in SqlInjectionLenientTest (which needs a forked JVM).
     @Test
     void testSqlQueryWithIncorrectlyQuotedDynamicExpressions() {
         def foo = "cheese"
         def bar = "edam"
-        sql.eachRow("select * from FOOD where type='${foo}' and name != '${bar}'") { println("Found cheese ${it.name}") }
+        def e = shouldFail(SQLException) {
+            sql.eachRow("select * from FOOD where type='${foo}' and name != '${bar}'") { println("Found cheese ${it.name}") }
+        }
+        assert e.message.contains('SQL injection')
+        assert e.message.contains(Sql.INJECTION_LENIENT)
     }
 
     @Test
@@ -252,12 +262,9 @@ final class SqlTest {
 
     //--------------------------------------------------------------------------
 
-    @Rule
-    public final TestName test = new TestName()
-
     private Sql createSql() {
-        javax.sql.DataSource ds = DB_DATASOURCE.newInstance(
-                (DB_DS_KEY): DB_URL_PREFIX + test.methodName,
+        DataSource ds = DB_DATASOURCE.newInstance(
+                (DB_DS_KEY): DB_URL_PREFIX + testMethodName,
                 user: DB_USER, password: DB_PASSWORD)
         sql = new Sql(ds.connection)
         def sql = new Sql(ds)

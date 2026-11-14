@@ -48,6 +48,7 @@ import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.Rectangle;
 import java.awt.event.ActionEvent;
+import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
@@ -57,6 +58,7 @@ import java.awt.print.Paper;
 import java.awt.print.Printable;
 import java.awt.print.PrinterException;
 import java.awt.print.PrinterJob;
+import java.io.Serial;
 import java.util.Calendar;
 import java.util.regex.Pattern;
 
@@ -64,12 +66,32 @@ import java.util.regex.Pattern;
  * A simple text pane that is printable and wrapping is optional.
  */
 public class TextEditor extends JTextPane implements Pageable, Printable {
+    @Serial private static final long serialVersionUID = 8478062945229999402L;
 
+    /**
+     * Action name for opening the find dialog.
+     */
     public static final String FIND = "Find...";
+    /**
+     * Action name for repeating the next find.
+     */
     public static final String FIND_NEXT = "Find Next";
+    /**
+     * Action name for repeating the previous find.
+     */
     public static final String FIND_PREVIOUS = "Find Previous";
+    /**
+     * Action name for opening the replace dialog.
+     */
     public static final String REPLACE = "Replace...";
+    /**
+     * Action name for automatic indentation.
+     */
     public static final String AUTO_INDENT = "AutoIndent";
+    /**
+     * Action name for backspace deletion.
+     */
+    public static final String DELETE = "delete";
 
     private static final String TABBED_SPACES = "    ";
     private static final Pattern TAB_BACK_PATTERN =
@@ -97,6 +119,11 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
             new MouseAdapter() {
                 Cursor cursor;
 
+                /**
+                 * If the event point is inside this editor, remembers the current cursor
+                 * and sets the layered pane to the text cursor. Otherwise restores the
+                 * cursor remembered on the way in.
+                 */
                 @Override
                 public void mouseEntered(MouseEvent me) {
                     if (contains(me.getPoint())) {
@@ -108,6 +135,9 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
                     }
                 }
 
+                /**
+                 * Clears the cursor installed on the layered pane.
+                 */
                 @Override
                 public void mouseExited(MouseEvent me) {
                     getRootPane().getLayeredPane().setCursor(null);
@@ -127,6 +157,8 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
 
     /**
      * Creates a new instance of TextEditor
+     *
+     * @param tabsAsSpaces whether typed tabs should be converted to spaces
      */
     public TextEditor(boolean tabsAsSpaces) {
         this(tabsAsSpaces, false);
@@ -134,13 +166,20 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
 
     /**
      * Creates a new instance of TextEditor
+     *
+     * @param tabsAsSpaces whether typed tabs should be converted to spaces
+     * @param multiLineTab whether tab actions should affect all selected lines
      */
     public TextEditor(boolean tabsAsSpaces, boolean multiLineTab) {
-        this(multiLineTab, tabsAsSpaces, false);
+        this(tabsAsSpaces, multiLineTab, false);
     }
 
     /**
      * Creates a new instance of TextEditor
+     *
+     * @param tabsAsSpaces whether typed tabs should be converted to spaces
+     * @param multiLineTab whether tab actions should affect all selected lines
+     * @param unwrapped whether long lines should avoid viewport wrapping
      */
     public TextEditor(boolean tabsAsSpaces, boolean multiLineTab, boolean unwrapped) {
         this.tabsAsSpaces = tabsAsSpaces;
@@ -159,15 +198,15 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
         aMap = getActionMap();
         InputMap iMap = getInputMap();
         KeyStroke keyStroke = KeyStroke.getKeyStroke(KeyEvent.VK_BACK_SPACE, 0, false);
-        iMap.put(keyStroke, "delete");
-        keyStroke = KeyStroke.getKeyStroke(KeyEvent.VK_BACK_SPACE, KeyEvent.SHIFT_MASK, false);
-        iMap.put(keyStroke, "delete");
-        aMap.put("delete", action);
+        iMap.put(keyStroke, DELETE);
+        keyStroke = KeyStroke.getKeyStroke(KeyEvent.VK_BACK_SPACE, InputEvent.SHIFT_DOWN_MASK, false);
+        iMap.put(keyStroke, DELETE);
+        aMap.put(DELETE, action);
 
         // set all the actions
         action = new FindAction();
         aMap.put(FIND, action);
-        keyStroke = KeyStroke.getKeyStroke(KeyEvent.VK_F, KeyEvent.CTRL_MASK, false);
+        keyStroke = KeyStroke.getKeyStroke(KeyEvent.VK_F, InputEvent.CTRL_DOWN_MASK, false);
         iMap.put(keyStroke, FIND);
 
         aMap.put(FIND_NEXT, FindReplaceUtility.FIND_ACTION);
@@ -175,7 +214,7 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
         iMap.put(keyStroke, FIND_NEXT);
 
         aMap.put(FIND_PREVIOUS, FindReplaceUtility.FIND_ACTION);
-        keyStroke = KeyStroke.getKeyStroke(KeyEvent.VK_F3, KeyEvent.SHIFT_MASK, false);
+        keyStroke = KeyStroke.getKeyStroke(KeyEvent.VK_F3, InputEvent.SHIFT_DOWN_MASK, false);
         iMap.put(keyStroke, FIND_PREVIOUS);
 
         action = new TabAction();
@@ -185,12 +224,12 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
 
         action = new ShiftTabAction();
         aMap.put("TextEditor-shiftTabAction", action);
-        keyStroke = KeyStroke.getKeyStroke(KeyEvent.VK_TAB, KeyEvent.SHIFT_MASK, false);
+        keyStroke = KeyStroke.getKeyStroke(KeyEvent.VK_TAB, InputEvent.SHIFT_DOWN_MASK, false);
         iMap.put(keyStroke, "TextEditor-shiftTabAction");
 
         action = new ReplaceAction();
         getActionMap().put(REPLACE, action);
-        keyStroke = KeyStroke.getKeyStroke(KeyEvent.VK_H, KeyEvent.CTRL_MASK, false);
+        keyStroke = KeyStroke.getKeyStroke(KeyEvent.VK_H, InputEvent.CTRL_DOWN_MASK, false);
         do {
             iMap.remove(keyStroke);
             iMap = iMap.getParent();
@@ -209,6 +248,9 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
         overtypeCaret.setBlinkRate(defaultCaret.getBlinkRate());
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void addNotify() {
         super.addNotify();
@@ -216,6 +258,9 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
         FindReplaceUtility.registerTextComponent(this);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public int getNumberOfPages() {
         Paper paper = PAGE_FORMAT.getPaper();
@@ -223,16 +268,25 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
         return numPages;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public PageFormat getPageFormat(int pageIndex) throws IndexOutOfBoundsException {
         return PAGE_FORMAT;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public Printable getPrintable(int param) throws IndexOutOfBoundsException {
         return this;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public int print(Graphics graphics, PageFormat pageFormat, int page)
             throws PrinterException {
@@ -276,27 +330,30 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
             FontMetrics fm = graphics.getFontMetrics(font);
             int width = SwingUtilities.computeStringWidth(fm, header);
             ((Graphics2D) graphics).drawString(header,
-                    (float) (paper.getImageableWidth() / 2 - width / 2),
-                    (float) paper.getImageableY() / 2 + fm.getHeight());
+                    (float) (paper.getImageableWidth() / 2.0 - width / 2.0),
+                    (float) (paper.getImageableY() / 2.0 + fm.getHeight()));
 
             ((Graphics2D) graphics).translate(0, paper.getImageableY() - fm.getHeight());
-            double height = paper.getImageableHeight() + paper.getImageableY() / 2;
+            double height = paper.getImageableHeight() + paper.getImageableY() / 2.0;
             width = SwingUtilities.computeStringWidth(fm, name);
             ((Graphics2D) graphics).drawString(name,
-                    (float) (paper.getImageableWidth() / 2 - width / 2),
-                    (float) height - fm.getHeight() / 2);
+                    (float) (paper.getImageableWidth() / 2.0 - width / 2.0),
+                    (float) (height - fm.getHeight() / 2.0));
 
             ((Graphics2D) graphics).translate(0, fm.getHeight());
             width = SwingUtilities.computeStringWidth(fm, pageStr);
             ((Graphics2D) graphics).drawString(pageStr,
-                    (float) (paper.getImageableWidth() / 2 - width / 2),
-                    (float) height - fm.getHeight() / 2);
+                    (float) (paper.getImageableWidth() / 2.0 - width / 2.0),
+                    (float) (height - fm.getHeight() / 2.0));
 
             return Printable.PAGE_EXISTS;
         }
         return Printable.NO_SUCH_PAGE;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public boolean getScrollableTracksViewportWidth() {
         boolean bool = super.getScrollableTracksViewportWidth();
@@ -339,12 +396,15 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
         return unwrapped;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void processKeyEvent(KeyEvent e) {
         super.processKeyEvent(e);
 
         //  Handle release of Insert key to toggle overtype/insert mode
-        //  unless a modifier is active (eg Shift+Insert for paste or
+        //  unless a modifier is active (e.g. Shift+Insert for paste or
         //  Ctrl+Insert for Copy)
         if (e.getID() == KeyEvent.KEY_RELEASED &&
                 e.getKeyCode() == KeyEvent.VK_INSERT &&
@@ -353,6 +413,9 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void removeNotify() {
         super.removeNotify();
@@ -360,6 +423,9 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
         FindReplaceUtility.unregisterTextComponent(this);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void replaceSelection(String text) {
         //  Implement overtype mode by selecting the character at the current
@@ -373,6 +439,9 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
         super.replaceSelection(text);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void setBounds(int x, int y, int width, int height) {
         if (unwrapped) {
@@ -386,6 +455,8 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
     }
 
     /**
+     * Enables or disables indenting all selected lines when tabbing.
+     *
      * @param multiLineTab the new multiLine tab value
      */
     public void isMultiLineTabbed(boolean multiLineTab) {
@@ -393,6 +464,8 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
     }
 
     /**
+     * Enables or disables replacing typed tab characters with spaces.
+     *
      * @param tabsAsSpaces whether tabs are converted to spaces
      */
     public void isTabsAsSpaces(boolean tabsAsSpaces) {
@@ -419,6 +492,9 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
     }
 
     private static class FindAction extends AbstractAction {
+        /**
+         * Opens the find dialog.
+         */
         @Override
         public void actionPerformed(ActionEvent ae) {
             FindReplaceUtility.showDialog();
@@ -426,6 +502,9 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
     }
 
     private static class ReplaceAction extends AbstractAction {
+        /**
+         * Opens the find dialog in replace mode.
+         */
         @Override
         public void actionPerformed(ActionEvent ae) {
             FindReplaceUtility.showDialog(true);
@@ -433,6 +512,11 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
     }
 
     private class ShiftTabAction extends AbstractAction {
+        /**
+         * When multi-line tabbing is on and text is selected, expands the selection
+         * to whole lines and removes one leading tab, or up to four leading spaces
+         * when tabs are inserted as spaces, from each of those lines.
+         */
         @Override
         public void actionPerformed(ActionEvent ae) {
             try {
@@ -461,6 +545,12 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
     }
 
     private class TabAction extends AbstractAction {
+        /**
+         * Inserts a tab, or four spaces when tabs are inserted as spaces.
+         * A multi-line selection is expanded to whole lines and the indent is
+         * inserted at the start of each line; otherwise the text is inserted at
+         * the caret.
+         */
         @Override
         public void actionPerformed(ActionEvent ae) {
             try {
@@ -493,8 +583,7 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
 
     private void setRenderRange(int start, int stop) {
         DocumentFilter documentFilter = ((DefaultStyledDocument) TextEditor.this.getDocument()).getDocumentFilter();
-        if (documentFilter instanceof SmartDocumentFilter) {
-            SmartDocumentFilter smartDocumentFilter = (SmartDocumentFilter) documentFilter;
+        if (documentFilter instanceof SmartDocumentFilter smartDocumentFilter) {
             smartDocumentFilter.setRenderRange(Tuple.tuple(start, stop));
         }
     }
@@ -505,7 +594,12 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
     private static class OvertypeCaret extends DefaultCaret {
         //The overtype caret will simply be a horizontal line one pixel high
         // (once we determine where to paint it)
+        /**
+         * When the caret is visible, fills a rectangle the width of {@code w} and
+         * the font height at the caret position, XOR-painted in the caret color.
+         */
         @Override
+        @SuppressWarnings("deprecation") // TODO switch modelToView => modelToView2D once minimum JDK version for Groovy >= 9
         public void paint(Graphics g) {
             if (isVisible()) {
                 try {
@@ -530,6 +624,10 @@ public class TextEditor extends JTextPane implements Pageable, Printable {
          *  Damage must be overridden whenever the paint method is overridden
          *  (The damaged area is the area the caret is painted in. We must
          *  consider the area for the default caret and this caret)
+         */
+        /**
+         * Repaints a region the width of {@code w} and the height of {@code r}
+         * at the caret. A null rectangle is ignored.
          */
         @Override
         protected synchronized void damage(Rectangle r) {

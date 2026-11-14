@@ -16,10 +16,14 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-import groovy.test.GroovyTestCase
 
-class ClassDesignASTTransformsTest extends GroovyTestCase {
+import org.junit.jupiter.api.Test
 
+import static groovy.test.GroovyAssert.assertScript
+
+final class ClassDesignASTTransformsTest {
+
+    @Test
     void testDelegateTransformation() {
         assertScript '''
 // tag::delegating_class[]
@@ -269,6 +273,7 @@ d.task$() //passes
 '''
     }
 
+    @Test
     void testImmutable() {
         assertScript '''
 // tag::immutable_simple[]
@@ -369,6 +374,7 @@ try {
 '''
     }
 
+    @Test
     void testMemoized() {
         assertScript '''
 import groovy.transform.Memoized
@@ -399,7 +405,7 @@ long longComputation(int seed) {
 }
 
 def x = longComputation(1) // returns after 100 milliseconds
-def y = longComputation(1) // returns immediatly
+def y = longComputation(1) // returns immediately
 def z = longComputation(2) // returns after 200 milliseconds
 assert x==y
 assert x!=z
@@ -407,6 +413,7 @@ assert x!=z
 '''
     }
 
+    @Test
     void testSingleton() {
         assertScript '''
 // tag::singleton_simple[]
@@ -451,6 +458,7 @@ assert GreetingService.instance.greeting('Bob') == 'Hello, Bob!'
 '''
     }
 
+    @Test
     void testTailRecursive() {
         assertScript '''
 // tag::tailrecursive[]
@@ -476,5 +484,4 @@ assert Factorial.factorial(50000).toString().size() == 213237 // Big number and 
 // end::tailrecursive[]
 '''
     }
-
 }

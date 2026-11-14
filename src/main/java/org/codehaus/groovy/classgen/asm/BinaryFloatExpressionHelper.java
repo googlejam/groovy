@@ -24,9 +24,12 @@ import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.runtime.BytecodeInterface8;
 import org.objectweb.asm.MethodVisitor;
 
+import static org.codehaus.groovy.syntax.Types.COMPARE_GREATER_THAN;
+import static org.codehaus.groovy.syntax.Types.COMPARE_GREATER_THAN_EQUAL;
 import static org.objectweb.asm.Opcodes.DUP2;
 import static org.objectweb.asm.Opcodes.FADD;
 import static org.objectweb.asm.Opcodes.FCMPG;
+import static org.objectweb.asm.Opcodes.FCMPL;
 import static org.objectweb.asm.Opcodes.FCONST_1;
 import static org.objectweb.asm.Opcodes.FDIV;
 import static org.objectweb.asm.Opcodes.FMUL;
@@ -34,48 +37,89 @@ import static org.objectweb.asm.Opcodes.FREM;
 import static org.objectweb.asm.Opcodes.FSUB;
 import static org.objectweb.asm.Opcodes.POP2;
 
+/**
+ * Binary expression helper specialized for {@code float} operations.
+ */
 public class BinaryFloatExpressionHelper extends BinaryExpressionWriter {
 
+    /**
+     * Creates a {@code float}-specialized binary expression helper.
+     *
+     * @param controller the active writer controller
+     */
     public BinaryFloatExpressionHelper(WriterController controller) {
         super(controller, floatArraySet, floatArrayGet);
     }
-    
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void doubleTwoOperands(MethodVisitor mv) {
         mv.visitInsn(DUP2);
     }
 
-    private static final MethodCaller 
+    private static final MethodCaller
         floatArrayGet = MethodCaller.newStatic(BytecodeInterface8.class, "fArrayGet"),
         floatArraySet = MethodCaller.newStatic(BytecodeInterface8.class, "fArraySet");
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected boolean writeBitwiseOp(int type, boolean simulate) {
         if (!simulate) throw new GroovyBugError("should not reach here");
-        return false;   
-    }    
-    
+        return false;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected int getBitwiseOperationBytecode(int type) {
         return -1;
     }
-    
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected int getCompareCode() {
         return FCMPG;
     }
-    
+
+    /**
+     * {@inheritDoc}
+     * <p>
+     * FCMPL yields -1 and FCMPG yields 1 for a NaN operand, so FCMPL is used for
+     * {@code >} and {@code >=} and FCMPG otherwise; either way the
+     * comparison is false, as in Java (JLS 15.20.1).
+     */
+    @Override
+    protected int getCompareCode(final int type) {
+        return type == COMPARE_GREATER_THAN || type == COMPARE_GREATER_THAN_EQUAL ? FCMPL : FCMPG;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected ClassNode getNormalOpResultType() {
         return ClassHelper.float_TYPE;
     }
-    
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected boolean writeShiftOp(int type, boolean simulate) {
         if (!simulate) throw new GroovyBugError("should not reach here");
-        return false;   
-    }    
-    
+        return false;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected int getShiftOperationBytecode(int type) {
         return -1;
@@ -88,30 +132,45 @@ public class BinaryFloatExpressionHelper extends BinaryExpressionWriter {
         0,              //  DIV, (203) but we don't want that one
         FDIV,           //  INTDIV      204
         FREM,           //  MOD         203
-    };    
-    
+    };
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected int getStandardOperationBytecode(int type) {
         return stdOperations[type];
     }
-    
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void removeTwoOperands(MethodVisitor mv) {
         mv.visitInsn(POP2);
     }
-    
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void writeMinusMinus(MethodVisitor mv) {
         mv.visitInsn(FCONST_1);
         mv.visitInsn(FSUB);
     }
-    
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void writePlusPlus(MethodVisitor mv) {
         mv.visitInsn(FCONST_1);
         mv.visitInsn(FADD);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected ClassNode getDevisionOpResultType() {
         return ClassHelper.BigDecimal_TYPE;

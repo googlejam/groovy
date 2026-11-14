@@ -19,13 +19,20 @@
 package org.codehaus.groovy.runtime;
 
 import groovy.lang.Closure;
+import org.apache.groovy.lang.annotation.GroovyABI;
+
+import java.io.ObjectStreamException;
+import java.io.Serial;
+
+import static org.codehaus.groovy.runtime.ArrayGroovyMethods.last;
 
 /**
- * A wrapper for Closure to support currying.
- * Normally used only internally through the <code>curry()</code>, <code>rcurry()</code> or
+ * A wrapper for Closure to support currying. Normally used only internally
+ * through the <code>curry()</code>, <code>rcurry()</code> or
  * <code>ncurry()</code> methods on <code>Closure</code>.
+ * <p>
  * Typical usages:
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * // normal usage
  * def unitAdder = { first, second, unit {@code ->} "${first + second} $unit" }
  * assert unitAdder(10, 15, "minutes") == "25 minutes"
@@ -46,119 +53,191 @@ import groovy.lang.Closure;
  */
 public final class CurriedClosure<V> extends Closure<V> {
 
-    private static final long serialVersionUID = 2077643745780234126L;
-    private final Object[] curriedParams;
+    @Serial private static final long serialVersionUID = 2077643745780234126L;
+    private final Object[] curriedArguments;
     private final int minParamsExpected;
     private int index;
-    private Class varargType = null;
+    /** the last parameter type, if it's an array */
+    private Class<?> varargType;
 
     /**
-     * Creates the curried closure.
-     *
      * @param index the position where the parameters should be injected (-ve for lazy)
      * @param uncurriedClosure the closure to be called after the curried parameters are injected
      * @param arguments the supplied parameters
      */
-    public CurriedClosure(int index, Closure<V> uncurriedClosure, Object... arguments) {
+    public CurriedClosure(final int index, final Closure<V> uncurriedClosure, final Object... arguments) {
         super(uncurriedClosure.clone());
-        curriedParams = arguments;
+
         this.index = index;
-        final int origMaxLen = uncurriedClosure.getMaximumNumberOfParameters();
-        maximumNumberOfParameters = origMaxLen - arguments.length;
-        Class[] classes = uncurriedClosure.getParameterTypes();
-        Class lastType = classes.length == 0 ? null : classes[classes.length-1];
-        if (lastType != null && lastType.isArray()) {
-            varargType = lastType;
+        this.curriedArguments = arguments;
+        int maxLen = uncurriedClosure.getMaximumNumberOfParameters();
+        this.maximumNumberOfParameters = (maxLen - arguments.length);
+
+        Class<?>[] parameterTypes = uncurriedClosure.getParameterTypes();
+        if (parameterTypes.length > 0 && last(parameterTypes).isArray()){
+            this.varargType = last(parameterTypes);
         }
 
-        if (!isVararg()) {
+        if (isVararg()) {
+            this.minParamsExpected = 0;
+        } else {
             // perform some early param checking for non-vararg case
             if (index < 0) {
                 // normalise
-                this.index += origMaxLen;
-                minParamsExpected = 0;
+                this.index += maxLen;
+                this.minParamsExpected = 0;
             } else {
-                minParamsExpected = index + arguments.length;
+                this.minParamsExpected = index + arguments.length;
             }
-            if (maximumNumberOfParameters < 0) {
-                throw new IllegalArgumentException("Can't curry " + arguments.length + " arguments for a closure with " + origMaxLen + " parameters.");
+
+            if (this.maximumNumberOfParameters < 0) {
+                throw new IllegalArgumentException("Can't curry " + arguments.length + " arguments for a closure with " + maxLen + " parameters.");
             }
             if (index < 0) {
-                if (index < -origMaxLen || index > -arguments.length)
-                    throw new IllegalArgumentException("To curry " + arguments.length + " argument(s) expect index range " +
-                            (-origMaxLen) + ".." + (-arguments.length) + " but found " + index);
-            } else if (index > maximumNumberOfParameters) {
-                throw new IllegalArgumentException("To curry " + arguments.length + " argument(s) expect index range 0.." +
-                        maximumNumberOfParameters + " but found " + index);
+                int lower = -maxLen;
+                int upper = -arguments.length;
+                if (index < lower || index > upper)
+                    throw new IllegalArgumentException("To curry " + arguments.length + " argument(s) expect index range " + lower + ".." + upper + " but found " + index);
+            } else if (index > this.maximumNumberOfParameters) {
+                throw new IllegalArgumentException("To curry " + arguments.length + " argument(s) expect index range 0.." + this.maximumNumberOfParameters + " but found " + index);
             }
-        } else {
-            minParamsExpected = 0;
         }
     }
 
-    public CurriedClosure(Closure<V> uncurriedClosure, Object... arguments) {
+    /**
+     * Curries {@code arguments} at index {@code 0} of {@code uncurriedClosure}.
+     * <p>A non-vararg closure given more arguments than it can accept is rejected.
+     *
+     * @param uncurriedClosure the closure the curried arguments are injected into
+     * @param arguments values placed at the front of each later call
+     */
+    @GroovyABI(since = "1.0.0")
+    public CurriedClosure(final Closure<V> uncurriedClosure, final Object... arguments) {
         this(0, uncurriedClosure, arguments);
     }
 
-    public Object[] getUncurriedArguments(Object... arguments) {
-        if (isVararg()) {
-            int normalizedIndex = index < 0 ? index + arguments.length + curriedParams.length : index;
-            if (normalizedIndex < 0 || normalizedIndex > arguments.length) {
-                throw new IllegalArgumentException("When currying expected index range between " +
-                        (-arguments.length - curriedParams.length) + ".." + (arguments.length + curriedParams.length) + " but found " + index);
-            }
-            return createNewCurriedParams(normalizedIndex, arguments);
+    //--------------------------------------------------------------------------
+
+    /**
+     * Fast path for the dominant rcurry/curry shape — one curried argument and a
+     * single incoming argument against a binary owner. Skips the wrapping
+     * {@code Object[1]} that {@link Closure#call(Object)} would otherwise allocate
+     * before dispatch, leaving just the one combined {@code Object[2]} that the
+     * underlying call already requires.
+     */
+    @Override
+    @SuppressWarnings("unchecked")
+    public V call(final Object argument) {
+        if (varargType == null
+                && curriedArguments.length == 1
+                && maximumNumberOfParameters == 1
+                && (index == 0 || index == 1)) {
+            Object[] combined = index == 0
+                    ? new Object[]{curriedArguments[0], argument}
+                    : new Object[]{argument, curriedArguments[0]};
+            return (V) getOwner().call(combined);
         }
-        if (curriedParams.length + arguments.length < minParamsExpected) {
-            throw new IllegalArgumentException("When currying expected at least " + index + " argument(s) to be supplied before known curried arguments but found " + arguments.length);
-        }
-        int newIndex = Math.min(index, curriedParams.length + arguments.length - 1);
-        // rcurried arguments are done lazily to allow normal method selection between overloaded alternatives
-        newIndex = Math.min(newIndex, arguments.length);
-        return createNewCurriedParams(newIndex, arguments);
+        return super.call(argument);
     }
 
-    private Object[] createNewCurriedParams(int normalizedIndex, Object[] arguments) {
-        Object[] newCurriedParams = new Object[curriedParams.length + arguments.length];
-        System.arraycopy(arguments, 0, newCurriedParams, 0, normalizedIndex);
-        System.arraycopy(curriedParams, 0, newCurriedParams, normalizedIndex, curriedParams.length);
-        if (arguments.length - normalizedIndex > 0)
-            System.arraycopy(arguments, normalizedIndex, newCurriedParams, curriedParams.length + normalizedIndex, arguments.length - normalizedIndex);
-        return newCurriedParams;
+    /**
+     * Inserts the curried arguments into {@code arguments} at the curry index.
+     * A vararg closure normalizes a negative index against the combined length and
+     * rejects an index outside {@code 0..arguments.length}. A non-vararg closure
+     * rejects a call that supplies fewer arguments than the curry index requires,
+     * then inserts at {@code min(index, arguments.length)}.
+     *
+     * @param arguments arguments supplied by the call, which may be empty
+     * @return a new array with the curried values inserted
+     */
+    public Object[] getUncurriedArguments(final Object... arguments) {
+        if (isVararg()) {
+            int normalizedIndex = index < 0 ? index + arguments.length + curriedArguments.length : index;
+            if (normalizedIndex < 0 || normalizedIndex > arguments.length) {
+                throw new IllegalArgumentException("When currying expected index range between " +
+                        (-arguments.length - curriedArguments.length) + ".." + (arguments.length + curriedArguments.length) + " but found " + index);
+            }
+            return getArguments(normalizedIndex, arguments);
+        }
+        if (curriedArguments.length + arguments.length < minParamsExpected) {
+            throw new IllegalArgumentException("When currying expected at least " + index + " argument(s) to be supplied before known curried arguments but found " + arguments.length);
+        }
+        int newIndex = Math.min(index, curriedArguments.length + arguments.length - 1);
+        // rcurried arguments are done lazily to allow normal method selection between overloaded alternatives
+        newIndex = Math.min(newIndex, arguments.length);
+        return getArguments(newIndex, arguments);
+    }
+
+    private Object[] getArguments(final int index, final Object[] arguments) {
+        Object[] newArguments = new Object[curriedArguments.length + arguments.length];
+        System.arraycopy(arguments, 0, newArguments, 0, index);
+        System.arraycopy(curriedArguments, 0, newArguments, index, curriedArguments.length);
+        if (arguments.length - index > 0)
+            System.arraycopy(arguments, index, newArguments, curriedArguments.length + index, arguments.length - index);
+        return newArguments;
     }
 
     @Override
-    public void setDelegate(Object delegate) {
-        ((Closure) getOwner()).setDelegate(delegate);
+    public void setDelegate(final Object delegate) {
+        getOwner().setDelegate(delegate);
     }
 
     @Override
     public Object getDelegate() {
-        return ((Closure) getOwner()).getDelegate();
-    }
-
-    @Override
-    public void setResolveStrategy(int resolveStrategy) {
-        ((Closure) getOwner()).setResolveStrategy(resolveStrategy);
-    }
-
-    @Override
-    public int getResolveStrategy() {
-        return ((Closure) getOwner()).getResolveStrategy();
+        return getOwner().getDelegate();
     }
 
     @Override
     @SuppressWarnings("unchecked")
+    public Closure<V> getOwner() {
+        return (Closure<V>) super.getOwner();
+    }
+
+    @Override
+    public void setResolveStrategy(final int resolveStrategy) {
+        getOwner().setResolveStrategy(resolveStrategy);
+    }
+
+    @Override
+    public int getResolveStrategy() {
+        return getOwner().getResolveStrategy();
+    }
+
+    @Override
+    public Object getThisObject() {
+        return getOwner().getThisObject();
+    }
+
+    @Override
     public Object clone() {
-        Closure<V> uncurriedClosure = (Closure<V>) ((Closure) getOwner()).clone();
-        return new CurriedClosure<V>(index, uncurriedClosure, curriedParams);
+        @SuppressWarnings("unchecked")
+        Closure<V> uncurriedClosure = (Closure<V>) getOwner().clone();
+        return new CurriedClosure<V>(index, uncurriedClosure, curriedArguments);
+    }
+
+    /**
+     * Dehydrates the wrapped closure and curries the copy: the owner of a curried closure is the
+     * closure it wraps, so clearing it would leave nothing to call.
+     */
+    @Override
+    public Closure<V> dehydrate() {
+        return new CurriedClosure<V>(index, getOwner().dehydrate(), curriedArguments);
+    }
+
+    /**
+     * Rehydrates the wrapped closure and curries the copy: the owner of a curried closure is the
+     * closure it wraps, so replacing it would leave nothing to call.
+     */
+    @Override
+    public Closure<V> rehydrate(final Object delegate, final Object owner, final Object thisObject) {
+        return new CurriedClosure<V>(index, getOwner().rehydrate(delegate, owner, thisObject), curriedArguments);
     }
 
     @Override
     public Class[] getParameterTypes() {
-        Class[] oldParams = ((Closure) getOwner()).getParameterTypes();
+        Class[] oldParams = getOwner().getParameterTypes();
         int extraParams = 0;
-        int gobbledParams = curriedParams.length;
+        int gobbledParams = curriedArguments.length;
         if (isVararg()) {
             int numNonVarargs = oldParams.length - 1;
             if (index < 0) {
@@ -167,7 +246,7 @@ public final class CurriedClosure<V> extends Closure<V> {
                 // so work out minimal type params and vararg on end will allow for other possibilities
                 if (absIndex > numNonVarargs) gobbledParams = numNonVarargs;
                 int newNumNonVarargs = numNonVarargs - gobbledParams;
-                if (absIndex - curriedParams.length > newNumNonVarargs) extraParams = absIndex - curriedParams.length - newNumNonVarargs;
+                if (absIndex - curriedArguments.length > newNumNonVarargs) extraParams = absIndex - curriedArguments.length - newNumNonVarargs;
                 int keptParams = Math.max(numNonVarargs - absIndex, 0);
                 Class[] newParams = new Class[keptParams + newNumNonVarargs + extraParams + 1];
                 System.arraycopy(oldParams, 0, newParams, 0, keptParams);
@@ -177,11 +256,11 @@ public final class CurriedClosure<V> extends Closure<V> {
                 return newParams;
             }
             int leadingKept = Math.min(index, numNonVarargs);
-            int trailingKept = Math.max(numNonVarargs - leadingKept - curriedParams.length, 0);
+            int trailingKept = Math.max(numNonVarargs - leadingKept - curriedArguments.length, 0);
             if (index > leadingKept) extraParams = index - leadingKept;
             Class[] newParams = new Class[leadingKept + trailingKept + extraParams + 1];
             System.arraycopy(oldParams, 0, newParams, 0, leadingKept);
-            if (trailingKept > 0) System.arraycopy(oldParams, leadingKept + curriedParams.length, newParams, leadingKept, trailingKept);
+            if (trailingKept > 0) System.arraycopy(oldParams, leadingKept + curriedArguments.length, newParams, leadingKept, trailingKept);
             for (int i = 0; i < extraParams; i++) newParams[leadingKept + trailingKept + i] = varargType.getComponentType();
             newParams[newParams.length - 1] = varargType;
             return newParams;
@@ -189,11 +268,21 @@ public final class CurriedClosure<V> extends Closure<V> {
         Class[] newParams = new Class[oldParams.length - gobbledParams + extraParams];
         System.arraycopy(oldParams, 0, newParams, 0, index);
         if (newParams.length - index > 0)
-            System.arraycopy(oldParams, curriedParams.length + index, newParams, index, newParams.length - index);
+            System.arraycopy(oldParams, curriedArguments.length + index, newParams, index, newParams.length - index);
         return newParams;
     }
 
     private boolean isVararg() {
         return varargType != null;
+    }
+
+    /**
+     * Rejects a deserialized closure whose owner/delegate/thisObject references form a cycle, which would
+     * otherwise recurse indefinitely on invocation. See {@link Closure#checkForReferenceCycle}.
+     */
+    @Serial
+    private Object readResolve() throws ObjectStreamException {
+        Closure.checkForReferenceCycle(this);
+        return this;
     }
 }

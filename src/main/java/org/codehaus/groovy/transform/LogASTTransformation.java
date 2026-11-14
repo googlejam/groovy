@@ -30,6 +30,8 @@ import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.DynamicVariable;
 import org.codehaus.groovy.ast.FieldNode;
+import org.codehaus.groovy.ast.MethodNode;
+import org.codehaus.groovy.ast.Variable;
 import org.codehaus.groovy.ast.expr.ClosureExpression;
 import org.codehaus.groovy.ast.expr.ConstantExpression;
 import org.codehaus.groovy.ast.expr.Expression;
@@ -44,17 +46,29 @@ import org.codehaus.groovy.control.SourceUnit;
 import org.codehaus.groovy.runtime.DefaultGroovyMethods;
 
 import java.lang.reflect.Method;
+import java.io.File;
 import java.lang.reflect.Modifier;
-
-import org.objectweb.asm.Opcodes;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.apache.groovy.ast.tools.VisibilityUtils.getVisibility;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.args;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.callThisX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.constX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.ctorX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.fieldX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.propX;
+import static org.objectweb.asm.Opcodes.ACC_FINAL;
+import static org.objectweb.asm.Opcodes.ACC_PRIVATE;
+import static org.objectweb.asm.Opcodes.ACC_STATIC;
+import static org.objectweb.asm.Opcodes.ACC_SYNTHETIC;
+import static org.objectweb.asm.Opcodes.ACC_TRANSIENT;
 
 /**
  * This class provides an AST Transformation to add a log field to a class.
  */
 @GroovyASTTransformation(phase = CompilePhase.SEMANTIC_ANALYSIS)
-public class LogASTTransformation extends AbstractASTTransformation implements CompilationUnitAware {
+public class LogASTTransformation extends AbstractASTTransformation implements CompilationUnitAware, TransformWithPriority {
 
     /**
      * This is just a dummy value used because String annotations values can not be null.
@@ -62,18 +76,30 @@ public class LogASTTransformation extends AbstractASTTransformation implements C
      */
     public static final String DEFAULT_CATEGORY_NAME = "##default-category-name##";
 
+    /**
+     * Default access modifier for logger field.
+     */
     public static final String DEFAULT_ACCESS_MODIFIER = "private";
+
+    @Override
+    public int priority() {
+        return 1; // GROOVY-7439
+    }
 
     private CompilationUnit compilationUnit;
 
     @Override
-    public void visit(ASTNode[] nodes, final SourceUnit source) {
-        init(nodes, source);
+    public void setCompilationUnit(final CompilationUnit compilationUnit) {
+        this.compilationUnit = compilationUnit;
+    }
+
+    @Override
+    public void visit(final ASTNode[] nodes, final SourceUnit sourceUnit) {
+        init(nodes, sourceUnit);
         AnnotatedNode targetClass = (AnnotatedNode) nodes[1];
         AnnotationNode logAnnotation = (AnnotationNode) nodes[0];
 
-        final GroovyClassLoader classLoader = compilationUnit != null ? compilationUnit.getTransformLoader() : source.getClassLoader();
-        final LoggingStrategy loggingStrategy = createLoggingStrategy(logAnnotation, classLoader);
+        final LoggingStrategy loggingStrategy = createLoggingStrategy(logAnnotation, sourceUnit.getClassLoader(), compilationUnit.getTransformLoader());
         if (loggingStrategy == null) return;
 
         final String logFieldName = lookupLogFieldName(logAnnotation);
@@ -82,41 +108,109 @@ public class LogASTTransformation extends AbstractASTTransformation implements C
 
         final int logFieldModifiers = lookupLogFieldModifiers(targetClass, logAnnotation);
 
-        if (!(targetClass instanceof ClassNode))
+        if (!(targetClass instanceof ClassNode classNode))
             throw new GroovyBugError("Class annotation " + logAnnotation.getClassNode().getName() + " annotated no Class, this must not happen.");
 
-        final ClassNode classNode = (ClassNode) targetClass;
+        final boolean staticLocation = lookupStaticLocation(logAnnotation);
+        if (staticLocation) {
+            String unsupported = loggingStrategy.staticLocationUnsupportedReason();
+            if (unsupported != null) {
+                addError("staticLocation is not supported by " + loggingStrategy.getClass().getName() + ": " + unsupported, logAnnotation);
+                return;
+            }
+        }
+        final String sourceFileName = new File(sourceUnit.getName()).getName();
+        final List<FieldNode> locationFields = new ArrayList<>();
 
-        ClassCodeExpressionTransformer transformer = new ClassCodeExpressionTransformer() {
+        var transformer = new ClassCodeExpressionTransformer() {
+            private boolean inClosure;
             private FieldNode logNode;
+            private String currentMethod = "<clinit>";
 
             @Override
             protected SourceUnit getSourceUnit() {
-                return source;
+                return sourceUnit;
             }
 
             @Override
-            public Expression transform(Expression exp) {
-                if (exp == null) return null;
-                if (exp instanceof MethodCallExpression) {
-                    return transformMethodCallExpression(exp);
-                }
-                if (exp instanceof ClosureExpression) {
-                    return transformClosureExpression((ClosureExpression) exp);
+            public Expression transform(final Expression exp) {
+                if (exp instanceof MethodCallExpression call) {
+                    Expression modifiedCall = addGuard(call);
+                    if (modifiedCall != null) {
+                        return modifiedCall;
+                    }
+                } else if (exp instanceof ClosureExpression closure) {
+                    if (closure.getCode() instanceof BlockStatement block) {
+                        boolean previousValue = inClosure; inClosure = true;
+                        try {
+                            super.visitBlockStatement(block);
+                        } finally {
+                            inClosure = previousValue;
+                        }
+                    }
+                    return closure;
                 }
                 return super.transform(exp);
             }
 
             @Override
-            public void visitClass(ClassNode node) {
+            protected void visitConstructorOrMethod(final MethodNode node, final boolean isConstructor) {
+                String previous = currentMethod;
+                currentMethod = isConstructor ? "<init>" : node.getName();
+                try {
+                    super.visitConstructorOrMethod(node, isConstructor);
+                } finally {
+                    currentMethod = previous;
+                }
+            }
+
+            @Override
+            public void visitField(final FieldNode node) {
+                String previous = currentMethod;
+                currentMethod = node.isStatic() ? "<clinit>" : "<init>";
+                try {
+                    super.visitField(node);
+                } finally {
+                    currentMethod = previous;
+                }
+            }
+
+            @Override
+            public void visitObjectInitializerStatements(final ClassNode node) {
+                String previous = currentMethod;
+                currentMethod = "<init>";
+                try {
+                    super.visitObjectInitializerStatements(node);
+                } finally {
+                    currentMethod = previous;
+                }
+            }
+
+            /**
+             * A compile-time {@code StackTraceElement} for a logging statement, held in a
+             * synthetic static field of the annotated class (GROOVY-12378). The field is
+             * registered only once the strategy accepts the rewrite, and fields are added
+             * after the traversal, since a statement in a field initializer is visited
+             * while the class's field list is being iterated.
+             */
+            private FieldNode locationFieldFor(final MethodCallExpression mce, final ClassNode owner) {
+                String name = "$log$loc$" + (locationFields.size() + 1);
+                Expression init = ctorX(ClassHelper.make(StackTraceElement.class), args(
+                        constX(owner.getName()), constX(currentMethod), constX(sourceFileName), constX(mce.getLineNumber())));
+                FieldNode field = new FieldNode(name, ACC_STATIC | ACC_FINAL | ACC_SYNTHETIC, ClassHelper.make(StackTraceElement.class), owner, init);
+                field.setSynthetic(true);
+                return field;
+            }
+
+            @Override
+            public void visitClass(final ClassNode node) {
                 FieldNode logField = node.getField(logFieldName);
                 if (logField != null && logField.getOwner().equals(node)) {
                     addError("Class annotated with Log annotation cannot have log field declared", logField);
                 } else if (logField != null && !Modifier.isPrivate(logField.getModifiers())) {
                     addError("Class annotated with Log annotation cannot have log field declared because the field exists in the parent class: " + logField.getOwner().getName(), logField);
                 } else {
-                    if (loggingStrategy instanceof LoggingStrategyV2) {
-                        LoggingStrategyV2 loggingStrategyV2 = (LoggingStrategyV2) loggingStrategy;
+                    if (loggingStrategy instanceof LoggingStrategyV2 loggingStrategyV2) {
                         logNode = loggingStrategyV2.addLoggerFieldToClass(node, logFieldName, categoryName, logFieldModifiers);
                     } else {
                         // support the old style but they won't be as configurable
@@ -126,46 +220,61 @@ public class LogASTTransformation extends AbstractASTTransformation implements C
                 super.visitClass(node);
             }
 
-            private Expression transformClosureExpression(ClosureExpression exp) {
-                if (exp.getCode() instanceof BlockStatement) {
-                    BlockStatement code = (BlockStatement) exp.getCode();
-                    super.visitBlockStatement(code);
-                }
-                return exp;
-            }
-
-            private Expression transformMethodCallExpression(Expression exp) {
-                Expression modifiedCall = addGuard((MethodCallExpression) exp);
-                return modifiedCall == null ? super.transform(exp) : modifiedCall;
-            }
-
-            private Expression addGuard(MethodCallExpression mce) {
-                // only add guard to methods of the form: logVar.logMethod(params)
-                if (!(mce.getObjectExpression() instanceof VariableExpression)) {
+            private Expression addGuard(final MethodCallExpression mce) {
+                // only add guard to methods of the form: logVar.logMethod(arguments)
+                if (!(mce.getObjectExpression() instanceof VariableExpression variableExpression)) {
                     return null;
                 }
-                VariableExpression variableExpression = (VariableExpression) mce.getObjectExpression();
                 if (!variableExpression.getName().equals(logFieldName)
-                        || !(variableExpression.getAccessedVariable() instanceof DynamicVariable)) {
+                        || !refersToLogField(variableExpression.getAccessedVariable())) {
                     return null;
                 }
-
                 String methodName = mce.getMethodAsString();
-                if (methodName == null) return null;
-                if (!loggingStrategy.isLoggingMethod(methodName)) return null;
-                // also don't bother with guard if we have "simple" method args
-                // since there is no saving
-                if (usesSimpleMethodArgumentsOnly(mce)) return null;
+                if (methodName == null || !loggingStrategy.isLoggingMethod(methodName)) return null;
 
-                variableExpression.setAccessedVariable(logNode);
-                return loggingStrategy.wrapLoggingMethodCall(variableExpression, methodName, mce);
+                Expression receiver;
+                if (inClosure) {
+                    receiver = propX(callThisX("getThisObject"), logFieldName); // GROOVY-11800
+                    receiver.setType(logNode.getType());
+                    mce.setObjectExpression(receiver);
+                } else {
+                    receiver = variableExpression;
+                    variableExpression.setAccessedVariable(logNode);
+                }
+
+                boolean simpleArguments = usesSimpleMethodArgumentsOnly(mce);
+                if (staticLocation) {
+                    FieldNode location = locationFieldFor(mce, logNode.getOwner());
+                    Expression withLocation = loggingStrategy.wrapLoggingMethodCallWithLocation(
+                            receiver, methodName, mce, fieldX(location), !simpleArguments);
+                    if (withLocation != null) {
+                        locationFields.add(location);
+                        return withLocation;
+                    }
+                }
+
+                // do not bother with guard if we have "simple" args since there are no savings
+                if (simpleArguments) return null;
+
+                return loggingStrategy.wrapLoggingMethodCall(receiver, methodName, mce);
             }
 
-            private boolean usesSimpleMethodArgumentsOnly(MethodCallExpression mce) {
+            /**
+             * The log field is added by this transformation, so a reference to it is still unbound, unless a superclass
+             * has a private field of the same name, declared or the backing field of a property, which the reference was
+             * bound to instead. That field is not accessible from this class, so the reference is to this class's log
+             * field all the same.
+             */
+            private boolean refersToLogField(final Variable variable) {
+                if (variable instanceof DynamicVariable) return true;
+                return variable instanceof FieldNode && ((FieldNode) variable).isPrivate()
+                        && !((FieldNode) variable).getOwner().equals(classNode);
+            }
+
+            private boolean usesSimpleMethodArgumentsOnly(final MethodCallExpression mce) {
                 Expression arguments = mce.getArguments();
-                if (arguments instanceof TupleExpression) {
-                    TupleExpression tuple = (TupleExpression) arguments;
-                    for (Expression exp : tuple.getExpressions()) {
+                if (arguments instanceof TupleExpression tuple) {
+                    for (Expression exp : tuple) {
                         if (!isSimpleExpression(exp)) return false;
                     }
                     return true;
@@ -173,7 +282,7 @@ public class LogASTTransformation extends AbstractASTTransformation implements C
                 return !isSimpleExpression(arguments);
             }
 
-            private boolean isSimpleExpression(Expression exp) {
+            private boolean isSimpleExpression(final Expression exp) {
                 if (exp instanceof ConstantExpression) return true;
                 if (exp instanceof VariableExpression) return true;
                 return false;
@@ -181,12 +290,15 @@ public class LogASTTransformation extends AbstractASTTransformation implements C
 
         };
         transformer.visitClass(classNode);
+        for (FieldNode locationField : locationFields) {
+            classNode.addField(locationField);
+        }
 
         // GROOVY-6373: references to 'log' field are normally already FieldNodes by now, so revisit scoping
         new VariableScopeVisitor(sourceUnit, true).visitClass(classNode);
     }
 
-    private static String lookupLogFieldName(AnnotationNode logAnnotation) {
+    private static String lookupLogFieldName(final AnnotationNode logAnnotation) {
         Expression member = logAnnotation.getMember("value");
         if (member != null && member.getText() != null) {
             return member.getText();
@@ -195,7 +307,12 @@ public class LogASTTransformation extends AbstractASTTransformation implements C
         }
     }
 
-    private static String lookupCategoryName(AnnotationNode logAnnotation) {
+    private static boolean lookupStaticLocation(final AnnotationNode logAnnotation) {
+        Expression member = logAnnotation.getMember("staticLocation");
+        return member instanceof ConstantExpression constant && Boolean.TRUE.equals(constant.getValue());
+    }
+
+    private static String lookupCategoryName(final AnnotationNode logAnnotation) {
         Expression member = logAnnotation.getMember("category");
         if (member != null && member.getText() != null) {
             return member.getText();
@@ -203,65 +320,65 @@ public class LogASTTransformation extends AbstractASTTransformation implements C
         return DEFAULT_CATEGORY_NAME;
     }
 
-    private int lookupLogFieldModifiers(AnnotatedNode targetClass, AnnotationNode logAnnotation) {
-        int modifiers = getVisibility(logAnnotation, targetClass, ClassNode.class, Opcodes.ACC_PRIVATE);
-        return Opcodes.ACC_FINAL | Opcodes.ACC_TRANSIENT | Opcodes.ACC_STATIC | modifiers;
+    private static int lookupLogFieldModifiers(final AnnotatedNode targetClass, final AnnotationNode logAnnotation) {
+        int modifiers = getVisibility(logAnnotation, targetClass, ClassNode.class, ACC_PRIVATE);
+        return ACC_FINAL | ACC_STATIC | ACC_TRANSIENT | modifiers;
     }
 
-    private static LoggingStrategy createLoggingStrategy(AnnotationNode logAnnotation, GroovyClassLoader loader) {
-
+    private static LoggingStrategy createLoggingStrategy(final AnnotationNode logAnnotation, final ClassLoader classLoader, final ClassLoader xformLoader) {
         String annotationName = logAnnotation.getClassNode().getName();
 
-        Class annotationClass;
+        Class<?> annotationClass;
         try {
-            annotationClass = Class.forName(annotationName, false, loader);
-        } catch (Throwable e) {
+            annotationClass = Class.forName(annotationName, false, xformLoader);
+        } catch (Throwable t) {
             throw new RuntimeException("Could not resolve class named " + annotationName);
         }
 
         Method annotationMethod;
         try {
             annotationMethod = annotationClass.getDeclaredMethod("loggingStrategy", (Class[]) null);
-        } catch (Throwable e) {
+        } catch (Throwable t) {
             throw new RuntimeException("Could not find method named loggingStrategy on class named " + annotationName);
         }
 
         Object defaultValue;
         try {
             defaultValue = annotationMethod.getDefaultValue();
-        } catch (Throwable e) {
+        } catch (Throwable t) {
             throw new RuntimeException("Could not find default value of method named loggingStrategy on class named " + annotationName);
         }
 
-        if (!LoggingStrategy.class.isAssignableFrom((Class) defaultValue)
-                && !LoggingStrategyV2.class.isAssignableFrom((Class) defaultValue)) {
+        if (!LoggingStrategy.class.isAssignableFrom((Class<?>) defaultValue)) {
             throw new RuntimeException("Default loggingStrategy value on class named " + annotationName + " is not a LoggingStrategy");
         }
 
-        // try V2 configurable logging strategy
+        // try configurable logging strategy
         try {
             Class<? extends LoggingStrategyV2> strategyClass = (Class<? extends LoggingStrategyV2>) defaultValue;
             if (AbstractLoggingStrategy.class.isAssignableFrom(strategyClass)) {
-                return DefaultGroovyMethods.newInstance(strategyClass, new Object[]{loader});
+                return DefaultGroovyMethods.newInstance(strategyClass, new Object[]{classLoader});
             } else {
                 return strategyClass.getDeclaredConstructor().newInstance();
             }
-        } catch (Exception e) {
+        } catch (Exception ignore) {
         }
 
         // try legacy logging strategy
         try {
             Class<? extends LoggingStrategy> strategyClass = (Class<? extends LoggingStrategy>) defaultValue;
             if (AbstractLoggingStrategy.class.isAssignableFrom(strategyClass)) {
-                return DefaultGroovyMethods.newInstance(strategyClass, new Object[]{loader});
+                return DefaultGroovyMethods.newInstance(strategyClass, new Object[]{classLoader});
             } else {
                 return strategyClass.getDeclaredConstructor().newInstance();
             }
-        } catch (Exception e) {
-            return null;
+        } catch (Exception ignore) {
         }
+
+        return null;
     }
 
+    //--------------------------------------------------------------------------
 
     /**
      * A LoggingStrategy defines how to wire a new logger instance into an existing class.
@@ -280,11 +397,69 @@ public class LogASTTransformation extends AbstractASTTransformation implements C
          */
         FieldNode addLoggerFieldToClass(ClassNode classNode, String fieldName, String categoryName);
 
+        /**
+         * Reports whether {@code methodName} is a logging call this strategy rewrites.
+         *
+         * @param methodName the method name on the logger, such as {@code info}
+         * @return {@code true} when a call of that name should be wrapped
+         */
         boolean isLoggingMethod(String methodName);
 
-        String getCategoryName(ClassNode classNode, String categoryName);
+        /**
+         * Chooses the category stored on the logger field. {@code DEFAULT_CATEGORY_NAME}
+         * is replaced by the name of {@code classNode}.
+         *
+         * @param classNode the class that was annotated
+         * @param categoryName the category requested by the annotation
+         * @return the category to pass to the logging framework
+         */
+        default String getCategoryName(final ClassNode classNode, final String categoryName) {
+            return categoryName.equals(DEFAULT_CATEGORY_NAME) ? classNode.getName() : categoryName;
+        }
 
+        /**
+         * Wraps a logging call in the guard this strategy uses.
+         *
+         * @param logVariable the logger expression
+         * @param methodName the logging method that was called
+         * @param originalExpression the call as written
+         * @return the replacement expression
+         */
         Expression wrapLoggingMethodCall(Expression logVariable, String methodName, Expression originalExpression);
+
+        /**
+         * Why {@link #wrapLoggingMethodCallWithLocation} cannot be used with this
+         * strategy in the current compilation, for the compile error reported when
+         * {@code staticLocation} is requested anyway. A strategy whose logging API
+         * accepts a caller-supplied location returns {@code null} when that API is
+         * resolvable, and names what is missing from the compile classpath when it
+         * is not. By default compile-time locations are not implemented.
+         *
+         * @return the reason compile-time locations are unavailable, or {@code null} if they are supported
+         * @since 6.0.0
+         */
+        default String staticLocationUnsupportedReason() {
+            return "it does not implement compile-time locations";
+        }
+
+        /**
+         * Rewrites a logging call so that the logging framework is handed the
+         * statement's location, computed at compile time, instead of walking the
+         * stack at run time (GROOVY-12378). Only called when
+         * {@link #staticLocationUnsupportedReason()} returned {@code null}.
+         *
+         * @param logVariable the logger expression
+         * @param methodName the logging method that was called, e.g. {@code info}
+         * @param originalCall the call as written; its arguments are the call's arguments
+         * @param location an expression yielding the {@code StackTraceElement} for the statement
+         * @param guard whether the arguments are worth guarding with a level check
+         *              (they are not all constants or variables)
+         * @return the replacement expression, or {@code null} to leave the call unchanged
+         * @since 6.0.0
+         */
+        default Expression wrapLoggingMethodCallWithLocation(Expression logVariable, String methodName, MethodCallExpression originalCall, Expression location, boolean guard) {
+            return null;
+        }
     }
 
     /**
@@ -306,52 +481,73 @@ public class LogASTTransformation extends AbstractASTTransformation implements C
         FieldNode addLoggerFieldToClass(ClassNode classNode, String fieldName, String categoryName, int fieldModifiers);
     }
 
+    /**
+     * Base class for logging strategy implementations supporting the v2 logging API.
+     */
     public abstract static class AbstractLoggingStrategyV2 extends AbstractLoggingStrategy implements LoggingStrategyV2 {
+
+        /**
+         * Creates a new logging strategy with the given class loader.
+         *
+         * @param loader the class loader for loading logging implementation classes
+         */
         protected AbstractLoggingStrategyV2(final GroovyClassLoader loader) {
             super(loader);
         }
 
+        /**
+         * Creates a new logging strategy using the default class loader.
+         */
         protected AbstractLoggingStrategyV2() {
             this(null);
         }
 
         @Override
-        public FieldNode addLoggerFieldToClass(ClassNode classNode, String fieldName, String categoryName) {
+        public FieldNode addLoggerFieldToClass(final ClassNode classNode, final String fieldName, final String categoryName) {
             throw new UnsupportedOperationException("This logger requires a later version of Groovy");
         }
     }
 
+    /**
+     * Base class for logging strategy implementations.
+     */
     public abstract static class AbstractLoggingStrategy implements LoggingStrategy {
+
+        /**
+         * The class loader for resolving logging implementation classes.
+         */
         protected final GroovyClassLoader loader;
 
+        /**
+         * Creates a new logging strategy with the given class loader.
+         *
+         * @param loader the class loader for loading logging implementation classes
+         */
         protected AbstractLoggingStrategy(final GroovyClassLoader loader) {
             this.loader = loader;
         }
 
+        /**
+         * Creates a new logging strategy using the default class loader.
+         */
         protected AbstractLoggingStrategy() {
             this(null);
         }
 
-        @Override
-        public String getCategoryName(ClassNode classNode, String categoryName) {
-            if (categoryName.equals(DEFAULT_CATEGORY_NAME)) {
-                return classNode.getName();
-            }
-            return categoryName;
-        }
-
-        protected ClassNode classNode(String name) {
-            ClassLoader cl = loader == null ? this.getClass().getClassLoader() : loader;
+        /**
+         * Resolves a ClassNode for the given class name.
+         *
+         * @param name the fully qualified class name
+         * @return the ClassNode for the specified class
+         */
+        protected ClassNode classNode(final String name) {
+            ClassLoader cl = loader != null ? loader : getClass().getClassLoader();
             try {
-                return ClassHelper.make(Class.forName(name, false, cl));
+                Class<?> c = Class.forName(name, false, cl);
+                return ClassHelper.make(c);
             } catch (ClassNotFoundException e) {
-                throw new GroovyRuntimeException("Unable to load logging class", e);
+                throw new GroovyRuntimeException("Unable to load class: " + name, e);
             }
         }
-    }
-
-    @Override
-    public void setCompilationUnit(final CompilationUnit unit) {
-        this.compilationUnit = unit;
     }
 }

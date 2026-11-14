@@ -18,12 +18,27 @@
  */
 package groovy.json
 
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.shouldFail
+
 class JsonSlurperLaxTest extends JsonSlurperTest {
 
+    @BeforeEach
     void setUp() {
         parser = new JsonSlurper().setType(JsonParserType.LAX)
     }
 
+    @Test
+    @Override
+    void exactly312Test() {
+        assert parser.parseText('22').toValue() == 22
+        assert parser.parseText('-22').toValue() == -22
+        assert parser.parseText('-22.0065').toValue() == -22.0065
+    }
+
+    @Test
     void testNullEmptyMalformedPayloads() {
         shouldFail(IllegalArgumentException) { parser.parseText(null) }
         shouldFail(IllegalArgumentException) { parser.parseText("") }
@@ -37,6 +52,7 @@ class JsonSlurperLaxTest extends JsonSlurperTest {
         shouldFail(JsonException) { parser.parseText('[-]') }
     }
 
+    @Test
     void testObjectWithSimpleValues() {
         assert parser.parseText('{"a": 1, "b" : true , "c":false, "d": null}') == [a: 1, b: true, c: false, d: null]
 
@@ -48,6 +64,7 @@ class JsonSlurperLaxTest extends JsonSlurperTest {
         parser.parseText('{:true}')
     }
 
+    @Test
     void testArrayOfArrayWithSimpleValues() {
         assert parser.parseText('[1, 2, 3, ["a", "b", "c", [true, false], "d"], 4]') ==
                 [1, 2, 3, ["a", "b", "c", [true, false], "d"], 4]
@@ -60,6 +77,7 @@ class JsonSlurperLaxTest extends JsonSlurperTest {
         parser.parseText('[1, 2, [3, 4]')
     }
 
+    @Test
     void testBackSlashEscaping() {
         def json = new JsonBuilder()
 
@@ -82,6 +100,7 @@ class JsonSlurperLaxTest extends JsonSlurperTest {
         parser.parseText('{"a":"c:\\\"}')
     }
 
+    @Test
     void testLaxCommentsAndKeys() {
         String jsonString = """
             {
@@ -146,6 +165,7 @@ class JsonSlurperLaxTest extends JsonSlurperTest {
         assert parser.parseText('{"num": 6-}').num == '6-'
     }
 
+    @Test
     void testGroovy7728() {
         String jsonString = '''
             {
@@ -165,6 +185,7 @@ class JsonSlurperLaxTest extends JsonSlurperTest {
         assert !parser.parseText(jsonString).containsKey('appUserId')
     }
 
+    @Test
     void testGroovy9954() {
         String jsonString = """
 // first comment

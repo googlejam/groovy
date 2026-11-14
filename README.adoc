@@ -22,22 +22,23 @@
 = Apache Groovy
 The Groovy development team
 :revdate: 24-02-2014
-:build-icon: https://ci.groovy-lang.org/app/rest/builds/buildType:(id:MasterTestJdk11)/statusIcon
-:travis-build-icon: https://travis-ci.com/apache/groovy.svg?branch=master
+:github-build-icon: https://github.com/apache/groovy/actions/workflows/groovy-build-test.yml/badge.svg?branch=master
 :sonarcloud-icon: https://sonarcloud.io/api/project_badges/measure?project=apache_groovy&metric=sqale_rating
 :noheader:
 :groovy-www: https://groovy-lang.org/
 :groovy-ci: https://ci.groovy-lang.org?guest=1
-:travis-ci: https://travis-ci.com/apache/groovy
+:github-ci: https://github.com/apache/groovy/actions?query=branch%3Amaster
 :sonarcloud: https://sonarcloud.io/dashboard?id=apache_groovy
 :jdk: https://www.oracle.com/technetwork/java/javase/downloads
+:codecov: https://codecov.io/gh/apache/groovy
 //:bintray-latest-version-image: https://api.bintray.com/packages/groovy/maven/groovy/images/download.png
 //:bintray-latest-version-link: https://bintray.com/groovy/maven/groovy/_latestVersion
 :apache-license-icon: https://img.shields.io/badge/license-APL2-blue.svg
 :apache-license-link: https://www.apache.org/licenses/LICENSE-2.0.txt
 :apache-groovy-twitter-icon: https://img.shields.io/twitter/follow/ApacheGroovy.svg?style=social
 :apache-groovy-twitter-link: https://twitter.com/intent/follow?screen_name=ApacheGroovy
-:jdk-icon: https://img.shields.io/badge/java-8+-4c7e9f.svg
+:jdk-icon: https://img.shields.io/badge/java-17+-4c7e9f.svg
+:codecov-icon: https://codecov.io/gh/apache/groovy/branch/master/graph/badge.svg
 //:bintray-download-icon: https://api.bintray.com/packages/groovy/maven/groovy/images/download.svg
 :opencollective-link: https://opencollective.com/friends-of-groovy
 :sponsors-silver-img: https://opencollective.com/friends-of-groovy/tiers/silver-sponsor.svg?avatarHeight=45&width=890
@@ -45,23 +46,24 @@ The Groovy development team
 :backers-monthly-img: https://opencollective.com/friends-of-groovy/tiers/backer.svg?avatarHeight=36&width=890
 :backers-all-img: https://opencollective.com/friends-of-groovy/backers.svg?avatarHeight=32&width=890
 
+
 [.left.text-left]
 image::https://raw.githubusercontent.com/groovy/artwork/master/medium.png[]
 image:{jdk-icon}[jdk, link={jdk}]
 image:{apache-license-icon}[Apache License 2, link={apache-license-link}]
-image:{build-icon}[teamcity build status, link={groovy-ci}]
-image:{travis-build-icon}[travis build status, link={travis-ci}]
-image:{sonarcloud-icon}[maintainability rating, link={sonarcloud}]
-//image:{bintray-download-icon}[bintray download, link={bintray-latest-version-link}]
+image:{github-build-icon}[github build status, link={github-ci}]
+image:{codecov-icon}[codecov, link={codecov}]
+// image:{sonarcloud-icon}[maintainability rating, link={sonarcloud}]
+// image:{bintray-download-icon}[bintray download, link={bintray-latest-version-link}]
 image:{apache-groovy-twitter-icon}[follow on Twitter, link={apache-groovy-twitter-link}]
 
-{groovy-www}[Groovy] is a powerful multi-faceted programming language for the JVM platform.
+{groovy-www}[Groovy]® is a powerful multi-faceted programming language for the JVM platform.
 It supports a spectrum of programming styles incorporating features from dynamic languages such as optional and duck typing, but also
 static compilation and static type checking at levels similar to or greater than Java through its extensible static type checker.
 It aims to greatly increase developer productivity with many powerful features but also a concise, familiar and easy to learn syntax.
 
 It integrates smoothly with any Java class or library, and immediately delivers to your application powerful capabilities,
-including scripting support, Domain-Specific Language authoring, runtime and compile-time meta-programming and functional programming. 
+including scripting support, Domain-Specific Language authoring, runtime and compile-time meta-programming and functional programming.
 
 == Downloading
 
@@ -80,14 +82,14 @@ Apache Groovy uses Git. The official Git repository is at:
 
     https://gitbox.apache.org/repos/asf/groovy.git
 
-And a mirror is hosted on Github:
+And a mirror is hosted on GitHub:
 
     https://github.com/apache/groovy
 
-The Github mirror is read-only and provides convenience to users and developers to explore the code and for the
-community to accept contributions via Github Pull Requests.
+The GitHub mirror is read-only and provides convenience to users and developers to explore the code and for the
+community to accept contributions via GitHub Pull Requests.
 
-Simply `git clone` the repo (or the repo you forked via the github website) and you will have the complete source.
+Simply `git clone` the repo (or the repo you forked via the GitHub website) and you will have the complete source.
 
 === Unpacking the src distribution
 
@@ -100,7 +102,7 @@ use it to execute one bootstrap step.
 ==== Bootstrapping Gradle
 
 As mentioned in the previous paragraph, if you download the source distribution
-you need to bootstrap Gradle. This isn't needed if you clone from the Github repo.
+you need to bootstrap Gradle. This isn't needed if you clone from the GitHub repo.
 
 Each version of Groovy is built and tested using a specific version of Gradle.
 That version is specified by the `gradle_version` property defined in the `gradle.properties`
@@ -116,19 +118,17 @@ To bootstrap Gradle, at the top directory of your unpacked source, run the comma
 
     gradle -p bootstrap
 
-On Unix-like systems, use `./gradle`.
-
 [NOTE]
 At this point, the Gradle wrapper should be set up and from now on you should use
 the `gradlew` command instead of `gradle`. (On Unix-like systems, use `./gradlew`).
 
 == Building from Source
 
-// Build is image:{build-icon}[build status, link={groovy-ci}].
-
 To build you will need:
 
-* {jdk}[JDK 10+]
+* {jdk}[JDK 17+]
+
+The build compiles with whichever JDK runs `gradlew`. To target a different bytecode level, or to run tests on a different JDK, see the "Building and testing against a specific JDK" section in `CONTRIBUTING.md`.
 
 To build everything using Gradle, use the following command (`./gradlew` on Unix-like systems):
 
@@ -146,6 +146,12 @@ To build everything and launch unit tests, use:
 If you want to launch one unit test, use this. <TestClassName> is like `groovy.GroovyMethodsTest`.
 
     gradlew :test --tests <TestClassName>
+
+To build a runnable local installation of Groovy with your changes applied, use:
+
+    gradlew :groovy-binary:installGroovy
+
+The installation is generated under `subprojects/groovy-binary/build/install`. Its `bin` directory contains the `groovy`, `groovysh`, and `groovyc` launchers, so you can invoke `subprojects/groovy-binary/build/install/bin/groovy <script>` to run a script against the build you just produced.
 
 To build from IntelliJ IDEA:
 
@@ -171,23 +177,21 @@ All code samples of the documentation guide are pulled from actual test cases. T
 The omission of package name: class is `semantics.PowerAssertTest` but only `PowerAssertTest` is added to `testSingle`.
 
 == Verifying dependencies
-To generate the missing verification metadata when add/bump dependencies:
+The build uses Gradle dependency verification, so adding or bumping a dependency requires regenerating `gradle/verification-metadata.xml`.
+For the regeneration recipe (including the preferred `--dry-run` approach), see the *Dependency verification* section of link:CONTRIBUTING.md[`CONTRIBUTING.md`].
 
-    gradlew --write-verification-metadata pgp,sha512 --dry-run
+== Continuous Integration
 
-then compare `verification-metadata.xml` with the generated `verification-metadata.dryrun.xml`, and merge the missing verification metadata into `verification-metadata.xml`
-after the result of the above operation is reviewed.
-
-== Continuous Integration Server
-
-The official CI server runs {groovy-ci}[here] and is sponsored by https://www.jetbrains.com[JetBrains].
+Builds run primarily on {github-ci}[GitHub Actions]; the workflows live under `.github/workflows`.
+A TeamCity server, sponsored by https://www.jetbrains.com[JetBrains], also runs builds {groovy-ci}[here].
 
 == Java Profiler
 
 Groovy core team tunes performance through YourKit Java Profiler, which is sponsored by https://www.yourkit.com[YourKit].
 
 == Friends of Groovy Open Collective
-As an independent initiative, we have set up an open collective for Groovy:
+
+As an independent initiative, community members have set up an open collective for Groovy:
 
 https://opencollective.com/friends-of-groovy
 
@@ -209,11 +213,8 @@ image:{backers-monthly-img}[]
 
 image:{backers-all-img}[]
 
-== Stargazers over time
-
-image::https://starcharts.herokuapp.com/apache/groovy.svg[Stargazers over time, link=https://starcharts.herokuapp.com/apache/groovy]
-
 == License
 
 Groovy is licensed under the terms of the http://www.apache.org/licenses/LICENSE-2.0.html[Apache License, Version 2.0]
 
+Apache, Apache Groovy, Groovy, and the ASF logo are registered trademarks of The Apache Software Foundation.

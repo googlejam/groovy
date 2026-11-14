@@ -25,10 +25,14 @@ import org.apache.groovy.parser.antlr4.GroovyParser;
 import org.codehaus.groovy.ast.ASTNode;
 
 import static groovy.lang.Tuple.tuple;
-import static org.codehaus.groovy.runtime.DefaultGroovyMethods.asBoolean;
 
 /**
- * Utilities for configuring node positions
+ * Utilities for configuring AST source positions.
+ * <p>
+ * Line and column numbers are 1-based; the end column is exclusive.
+ * {@code -1} means the node is synthetic or generated and has no span in
+ * the source. Authored nodes should be stamped through these helpers so
+ * tooling can tell them apart ({@code lineNumber > 0}).
  */
 public class PositionConfigureUtils {
     /**
@@ -51,35 +55,86 @@ public class PositionConfigureUtils {
         return astNode;
     }
 
+    /**
+     * Returns the exclusive end line and column of {@code token}.
+     * Lines are 1-based. A null token text is zero-width: the end is the token's
+     * line and its 1-based start column. With no newline, the column is
+     * {@code charPositionInLine + 1} plus the text's code-point count. With
+     * newlines, the line advances by that count and the column is the code-point
+     * count from the last newline, inclusive, through the end of the text.
+     *
+     * @param token the token whose end is measured; a null text is tolerated, a null token is not
+     * @return end line in {@code v1} and exclusive end column in {@code v2}
+     */
     public static Tuple2<Integer, Integer> endPosition(Token token) {
         String stopText = token.getText();
-        int stopTextLength = 0;
-        int newLineCnt = 0;
-        if (null != stopText) {
-            stopTextLength = stopText.length();
-            newLineCnt = (int) StringUtils.countChar(stopText, '\n');
+        // ANTLR EOF / unset tokens often have null text; treat as zero-width
+        if (stopText == null) {
+            return tuple(token.getLine(), token.getCharPositionInLine() + 1);
         }
+        int stopTextLength = stopText.length();
+        int newLineCnt = (int) StringUtils.countChar(stopText, '\n');
 
         if (0 == newLineCnt) {
-            return tuple(token.getLine(), token.getCharPositionInLine() + 1 + token.getText().length());
+            // column numbers are code-point based (the lexer reads a CodePointCharStream), so
+            // measure the token text in code points too -- otherwise supplementary characters
+            // (e.g. emoji) make lastColumnNumber over-count by one UTF-16 unit each (GROOVY-12085)
+            return tuple(token.getLine(), token.getCharPositionInLine() + 1 + stopText.codePointCount(0, stopTextLength));
         } else { // e.g. GStringEnd contains newlines, we should fix the location info
-            return tuple(token.getLine() + newLineCnt, stopTextLength - stopText.lastIndexOf('\n'));
+            // measure the trailing line in code points too, so supplementary characters after
+            // the last newline don't make lastColumnNumber over-count by a UTF-16 unit each (GROOVY-12085)
+            return tuple(token.getLine() + newLineCnt, stopText.codePointCount(stopText.lastIndexOf('\n'), stopTextLength));
         }
     }
 
+    /**
+     * Copies the position of {@code terminalNode}'s symbol onto {@code astNode}.
+     * This is {@link #configureAST(ASTNode, Token)} and does not advance the end
+     * line when the token text contains newlines.
+     *
+     * @param <T> the node type, returned as the same instance
+     * @param astNode the node whose positions are overwritten
+     * @param terminalNode the terminal whose symbol supplies the token
+     * @return {@code astNode}
+     */
     public static <T extends ASTNode> T configureAST(T astNode, TerminalNode terminalNode) {
         return configureAST(astNode, terminalNode.getSymbol());
     }
 
+    /**
+     * Sets the start and end of {@code astNode} from a single token.
+     * The start column is {@code charPositionInLine + 1}. The end line stays the
+     * token's line even when the text contains newlines. The end column is that
+     * start column plus the text's code-point count, or the start column when the
+     * text is null. The same node is returned.
+     *
+     * @param <T> the node type, returned as the same instance
+     * @param astNode the node whose positions are overwritten
+     * @param token the token that supplies every coordinate
+     * @return {@code astNode}
+     */
     public static <T extends ASTNode> T configureAST(T astNode, Token token) {
         astNode.setLineNumber(token.getLine());
         astNode.setColumnNumber(token.getCharPositionInLine() + 1);
         astNode.setLastLineNumber(token.getLine());
-        astNode.setLastColumnNumber(token.getCharPositionInLine() + 1 + token.getText().length());
+        // measure the token text in code points to keep lastColumnNumber code-point based (GROOVY-12085)
+        String text = token.getText();
+        int extra = text == null ? 0 : text.codePointCount(0, text.length());
+        astNode.setLastColumnNumber(token.getCharPositionInLine() + 1 + extra);
 
         return astNode;
     }
 
+    /**
+     * Copies line, column, last line, and last column from {@code source} onto
+     * {@code astNode}, including a {@code -1} that marks a missing position.
+     * The same node is returned.
+     *
+     * @param <T> the node type, returned as the same instance
+     * @param astNode the node whose positions are overwritten
+     * @param source the node whose four position fields are copied
+     * @return {@code astNode}
+     */
     public static <T extends ASTNode> T configureAST(T astNode, ASTNode source) {
         astNode.setLineNumber(source.getLineNumber());
         astNode.setColumnNumber(source.getColumnNumber());
@@ -89,34 +144,68 @@ public class PositionConfigureUtils {
         return astNode;
     }
 
+    /**
+     * Sets the start from {@code ctx} and the end from {@code initialStop}
+     * when that node has an authored end position. Otherwise the end comes
+     * from {@code ctx}'s stop token.
+     * <p>
+     * Groovy truth is non-null, so a synthetic {@code ConstantExpression}
+     * (default {@code -1} coordinates) must not be treated as a stop: it
+     * would wipe the parent's end. The same applies to
+     * {@code EmptyExpression.INSTANCE}.
+     *
+     * @param astNode     node to modify
+     * @param ctx         parse context supplying the start (and fallback end)
+     * @param initialStop authored initializer whose end should be used, or
+     *                    {@code null}/unpositioned to use {@code ctx}'s stop
+     * @return {@code astNode}
+     */
     public static <T extends ASTNode> T configureAST(T astNode, GroovyParser.GroovyParserRuleContext ctx, ASTNode initialStop) {
         Token start = ctx.getStart();
-        Token stop = ctx.getStop();
-
         astNode.setLineNumber(start.getLine());
         astNode.setColumnNumber(start.getCharPositionInLine() + 1);
 
-        if (asBoolean(initialStop)) {
+        if (hasEndPosition(initialStop)) {
             astNode.setLastLineNumber(initialStop.getLastLineNumber());
             astNode.setLastColumnNumber(initialStop.getLastColumnNumber());
         } else {
+            Token stop = ctx.getStop();
             configureEndPosition(astNode, stop);
         }
 
         return astNode;
     }
 
+    /**
+     * Sets the last line and last column of {@code astNode} from {@link #endPosition(Token)}.
+     * The start line and start column are left unchanged.
+     *
+     * @param <T> the node type
+     * @param astNode the node whose end position is overwritten
+     * @param token the token measured by {@link #endPosition(Token)}
+     */
     public static <T extends ASTNode> void configureEndPosition(T astNode, Token token) {
         Tuple2<Integer, Integer> endPosition = endPosition(token);
         astNode.setLastLineNumber(endPosition.getV1());
         astNode.setLastColumnNumber(endPosition.getV2());
     }
 
+    /**
+     * Sets the start from {@code start} and the end from {@code stop} when
+     * that node has an authored end position. Otherwise the end is copied
+     * from {@code start}. See {@link #configureAST(ASTNode, GroovyParser.GroovyParserRuleContext, ASTNode)}.
+     *
+     * @param astNode node to modify
+     * @param start   node supplying the start (and fallback end)
+     * @param stop    authored node whose end should be used, or
+     *                {@code null}/unpositioned to use {@code start}'s end
+     * @return {@code astNode}
+     */
     public static <T extends ASTNode> T configureAST(T astNode, ASTNode start, ASTNode stop) {
         astNode.setLineNumber(start.getLineNumber());
         astNode.setColumnNumber(start.getColumnNumber());
 
-        if (asBoolean(stop)) {
+        if (hasEndPosition(stop)) {
             astNode.setLastLineNumber(stop.getLastLineNumber());
             astNode.setLastColumnNumber(stop.getLastColumnNumber());
         } else {
@@ -125,5 +214,13 @@ public class PositionConfigureUtils {
         }
 
         return astNode;
+    }
+
+    /**
+     * {@link ASTNode} defaults to {@code -1}; line numbers are 1-based, so a
+     * last line of {@code 0} is also treated as missing.
+     */
+    private static boolean hasEndPosition(final ASTNode node) {
+        return node != null && node.getLastLineNumber() > 0;
     }
 }

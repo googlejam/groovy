@@ -17,6 +17,12 @@
  *  under the License.
  */
 package groovy.transform
+
+import java.lang.annotation.ElementType
+import java.lang.annotation.Retention
+import java.lang.annotation.RetentionPolicy
+import java.lang.annotation.Target
+
 /**
  * The {@code @Canonical} meta-annotation combines the {@code @EqualsAndHashCode},
  * {@code @ToString} and {@code @TupleConstructor} annotations. It is used to assist in
@@ -24,14 +30,14 @@ package groovy.transform
  * which add positional constructors, equals, hashCode and a pretty print toString to your class.
  * <p>
  * You can write classes in this shortened form:
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * import groovy.transform.Canonical
  * {@code @Canonical} class Customer {
  *     String first, last
  *     int age
  *     Date since
  *     Collection favItems = ['Food']
- *     def object 
+ *     def object
  * }
  * def d = new Date()
  * def anyObject = new Object()
@@ -76,9 +82,9 @@ package groovy.transform
  * <p>
  * If you want similar functionality to what this annotation provides but also require immutability, see the
  * {@code @}{@link Immutable} annotation.
- * 
+ *
  * <p>More examples:</p>
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * import groovy.transform.*
  *
  * &#64;Canonical
@@ -106,8 +112,8 @@ package groovy.transform
  * assert anotherOfficeSpace == officeSpace
  *
  * // equals() and hashCode() are added, so duplicate is not in Set.
- * def offices = [officeSpace, anotherOfficeSpace, theOffice] as Set  
- * assert offices.size() == 2 
+ * def offices = [officeSpace, anotherOfficeSpace, theOffice] as Set
+ * assert offices.size() == 2
  * assert offices.name.join(',') == 'Initech office,Wernham Hogg Paper Company'
  *
  * &#64;Canonical
@@ -128,4 +134,7 @@ package groovy.transform
  * @since 1.8.0
  */
 @AnnotationCollector(value=[ToString, TupleConstructor, EqualsAndHashCode], mode=AnnotationCollectorMode.PREFER_EXPLICIT_MERGED)
-@interface Canonical { }
+@Retention(RetentionPolicy.SOURCE)
+@Target(ElementType.TYPE)
+@interface Canonical {
+}

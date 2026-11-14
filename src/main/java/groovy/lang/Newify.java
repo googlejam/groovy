@@ -18,8 +18,11 @@
  */
 package groovy.lang;
 
+import groovy.lang.annotation.ExtendedElementType;
+import groovy.lang.annotation.ExtendedTarget;
 import org.codehaus.groovy.transform.GroovyASTTransformationClass;
 
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -111,9 +114,10 @@ import java.lang.annotation.Target;
  * no support for turning "Ruby-style" conversions off at the method, constructor or
  * field level if already turned on at the class level.
  */
-@java.lang.annotation.Documented
+@Documented
 @Retention(RetentionPolicy.SOURCE)
 @Target({ElementType.CONSTRUCTOR, ElementType.METHOD, ElementType.TYPE, ElementType.FIELD, ElementType.LOCAL_VARIABLE})
+@ExtendedTarget(ExtendedElementType.IMPORT)
 @GroovyASTTransformationClass("org.codehaus.groovy.transform.NewifyASTTransformation")
 public @interface Newify {
     /**

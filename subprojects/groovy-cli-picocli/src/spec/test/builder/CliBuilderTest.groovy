@@ -19,22 +19,28 @@
 package builder
 
 import cli.CliBuilderTestCase
-import groovy.cli.picocli.CliBuilder
 import groovy.cli.TypedOption
+import groovy.cli.picocli.CliBuilder
 import groovy.transform.TypeChecked
+import org.junit.jupiter.api.Test
 
 // tag::mapOptionImports[]
+
 import java.util.concurrent.TimeUnit
+
 import static java.util.concurrent.TimeUnit.DAYS
 import static java.util.concurrent.TimeUnit.HOURS
+
 // end::mapOptionImports[]
+import static org.junit.jupiter.api.Assertions.assertEquals
 
 // Core functionality we expect to remain the same for all implementations is tested in the base test case
 // here we also add any functionality specific to this implementation that we value highly
-class CliBuilderTest extends CliBuilderTestCase {
+final class CliBuilderTest extends CliBuilderTestCase {
 
-    String getImportCliBuilder() { 'import groovy.cli.picocli.CliBuilder\n' }
+    final String importCliBuilder = 'import groovy.cli.picocli.CliBuilder\n'
 
+    @Test
     void testAnnotationsInterfaceToStringWithUsage() {
         doTestAnnotationsInterfaceToString('usage', '''\
 Usage: groovy Greeter
@@ -45,6 +51,7 @@ Usage: groovy Greeter
 ''')
     }
 
+    @Test
     void testAnnotationsInterfaceToStringWithName() {
         doTestAnnotationsInterfaceToString('name', '''\
 Usage: groovy Greeter [-h] [-a=<audience>] [<remaining>...]
@@ -55,7 +62,7 @@ Usage: groovy Greeter [-h] [-a=<audience>] [<remaining>...]
 ''')
     }
 
-    @TypeChecked
+    @TypeChecked @Test
     void testTypeChecked_addingSingleHyphenForLongOptSupport() {
         def cli = new CliBuilder(acceptLongOptionsWithSingleHyphen: true)
         TypedOption<String> name = cli.option(String, opt: 'n', longOpt: 'name', 'name option')
@@ -68,7 +75,7 @@ Usage: groovy Greeter [-h] [-a=<audience>] [<remaining>...]
         assert options.arguments() == ['and', 'some', 'more']
     }
 
-    @TypeChecked
+    @TypeChecked @Test
     void testTypeChecked_defaultOnlyDoubleHyphen() {
         def cli = new CliBuilder()
         TypedOption<String> name = cli.option(String, opt: 'n', longOpt: 'name', 'name option')
@@ -80,6 +87,7 @@ Usage: groovy Greeter [-h] [-a=<audience>] [<remaining>...]
         assert options.arguments() == ['-age', '21', 'and', 'some', 'more']
     }
 
+    @Test
     void testUsageMessageSpec() {
         // suppress ANSI escape codes to make this test pass on all environments
         System.setProperty("picocli.ansi", "false")
@@ -123,11 +131,11 @@ Options heading:
 
 Footer heading:
 Footer 1
-Footer 2
-'''
-        assertEquals(expected.normalize(), baos.toString().normalize())
+Footer 2'''
+        assertEquals(expected, baos.toString().normalize().trim())
     }
 
+    @Test
     void testMapOption() {
         // tag::mapOption[]
         def cli = new CliBuilder()
@@ -142,6 +150,7 @@ Footer 2
         // end::mapOption[]
     }
 
+    @Test
     void testGroovyDocAntExample() {
         def cli = new CliBuilder(usage:'ant [options] [targets]',
                 header:'Options:')
@@ -166,11 +175,11 @@ Options:
       -lib=<path>,<path>,<path>
                          comma-separated list of 3 paths to search for jars and
                            classes
-      -logfile=<file>    use given file for log
-'''
-        assertEquals(expected.normalize(), sw.toString().normalize())
+      -logfile=<file>    use given file for log'''
+        assertEquals(expected, sw.toString().normalize().trim())
     }
 
+    @Test
     void testGroovyDocCurlExample() {
         // suppress ANSI escape codes to make this test pass on all environments
         System.setProperty("picocli.ansi", "false")
@@ -193,8 +202,7 @@ Usage: curl [-Gq] [--basic] [-d=<data>] [--url=<URL>]
   -d, --data=<data>   HTTP POST data
   -G, --get           Send the -d data with a HTTP GET
   -q                  If used as the first parameter disables .curlrc
-      --url=<URL>     Set URL to work with
-'''
-        assertEquals(expected.normalize(), baos.toString().normalize())
+      --url=<URL>     Set URL to work with'''
+        assertEquals(expected, baos.toString().normalize().trim())
     }
 }

@@ -16,18 +16,19 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class TryCatchBug extends GroovyTestCase {
-    
+final class TryCatchBug {
+
+    @Test
     void testBug() {
         try {
-            println("Hello")
+            println('Hello')
         }
         finally {
-            println("Finally")
+            println('Finally')
         }
     }
 }

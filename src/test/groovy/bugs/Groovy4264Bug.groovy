@@ -16,11 +16,15 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy4264Bug extends GroovyTestCase {
+import static groovy.test.GroovyAssert.assertScript
+import static groovy.test.GroovyAssert.fail
+
+class Groovy4264Bug {
+    @Test
     void testSubClassHavingMainEntryPoint() {
         try {
             assertScript """
@@ -29,7 +33,7 @@ class Groovy4264Bug extends GroovyTestCase {
                         throw new RuntimeException('B4264#main() called correctly')
                     }
                 }
-                
+
                 class A4264 {}
             """
             fail('B4264 execution should have made the script fail')
@@ -39,6 +43,7 @@ class Groovy4264Bug extends GroovyTestCase {
     }
 
     // this scenario used to work correctly. Just added to ensure that there is no change in its behavior
+    @Test
     void testScriptExecutionTakingPreferenceOverClasses() {
         try {
             assertScript """
@@ -47,7 +52,7 @@ class Groovy4264Bug extends GroovyTestCase {
                         throw new RuntimeException('X4264#main() called correctly')
                     }
                 }
-                
+
                 class X4264 {}
                 throw new RuntimeException('Script class executed correctly')
             """
@@ -58,6 +63,7 @@ class Groovy4264Bug extends GroovyTestCase {
     }
 
     // this scenario used to work correctly. Just added to ensure that there is no change in its behavior
+    @Test
     void testExecutionOfJustAScript() {
         try {
             assertScript """

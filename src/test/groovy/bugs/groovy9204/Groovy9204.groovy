@@ -16,14 +16,18 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs.groovy9204
+package bugs.groovy9204
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy9204 extends GroovyTestCase {
+import static groovy.test.GroovyAssert.assertScript
+
+final class Groovy9204 {
+
+    @Test
     void testGenerics() {
         assertScript '''
-            package groovy.bugs.groovy9204
+            package bugs.groovy9204
             @groovy.transform.CompileStatic
             class ArrayListTest extends Three {
                 def test() {
@@ -41,7 +45,7 @@ class Groovy9204 extends GroovyTestCase {
                     field[0]
                 }
             }
-            
+
             assert new ArrayListTest().test() == 'hello'
             assert new LinkedListTest().test() == 'hello'
         '''

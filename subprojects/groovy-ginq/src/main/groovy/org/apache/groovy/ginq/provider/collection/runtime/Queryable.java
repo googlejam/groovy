@@ -20,6 +20,7 @@ package org.apache.groovy.ginq.provider.collection.runtime;
 
 import groovy.lang.Tuple2;
 import groovy.transform.Internal;
+import org.apache.groovy.lang.annotation.GroovyABI;
 
 import java.math.BigDecimal;
 import java.util.Arrays;
@@ -40,15 +41,16 @@ import java.util.stream.Stream;
 @Internal
 public interface Queryable<T> {
     /**
-     * Represents null of GINQ, it could be used as the default group field
+     * Represents null of GINQ, e.g. it could be used as the default group field
      * @since 4.0.0
      */
-    Object NULL = new Object();
+    Object NULL = Null.INSTANCE;
 
     /**
      * Represents the empty Queryable instance
      * @since 4.0.0
      */
+    @SuppressWarnings({"rawtypes", "unchecked"})
     Queryable EMPTY_QUERYABLE = from(new Object[0]);
 
     /**
@@ -58,6 +60,7 @@ public interface Queryable<T> {
      * @return the empty Queryable instance
      * @since 4.0.0
      */
+    @SuppressWarnings("unchecked")
     static <T> Queryable<T> emptyQueryable() {
         return (Queryable<T>) EMPTY_QUERYABLE;
     }
@@ -70,6 +73,7 @@ public interface Queryable<T> {
      * @return the {@link Queryable} instance
      * @since 4.0.0
      */
+    @GroovyABI(since = "4.0.0")
     static <T> Queryable<T> from(Iterable<T> iterable) {
         return new QueryableCollection<>(iterable);
     }
@@ -82,6 +86,7 @@ public interface Queryable<T> {
      * @return the {@link Queryable} instance
      * @since 4.0.0
      */
+    @GroovyABI(since = "4.0.0")
     static <T> Queryable<T> from(T[] array) {
         return new QueryableCollection<>(Arrays.asList(array));
     }
@@ -94,6 +99,7 @@ public interface Queryable<T> {
      * @return the {@link Queryable} instance
      * @since 4.0.0
      */
+    @GroovyABI(since = "4.0.0")
     static <T> Queryable<T> from(Stream<T> sourceStream) {
         return new QueryableCollection<>(sourceStream);
     }
@@ -106,6 +112,7 @@ public interface Queryable<T> {
      * @return the {@link Queryable} instance
      * @since 4.0.0
      */
+    @GroovyABI(since = "4.0.0")
     static <T> Queryable<T> from(Queryable<T> queryable) {
         return queryable;
     }
@@ -244,6 +251,30 @@ public interface Queryable<T> {
     }
 
     /**
+     * Group by {@link Queryable} instance, returning {@link GroupResult} instances
+     * for use with the {@code groupby...into} syntax.
+     *
+     * @param classifier the classifier for group by
+     * @param having the filter condition (may be null)
+     * @param <K> the type of the group key
+     * @return the result of group by as GroupResult instances
+     * @since 6.0.0
+     */
+    <K> Queryable<GroupResult<K, T>> groupByInto(Function<? super T, ? extends K> classifier, Predicate<? super GroupResult<K, T>> having);
+
+    /**
+     * Group by {@link Queryable} instance without {@code having} clause, returning {@link GroupResult} instances.
+     *
+     * @param classifier the classifier for group by
+     * @param <K> the type of the group key
+     * @return the result of group by as GroupResult instances
+     * @since 6.0.0
+     */
+    default <K> Queryable<GroupResult<K, T>> groupByInto(Function<? super T, ? extends K> classifier) {
+        return groupByInto(classifier, null);
+    }
+
+    /**
      * Sort {@link Queryable} instance, similar to SQL's {@code order by}
      *
      * @param orders the order rules for sorting
@@ -251,6 +282,7 @@ public interface Queryable<T> {
      * @return the result of order by
      * @since 4.0.0
      */
+    @SuppressWarnings("unchecked")
     <U extends Comparable<? super U>> Queryable<T> orderBy(Order<? super T, ? extends U>... orders);
 
     /**
@@ -261,6 +293,7 @@ public interface Queryable<T> {
      * @return the result of order by
      * @since 4.0.0
      */
+    @SuppressWarnings("unchecked")
     default <U extends Comparable<? super U>> Queryable<T> orderBy(List<? extends Order<? super T, ? extends U>> orders) {
         return orderBy(orders.toArray(Order.EMPTY_ARRAY));
     }
@@ -353,7 +386,7 @@ public interface Queryable<T> {
 
     //  Built-in aggregate functions {
     /**
-     * Aggreate function {@code count}, similar to SQL's {@code count}
+     * Aggregate function {@code count}, similar to SQL's {@code count}
      *
      * @return count result
      * @since 4.0.0
@@ -407,6 +440,17 @@ public interface Queryable<T> {
      * @since 4.0.0
      */
     <U extends Comparable<? super U>> U max(Function<? super T, ? extends U> mapper);
+
+    /**
+     * Aggregate function {@code list}. There is no equivalent in standard SQL
+     * but various databases support a similar concept named: {@code list}, {@code listagg}, or {@code array_agg}.
+     *
+     * @param mapper choose the field to include in the list
+     * @param <U> the field type
+     * @return aggregate list result
+     * @since 4.0.14
+     */
+    <U> List<U> list(Function<? super T, ? extends U> mapper);
 
     /**
      * Aggregate function {@code median}, similar to SQL's {@code median}
@@ -508,42 +552,82 @@ public interface Queryable<T> {
      * @since 4.0.0
      */
     class Order<T, U extends Comparable<? super U>> {
+        /** Shared empty array for order clauses. */
+        @SuppressWarnings("rawtypes")
         public static final Order[] EMPTY_ARRAY = new Order[0];
         private final Function<? super T, ? extends U> keyExtractor;
         private final boolean asc;
         private final boolean nullsLast;
 
+        /**
+         * Creates an order rule with nulls sorted last.
+         *
+         * @param keyExtractor the sort key extractor
+         * @param asc whether to sort ascending
+         */
         public Order(Function<? super T, ? extends U> keyExtractor, boolean asc) {
             this(keyExtractor, asc, true);
         }
 
+        /**
+         * Creates an order rule.
+         *
+         * @param keyExtractor the sort key extractor
+         * @param asc whether to sort ascending
+         * @param nullsLast whether nulls should be ordered last
+         */
         public Order(Function<? super T, ? extends U> keyExtractor, boolean asc, boolean nullsLast) {
             this.keyExtractor = keyExtractor;
             this.asc = asc;
             this.nullsLast = nullsLast;
         }
 
+        /**
+         * Returns the sort key extractor.
+         *
+         * @return the sort key extractor
+         */
         public Function<? super T, ? extends U> getKeyExtractor() {
             return keyExtractor;
         }
 
+        /**
+         * Indicates whether this rule sorts ascending.
+         *
+         * @return {@code true} for ascending order
+         */
         public boolean isAsc() {
             return asc;
         }
 
+        /**
+         * Indicates whether this rule places null values last.
+         *
+         * @return {@code true} if nulls are ordered last
+         */
         public boolean isNullsLast() {
             return nullsLast;
         }
 
+        /**
+         * Compares this rule with another one.
+         *
+         * @param o the other object
+         * @return {@code true} if both rules are equal
+         */
         @Override
         public boolean equals(Object o) {
             if (this == o) return true;
-            if (!(o instanceof Order)) return false;
-            Order<?, ?> order = (Order<?, ?>) o;
+            if (!(o instanceof Order<?, ?> order)) return false;
             return asc == order.asc &&
                     keyExtractor.equals(order.keyExtractor);
         }
 
+        /**
+         * Returns the hash code of this rule.
+         *
+         * @return the hash code
+         */
         @Override
         public int hashCode() {
             return Objects.hash(keyExtractor, asc);

@@ -16,16 +16,17 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
 import org.apache.groovy.parser.antlr4.TestUtils
 import org.codehaus.groovy.ast.ModuleNode
 import org.codehaus.groovy.control.CompilationUnit
 import org.codehaus.groovy.control.CompilerConfiguration
 import org.codehaus.groovy.control.Phases
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 final class Groovy9589 {
+
     @Test
     void testParallelParse() {
         final cnt = 2
@@ -54,7 +55,6 @@ final class Groovy9589 {
             compile Phases.CONVERSION
         }.ast
     }
-
 
     private static String source(int index) {
         """

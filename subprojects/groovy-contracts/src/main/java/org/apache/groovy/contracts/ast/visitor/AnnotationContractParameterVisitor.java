@@ -18,29 +18,38 @@
  */
 package org.apache.groovy.contracts.ast.visitor;
 
+import org.apache.groovy.contracts.annotations.meta.ContractElement;
 import org.apache.groovy.contracts.util.AnnotationUtils;
 import org.codehaus.groovy.ast.AnnotatedNode;
-import org.codehaus.groovy.ast.AnnotationNode;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.MethodNode;
 import org.codehaus.groovy.ast.Parameter;
 import org.codehaus.groovy.control.SourceUnit;
 import org.codehaus.groovy.control.io.ReaderSource;
 
-import java.util.List;
-
 /**
- * This {@link BaseVisitor} walks up the class hierarchy for the given {@link org.codehaus.groovy.ast.ClassNode}
- * and adds {@link org.apache.groovy.contracts.annotations.meta.ContractElement} annotations to method parameters.
+ * This {@link BaseVisitor} walks up the class hierarchy for the given {@link ClassNode}
+ * and adds {@link ContractElement} annotations to method parameters.
  */
 public class AnnotationContractParameterVisitor extends BaseVisitor {
 
     private MethodNode currentMethodNode;
 
+    /**
+     * Creates a visitor that scans inherited method parameters for contract annotations.
+     *
+     * @param sourceUnit the source unit currently being transformed
+     * @param source the reader source backing the source unit
+     */
     public AnnotationContractParameterVisitor(final SourceUnit sourceUnit, final ReaderSource source) {
         super(sourceUnit, source);
     }
 
+    /**
+     * Visits the class hierarchy and implemented interfaces of the supplied node.
+     *
+     * @param node the class to inspect
+     */
     @Override
     public void visitClass(ClassNode node) {
         if (node == null) return;
@@ -54,6 +63,11 @@ public class AnnotationContractParameterVisitor extends BaseVisitor {
         }
     }
 
+    /**
+     * Tracks the currently visited method so parameter annotations can be resolved in context.
+     *
+     * @param node the method being visited
+     */
     @Override
     public void visitMethod(MethodNode node) {
         currentMethodNode = node;
@@ -61,9 +75,14 @@ public class AnnotationContractParameterVisitor extends BaseVisitor {
         currentMethodNode = null;
     }
 
+    /**
+     * Triggers contract-meta-annotation lookup for parameter annotations on the current method.
+     *
+     * @param node the annotated node being visited
+     */
     @Override
     public void visitAnnotations(AnnotatedNode node) {
         if (!(node instanceof Parameter) || currentMethodNode == null) return;
-        List<AnnotationNode> annotationNodes = AnnotationUtils.hasMetaAnnotations(node, "org.apache.groovy.contracts.annotations.meta.ContractElement");
+        AnnotationUtils.hasMetaAnnotations(node, "org.apache.groovy.contracts.annotations.meta.ContractElement");
     }
 }

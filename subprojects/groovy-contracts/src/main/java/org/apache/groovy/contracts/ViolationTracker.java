@@ -19,7 +19,9 @@
 package org.apache.groovy.contracts;
 
 import org.apache.groovy.contracts.util.Validate;
+import org.apache.groovy.lang.annotation.GroovyABI;
 
+import java.util.NavigableMap;
 import java.util.TreeMap;
 
 /**
@@ -31,44 +33,93 @@ import java.util.TreeMap;
  */
 public class ViolationTracker {
 
-    public static ThreadLocal<ViolationTracker> INSTANCE = new ThreadLocal<ViolationTracker>();
+    /**
+     * Stores the tracker bound to the current thread while a contract is being evaluated.
+     */
+    public static final ThreadLocal<ViolationTracker> INSTANCE = new ThreadLocal<>();
 
+    /**
+     * Installs a fresh tracker for the current thread.
+     */
+    @GroovyABI(since = "4.0.0")
     public static void init() {
         INSTANCE.set(new ViolationTracker());
     }
 
+    /**
+     * Removes the tracker associated with the current thread.
+     */
+    @GroovyABI(since = "4.0.0")
     public static void deinit() {
         INSTANCE.remove();
     }
 
+    /**
+     * Indicates whether the current thread has recorded at least one violation.
+     *
+     * @return {@code true} if a violation has been tracked for the current thread
+     */
+    @GroovyABI(since = "4.0.0")
     public static boolean violationsOccurred() {
         return INSTANCE.get().hasViolations();
     }
 
+    /**
+     * Rethrows the earliest recorded violation for the current thread.
+     */
+    @GroovyABI(since = "4.0.0")
     public static void rethrowFirst() {
         throw INSTANCE.get().first();
     }
 
+    /**
+     * Rethrows the most recently recorded violation for the current thread.
+     */
+    @GroovyABI(since = "4.0.0")
     public static void rethrowLast() {
         throw INSTANCE.get().last();
     }
 
-    private TreeMap<Long, AssertionViolation> violations = new TreeMap<Long, AssertionViolation>();
+    private final NavigableMap<Long, AssertionViolation> violations = new TreeMap<>();
 
+    /**
+     * Records a newly observed assertion violation in encounter order.
+     *
+     * @param assertionViolation the violation to store
+     */
+    @GroovyABI(since = "4.0.0")
     public void track(final AssertionViolation assertionViolation) {
         Validate.notNull(assertionViolation);
 
         violations.put(System.nanoTime(), assertionViolation);
     }
 
+    /**
+     * Indicates whether this tracker currently contains any violations.
+     *
+     * @return {@code true} if at least one violation has been recorded
+     */
+    @GroovyABI(since = "4.0.0")
     public boolean hasViolations() {
-        return violations.size() > 0;
+        return !violations.isEmpty();
     }
 
+    /**
+     * Returns the earliest recorded violation.
+     *
+     * @return the first violation in encounter order
+     */
+    @GroovyABI(since = "4.0.0")
     public AssertionViolation first() {
         return violations.firstEntry().getValue();
     }
 
+    /**
+     * Returns the most recently recorded violation.
+     *
+     * @return the last violation in encounter order
+     */
+    @GroovyABI(since = "4.0.0")
     public AssertionViolation last() {
         return violations.lastEntry().getValue();
     }

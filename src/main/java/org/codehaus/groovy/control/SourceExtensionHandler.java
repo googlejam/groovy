@@ -19,12 +19,14 @@
 package org.codehaus.groovy.control;
 
 import groovy.lang.GroovyRuntimeException;
+import org.codehaus.groovy.runtime.DefaultGroovyMethods;
 import org.codehaus.groovy.util.URLStreams;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.Enumeration;
 import java.util.LinkedHashSet;
 import java.util.Set;
@@ -34,6 +36,12 @@ import java.util.Set;
  */
 public class SourceExtensionHandler {
 
+    /**
+     * Loads the registered source file extensions visible to the supplied class loader.
+     *
+     * @param loader the class loader used to discover extension descriptors
+     * @return the registered source extensions, including {@code groovy}
+     */
     public static Set<String> getRegisteredExtensions(ClassLoader loader) {
         Set<String> extensions = new LinkedHashSet<String>();
         extensions.add("groovy");
@@ -42,13 +50,12 @@ public class SourceExtensionHandler {
             if (!globalServices.hasMoreElements()) {
                 globalServices = loader.getResources("META-INF/services/org.codehaus.groovy.source.Extensions");
             }
-            while (globalServices.hasMoreElements()) {
-                URL service = globalServices.nextElement();
-                try (BufferedReader svcIn = new BufferedReader(new InputStreamReader(URLStreams.openUncachedStream(service)))) {
+            for (URL service : DefaultGroovyMethods.toSet(globalServices)) {
+                try (BufferedReader svcIn = new BufferedReader(new InputStreamReader(URLStreams.openUncachedStream(service), StandardCharsets.UTF_8))) {
                     String extension = svcIn.readLine();
                     while (extension != null) {
                         extension = extension.trim();
-                        if (!extension.startsWith("#") && extension.length() > 0) {
+                        if (!extension.startsWith("#") && !extension.isEmpty()) {
                             extensions.add(extension);
                         }
                         extension = svcIn.readLine();

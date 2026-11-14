@@ -18,9 +18,13 @@
  */
 package groovy.xml
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
 
-class XmlNodePrinterTest extends GroovyTestCase {
+import static org.junit.jupiter.api.Assertions.assertEquals
+
+
+class XmlNodePrinterTest {
 
     StringWriter writer
     PrintWriter pw
@@ -49,6 +53,20 @@ class XmlNodePrinterTest extends GroovyTestCase {
     </Locator>
   </soap:Body>
 </soap:Envelope>
+"""
+
+    def namespaceWithSpecialUriInput = """\
+<foo:Envelope xmlns:foo="http://x/a?b=1&amp;c=2&lt;d">
+  <foo:Body>text</foo:Body>
+</foo:Envelope>
+"""
+
+    def namespaceWithSpecialUriOutput = """\
+<foo:Envelope xmlns:foo="http://x/a?b=1&amp;c=2&lt;d">
+  <foo:Body>
+    text
+  </foo:Body>
+</foo:Envelope>
 """
 
     def noNamespaceInputVerbose = """\
@@ -85,7 +103,8 @@ class XmlNodePrinterTest extends GroovyTestCase {
     def emptyTagExpanded = "<tag></tag>\n"
     def emptyTagCompact = "<tag/>\n"
 
-    protected void setUp() {
+    @BeforeEach
+    void setUp() {
         writer = new StringWriter()
         pw = new PrintWriter(writer)
         printer = new XmlNodePrinter(pw, "  ")
@@ -98,88 +117,110 @@ class XmlNodePrinterTest extends GroovyTestCase {
         printer.preserveWhitespace = true
     }
 
-    void testNamespacesDefault() {
+    @Test
+    void namespacesDefault() {
         checkRoundtrip namespaceInput, namespaceInput
     }
 
-    void testNamespacesPreserving() {
+    @Test
+    void namespacesPreserving() {
         parser.trimWhitespace = false
         parser.keepIgnorableWhitespace = true
         setUpNoindentingPrinter()
         checkRoundtrip namespaceInput, namespaceInput.trim()
     }
 
-    void testNamespacesDisabledOnParsing() {
+    @Test
+    void namespacesDisabledOnParsing() {
         parser = new XmlParser(false, false)
         parser.trimWhitespace = true
         checkRoundtrip namespaceInput, namespaceInput
     }
 
-    void testNamespacesDisabledOnPrinting() {
+    @Test
+    void namespacesDisabledOnPrinting() {
         printer.namespaceAware = false
         checkRoundtrip namespaceInput, noNamespaceInputVerbose
     }
 
-    void testWithoutNamespacesVerboseInDefaultOut() {
+    @Test
+    void withoutNamespacesVerboseInDefaultOut() {
         checkRoundtrip noNamespaceInputVerbose, noNamespaceInputVerbose
     }
 
-    void testWithoutNamespacesVerbosePreserving() {
+    @Test
+    void withoutNamespacesVerbosePreserving() {
         parser.trimWhitespace = false
         parser.keepIgnorableWhitespace = true
         setUpNoindentingPrinter()
         checkRoundtrip noNamespaceInputVerbose, noNamespaceInputVerbose.trim()
     }
 
-    void testWithoutNamespacesVerboseInPreserveOut() {
+    @Test
+    void withoutNamespacesVerboseInPreserveOut() {
         printer.preserveWhitespace = true
         checkRoundtrip noNamespaceInputVerbose, noNamespaceInputCompact
     }
 
-    void testWithoutNamespacesCompactInPreserveOut() {
+    @Test
+    void withoutNamespacesCompactInPreserveOut() {
         printer.preserveWhitespace = true
         checkRoundtrip noNamespaceInputCompact, noNamespaceInputCompact
     }
 
-    void testNoExpandOfEmptyElements() {
+    @Test
+    void noExpandOfEmptyElements() {
         checkRoundtrip emptyTagExpanded, emptyTagCompact
     }
 
-    void testExpandEmptyElements() {
+    @Test
+    void expandEmptyElements() {
         printer.expandEmptyElements = true
         checkRoundtrip emptyTagExpanded, emptyTagExpanded
     }
 
-    void testWithoutNamespacesCompactInDefaultOut() {
+    @Test
+    void withoutNamespacesCompactInDefaultOut() {
         checkRoundtrip noNamespaceInputCompact, noNamespaceInputVerbose
     }
 
-    void testAttributeWithQuot() {
+    @Test
+    void attributeWithQuot() {
         printer = new XmlNodePrinter(pw, "  ", "\"")
         checkRoundtrip attributeInput, attributeExpectedOutputQuot
     }
 
-    void testAttributeWithApos() {
+    @Test
+    void attributeWithApos() {
         printer = new XmlNodePrinter(pw, "  ", "'")
         checkRoundtrip attributeInput, attributeExpectedOutputApos
     }
 
-    void testAttributeWithNewline() {
+    @Test
+    void attributeWithNewline() {
         checkRoundtrip attributeWithNewlineInput, attributeWithNewlineExpectedOutput
     }
 
-    void testContentWithSpecialSymbolsApos() {
+    @Test
+    void contentWithSpecialSymbolsApos() {
         printer = new XmlNodePrinter(pw, "  ", "'")
         checkRoundtrip tagWithSpecialChars, tagWithSpecialChars
     }
 
-    void testContentWithSpecialSymbolsQuot() {
+    @Test
+    void contentWithSpecialSymbolsQuot() {
         printer = new XmlNodePrinter(pw, "  ", "\"")
         checkRoundtrip tagWithSpecialChars, tagWithSpecialChars
     }
 
-    void testAttributeWithNamespaceInput() {
+    @Test
+    void attributeWithNamespaceInput() {
         checkRoundtrip attributeWithNamespaceInput, attributeWithNamespaceInput
+    }
+
+    @Test
+    void namespaceUriWithSpecialCharsEscaped() {
+        checkRoundtrip namespaceWithSpecialUriInput, namespaceWithSpecialUriOutput
     }
 
     private checkRoundtrip(String intext, String outtext) {

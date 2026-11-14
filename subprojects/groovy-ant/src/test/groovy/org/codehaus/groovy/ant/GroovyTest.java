@@ -26,10 +26,13 @@ import org.apache.groovy.io.StringBuilderWriter;
 import org.apache.tools.ant.BuildException;
 import org.apache.tools.ant.Project;
 import org.apache.tools.ant.ProjectHelper;
+import org.apache.tools.ant.types.Environment;
 
 import java.io.File;
 import java.io.PrintWriter;
 import java.io.Writer;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
@@ -65,6 +68,8 @@ public class GroovyTest extends GroovyTestCase {
         suite.addTest(new GroovyTest("testGroovyArgUsage"));
         suite.addTest(new GroovyTest("testFileNameInStackTrace"));
         suite.addTest(new GroovyTest("testNonExistingFile"));
+        suite.addTest(new GroovyTest("testInheritAllPassesProjectProperties"));
+        suite.addTest(new GroovyTest("testInheritAllDoesNotOverrideExplicitSysproperty"));
         return suite;
     }
 
@@ -172,11 +177,54 @@ public class GroovyTest extends GroovyTestCase {
     }
 
     /**
-     * Test that helpful "file name" appears in the stack trace and not just "Script1" 
+     * Test that helpful "file name" appears in the stack trace and not just "Script1"
      */
     public void testFileNameInStackTrace() {
         testFileNameInStackTrace("groovyErrorMsg", "\\(embedded_script_in_.*GroovyTest_dot_xml");
         testFileNameInStackTrace("groovyErrorMsg_ExternalFile", "GroovyTest_errorMessage.groovy");
+    }
+
+    public void testInheritAllPassesProjectProperties() {
+        Groovy task = new Groovy();
+        task.setProject(project);
+        project.setProperty("alpha", "1");
+        project.setProperty("beta", "two");
+
+        task.setInheritAll(true);
+        task.passParentAntProperties();
+
+        Map<String, String> passed = collectSysproperties(task);
+        assertEquals("1", passed.get("alpha"));
+        assertEquals("two", passed.get("beta"));
+    }
+
+    public void testInheritAllDoesNotOverrideExplicitSysproperty() {
+        Groovy task = new Groovy();
+        task.setProject(project);
+        project.setProperty("shared", "fromProject");
+
+        Environment.Variable explicit = new Environment.Variable();
+        explicit.setKey("shared");
+        explicit.setValue("fromSysproperty");
+        task.addSysproperty(explicit);
+
+        task.setInheritAll(true);
+        task.passParentAntProperties();
+
+        int sharedCount = 0;
+        for (Environment.Variable v : task.getSysProperties().getVariablesVector()) {
+            if ("shared".equals(v.getKey())) sharedCount++;
+        }
+        assertEquals(1, sharedCount);
+        assertEquals("fromSysproperty", collectSysproperties(task).get("shared"));
+    }
+
+    private static Map<String, String> collectSysproperties(Groovy task) {
+        Map<String, String> out = new HashMap<>();
+        for (Environment.Variable v : task.getSysProperties().getVariablesVector()) {
+            out.put(v.getKey(), v.getValue());
+        }
+        return out;
     }
 
     private void testFileNameInStackTrace(final String target, final String fileNamePattern) {
@@ -191,10 +239,10 @@ public class GroovyTest extends GroovyTestCase {
 
             final Writer sw = new StringBuilderWriter();
             cause.printStackTrace(new PrintWriter(sw));
-            
+
             final String stackTrace = sw.toString();
             final Pattern pattern = Pattern.compile(fileNamePattern);
-            assertTrue("Does >" + stackTrace + "< contain >" + fileNamePattern + "<?", 
+            assertTrue("Does >" + stackTrace + "< contain >" + fileNamePattern + "<?",
                     pattern.matcher(stackTrace).find());
         }
     }

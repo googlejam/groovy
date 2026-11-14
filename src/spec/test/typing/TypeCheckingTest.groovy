@@ -16,18 +16,19 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-
 package typing
 
 import groovy.transform.stc.StaticTypeCheckingTestCase
+import org.junit.jupiter.api.Test
 
 /**
  * This unit test contains both assertScript and new GroovyShell().evaluate
  * calls. It is important *not* to replace the evaluate calls with assertScript, or the semantics
  * of the tests would be very different!
  */
-class TypeCheckingTest extends StaticTypeCheckingTestCase {
+final class TypeCheckingTest extends StaticTypeCheckingTestCase {
 
+    @Test
     void testIntroduction() {
         new GroovyShell().evaluate '''
         // tag::stc_intro_magic[]
@@ -44,6 +45,7 @@ class TypeCheckingTest extends StaticTypeCheckingTestCase {
         '''
     }
 
+    @Test
     void testTypeCheckedAnnotation() {
         def shell = new GroovyShell()
         shell.evaluate '''
@@ -66,6 +68,7 @@ class TypeCheckingTest extends StaticTypeCheckingTestCase {
         '''
     }
 
+    @Test
     void testTypeCheckingAssignmentRules() {
         assertScript '''
             // tag::stc_assign_equals[]
@@ -159,8 +162,8 @@ class TypeCheckingTest extends StaticTypeCheckingTestCase {
             // tag::stc_assign_prim[]
             int i = 0
             Integer bi = 1
-            int x = new Integer(123)
-            double d = new Float(5f)
+            int x = Integer.valueOf(123)
+            double d = Float.valueOf(5f)
             // end::stc_assign_prim[]
         '''
 
@@ -233,6 +236,7 @@ class TypeCheckingTest extends StaticTypeCheckingTestCase {
         '''
     }
 
+    @Test
     void testGroovyConstructors() {
         assertScript '''
             // tag::stc_ctor_point_classic[]
@@ -262,6 +266,7 @@ class TypeCheckingTest extends StaticTypeCheckingTestCase {
         ''', 'No such property: age for class: Person'
     }
 
+    @Test
     void testMatchArgumentsWithParameters() {
         assertScript '''
             // tag::stc_argparam_equals[]
@@ -383,6 +388,7 @@ class TypeCheckingTest extends StaticTypeCheckingTestCase {
 
     }
 
+    @Test
     void testNoMatchingMethodError() {
         new GroovyShell().parse '''
             // tag::method_not_type_checked[]
@@ -405,6 +411,7 @@ class TypeCheckingTest extends StaticTypeCheckingTestCase {
         ''','Cannot find matching method MyService#printLine(java.lang.String)'
     }
 
+    @Test
     void testDuckTypingShouldFailWithTypeChecked() {
         shouldFailWithMessages '''
             // tag::ducktyping_failure[]
@@ -427,6 +434,7 @@ class TypeCheckingTest extends StaticTypeCheckingTestCase {
         ''', 'Cannot find matching method java.lang.Object#quack()'
     }
 
+    @Test
     void testTypeInference() {
         assertScript '''
         // tag::simple_var_type_inference[]
@@ -442,10 +450,12 @@ class TypeCheckingTest extends StaticTypeCheckingTestCase {
         ''', 'Cannot find matching method java.lang.String#upper()'
     }
 
+    @Test
     void testCollectionLiteralInference() {
         assertScript '''
         @ASTTest(phase=INSTRUCTION_SELECTION,value={
-            assert node.getNodeMetaData(INFERRED_TYPE) == make(List)
+            def type = node.getNodeMetaData(INFERRED_TYPE)
+            assert type == make(ArrayList)
         })
         // tag::empty_list_literal_inference[]
         def list = []
@@ -454,9 +464,9 @@ class TypeCheckingTest extends StaticTypeCheckingTestCase {
 
         assertScript '''
         @ASTTest(phase=INSTRUCTION_SELECTION,value={
-            def inft = node.getNodeMetaData(INFERRED_TYPE)
-            assert inft == make(List)
-            assert inft.genericsTypes[0].type == make(String)
+            def type = node.getNodeMetaData(INFERRED_TYPE)
+            assert type == make(ArrayList)
+            assert type.genericsTypes[0].type == STRING_TYPE
         })
         // tag::list_literal_inference_simple[]
         def list = ['foo','bar']
@@ -467,9 +477,9 @@ class TypeCheckingTest extends StaticTypeCheckingTestCase {
         def foo = 1
         def bar = 2
         @ASTTest(phase=INSTRUCTION_SELECTION,value={
-            def inft = node.getNodeMetaData(INFERRED_TYPE)
-            assert inft == make(List)
-            assert inft.genericsTypes[0].type == make(GString)
+            def type = node.getNodeMetaData(INFERRED_TYPE)
+            assert type == make(ArrayList)
+            assert type.genericsTypes[0].type == GSTRING_TYPE
         })
         // tag::list_literal_inference_gstring[]
         def list = ["${foo}","${bar}"]
@@ -477,7 +487,8 @@ class TypeCheckingTest extends StaticTypeCheckingTestCase {
         '''
         assertScript '''
         @ASTTest(phase=INSTRUCTION_SELECTION,value={
-            assert node.getNodeMetaData(INFERRED_TYPE) == make(LinkedHashMap)
+             def type = node.getNodeMetaData(INFERRED_TYPE)
+             assert type == make(LinkedHashMap)
         })
         // tag::empty_map_literal_inference[]
         def map = [:]
@@ -486,10 +497,10 @@ class TypeCheckingTest extends StaticTypeCheckingTestCase {
 
         assertScript '''
         @ASTTest(phase=INSTRUCTION_SELECTION,value={
-             def inft = node.getNodeMetaData(INFERRED_TYPE)
-             assert inft == make(LinkedHashMap)
-             assert inft.genericsTypes[0].type == make(String)
-             assert inft.genericsTypes[1].type == make(String)
+             def type = node.getNodeMetaData(INFERRED_TYPE)
+             assert type == make(LinkedHashMap)
+             assert type.genericsTypes[0].type == STRING_TYPE
+             assert type.genericsTypes[1].type == STRING_TYPE
         })
         // tag::map_literal_inference_simple[]
         def map1 = [someKey: 'someValue']
@@ -502,8 +513,8 @@ class TypeCheckingTest extends StaticTypeCheckingTestCase {
         @ASTTest(phase=INSTRUCTION_SELECTION,value={
              def inft = node.getNodeMetaData(INFERRED_TYPE)
              assert inft == make(LinkedHashMap)
-             assert inft.genericsTypes[0].type == make(GString)
-             assert inft.genericsTypes[1].type == make(String)
+             assert inft.genericsTypes[0].type == GSTRING_TYPE
+             assert inft.genericsTypes[1].type == STRING_TYPE
         })
         // tag::map_literal_inference_gstring[]
         def map = ["${someKey}": 'someValue']
@@ -512,7 +523,8 @@ class TypeCheckingTest extends StaticTypeCheckingTestCase {
 
         assertScript '''
         @ASTTest(phase=INSTRUCTION_SELECTION,value={
-            assert node.getNodeMetaData(INFERRED_TYPE) == make(IntRange)
+            def type = node.getNodeMetaData(INFERRED_TYPE)
+            assert type == make(IntRange)
         })
         // tag::intRange_literal_inference[]
         def intRange = (0..10)
@@ -521,17 +533,17 @@ class TypeCheckingTest extends StaticTypeCheckingTestCase {
 
         assertScript '''
         @ASTTest(phase=INSTRUCTION_SELECTION,value={
-            def inft = node.getNodeMetaData(INFERRED_TYPE)
-            assert inft == make(Range)
-            assert inft.genericsTypes[0].type == make(String)
+            def type = node.getNodeMetaData(INFERRED_TYPE)
+            assert type == RANGE_TYPE
+            assert type.genericsTypes[0].type == STRING_TYPE
         })
         // tag::charRange_literal_inference[]
         def charRange = ('a'..'z')
         // end::charRange_literal_inference[]
         '''
-
     }
 
+    @Test
     void testTypeInferenceFieldVsLocalVariable() {
         shouldFailWithMessages '''
             // tag::typeinference_field_vs_local_variable[]
@@ -559,6 +571,29 @@ class TypeCheckingTest extends StaticTypeCheckingTestCase {
         ''', 'Cannot find matching method java.lang.Object#toUpperCase()'
     }
 
+    @Test
+    void testTypeInferenceFinalField() {
+        assertScript '''
+            // tag::typeinference_final_field[]
+            class SomeClass {
+                final someUntypedField = '123'                                                      // <1>
+
+                String someMethod() {
+                    someUntypedField.toUpperCase()                                                  // <2>
+                }
+
+                String someClosure() {
+                    def closure = { -> someUntypedField.toString() }                                // <3>
+                    closure()
+                }
+            }
+            // end::typeinference_final_field[]
+            assert new SomeClass().someMethod() == '123'
+            assert new SomeClass().someClosure() == '123'
+        '''
+    }
+
+    @Test
     void testLeastUpperBound() {
         assertScript '''import org.codehaus.groovy.ast.ClassHelper
 
@@ -602,6 +637,7 @@ import static org.codehaus.groovy.ast.tools.WideningCategories.lowestUpperBound 
         '''
     }
 
+    @Test
     void testLUBInferenceInCombinationWithMethodCall() {
         shouldFailWithMessages '''
             // tag::least_upper_bound_collection_inference[]
@@ -624,9 +660,11 @@ import static org.codehaus.groovy.ast.tools.WideningCategories.lowestUpperBound 
                 it.exit()                                       // <9>
             }
             // end::least_upper_bound_collection_inference[]
-        ''', '[Static type checking] - Cannot find matching method Greeter or Salute#exit()'
+        ''',
+        'Cannot find matching method (Greeter & Salute','#exit()'
     }
 
+    @Test
     void testInstanceOfInference() {
         assertScript '''
             // tag::instanceof_inference[]
@@ -652,6 +690,35 @@ import static org.codehaus.groovy.ast.tools.WideningCategories.lowestUpperBound 
         '''
     }
 
+    @Test
+    void testSwitchInstanceOfInference() {
+        new GroovyShell().evaluate '''
+            // tag::switch_instanceof_inference[]
+            class Greeter {
+                String greeting() { 'Hello' }
+            }
+
+            @groovy.transform.TypeChecked
+            String describe(Object o) {
+                switch (o) {
+                    case Greeter:
+                        return o.greeting()                 // <1>
+                    case ArrayDeque:
+                    case Stack:
+                        return "top: ${o.peek()}"           // <2>
+                    default:
+                        return o.toString()
+                }
+            }
+
+            assert describe(new Greeter()) == 'Hello'
+            assert describe(new Stack().tap { push 3 }) == 'top: 3'
+            assert describe(42) == '42'
+            // end::switch_instanceof_inference[]
+        '''
+    }
+
+    @Test
     void testFlowTyping() {
         new GroovyShell().evaluate '''
             // tag::flowtyping_basics[]
@@ -675,6 +742,7 @@ import static org.codehaus.groovy.ast.tools.WideningCategories.lowestUpperBound 
         ''', 'toUpperCase'
     }
 
+    @Test
     void testFlowTypingTypeConstraints() {
         shouldFailWithMessages '''
             // tag::flowtyping_typeconstraints[]
@@ -686,34 +754,45 @@ import static org.codehaus.groovy.ast.tools.WideningCategories.lowestUpperBound 
             }
             // end::flowtyping_typeconstraints[]
             flowTypingWithExplicitType()
-        ''', 'Cannot assign value of type java.lang.String to variable of type java.util.List'
+        ''',
+        'Cannot assign value of type java.lang.String to variable of type java.util.List'
     }
 
-    void testFlowTypingTypeConstraintsFailure() {
+    @Test
+    void testFlowTypingTypeConstraints2() {
         shouldFailWithMessages '''
             // tag::flowtyping_typeconstraints_failure[]
             @groovy.transform.TypeChecked
-            void flowTypingWithExplicitType() {
-                List list = ['a','b','c']           // <1>
+            void flowTypingTypeConstraints1() {
+                def list = ['a','b','c']            // <1>
                 list.add(1)                         // <2>
             }
+            @groovy.transform.TypeChecked
+            void flowTypingTypeConstraints2() {
+                List<?> list = []                   // <3>
+                list.addAll(['a','b','c'])          // <4>
+                list.add(1)                         // <5>
+            }
             // end::flowtyping_typeconstraints_failure[]
-            flowTypingWithExplicitType()
-        ''', '[Static type checking] - Cannot find matching method java.util.ArrayList#add(int)'
+        ''',
+        'Cannot call java.util.ArrayList#add(java.lang.String) with arguments [int]',
+        'Cannot call java.util.ArrayList#addAll(java.util.Collection<? extends capture-of ?>) with arguments [java.util.ArrayList<java.lang.String>]',
+        'Cannot call java.util.ArrayList#add(capture-of ?) with arguments [int]'
 
         assertScript '''
             // tag::flowtyping_typeconstraints_fixed[]
             @groovy.transform.TypeChecked
-            void flowTypingWithExplicitType() {
-                List<? extends Serializable> list = []                      // <1>
-                list.addAll(['a','b','c'])                                  // <2>
-                list.add(1)                                                 // <3>
+            void flowTypingTypeConstraints3() {
+                List<Serializable> list = []        // <1>
+                list.addAll(['a','b','c'])          // <2>
+                list.add(1)                         // <3>
             }
             // end::flowtyping_typeconstraints_fixed[]
-            flowTypingWithExplicitType()
+            flowTypingTypeConstraints3()
         '''
     }
 
+    @Test
     void testFlowTypingMethodSelectionGroovy() {
         new GroovyShell().evaluate '''
             // tag::groovy_method_selection[]
@@ -727,6 +806,7 @@ import static org.codehaus.groovy.ast.tools.WideningCategories.lowestUpperBound 
         '''
     }
 
+    @Test
     void testIfElse() {
         shouldFailWithMessages '''
             // tag::flow_lub_ifelse_header[]
@@ -752,6 +832,7 @@ import static org.codehaus.groovy.ast.tools.WideningCategories.lowestUpperBound 
         ''','Cannot find matching method Top#methodFromBottom()'
     }
 
+    @Test
     void testClosureSharedVariable(){
         assertScript '''
             // tag::closure_shared_variable_definition[]
@@ -791,6 +872,7 @@ import static org.codehaus.groovy.ast.tools.WideningCategories.lowestUpperBound 
             ''','Cannot find matching method Top#methodFromBottom()'
     }
 
+    @Test
     void testClosureReturnTypeInference() {
         assertScript '''
             // tag::closure_return_type_inf[]
@@ -806,6 +888,7 @@ import static org.codehaus.groovy.ast.tools.WideningCategories.lowestUpperBound 
         '''
     }
 
+    @Test
     void testShouldNotRelyOnMethodReturnTypeInference() {
         shouldFailWithMessages '''import groovy.transform.TypeChecked
             // tag::method_return_type_matters[]
@@ -824,6 +907,32 @@ import static org.codehaus.groovy.ast.tools.WideningCategories.lowestUpperBound 
         ''', 'Cannot find matching method java.lang.Object#toUpperCase()'
     }
 
+    @Test
+    void testMethodReturnTypeInferenceWithSoleImplementation() {
+        assertScript '''
+            // tag::method_return_type_sole_implementation[]
+            @groovy.transform.TypeChecked
+            class A {
+                final def compute() { 'some string' }       // <1>
+                def computeFully() {
+                    compute().toUpperCase()                 // <2>
+                }
+            }
+            @groovy.transform.CompileStatic
+            class C {
+                private def name() { 'some name' }          // <3>
+                static def twice(int i) { i * 2 }           // <4>
+                def describe() {
+                    name().toUpperCase() + twice(21).intValue()
+                }
+            }
+            // end::method_return_type_sole_implementation[]
+            assert new A().computeFully() == 'SOME STRING'
+            assert new C().describe() == 'SOME NAME42'
+        '''
+    }
+
+    @Test
     void testClosureParameterTypeInference() {
         shouldFailWithMessages '''
         // tag::cl_pt_failure[]
@@ -847,7 +956,7 @@ import static org.codehaus.groovy.ast.tools.WideningCategories.lowestUpperBound 
             }
         }
         // end::cl_pt_failure[]
-        ''', 'No such property: age for class: java.lang.Object', 'Cannot find matching method'
+        ''', 'No such property: age for class: java.lang.Object'
 
         assertScript '''
         class Person {
@@ -934,6 +1043,7 @@ import groovy.transform.stc.FirstParam
         '''
     }
 
+    @Test
     void testSkip() {
         def shell = new GroovyShell()
         shell.evaluate '''
@@ -975,5 +1085,186 @@ import groovy.transform.stc.FirstParam
             // end::stc_skip[]
             '''
     }
-}
 
+    @Test
+    void testGenericTypeArguments() {
+        shouldFailWithMessages '''
+            // tag::stc_generics_invariant[]
+            List<Number> widen(List<Integer> ints) {
+                ints                                    // fails
+            }
+            // end::stc_generics_invariant[]
+        ''', 'Incompatible generic argument types. Cannot assign java.util.List<java.lang.Integer> to: java.util.List<java.lang.Number>'
+
+        assertScript '''
+            // tag::stc_generics_wildcards[]
+            List<? extends Number> producer(List<Integer> ints) { ints }        // <1>
+            List<? super Integer> consumer(List<Number> numbers) { numbers }    // <2>
+            List<?> anything(List<String> strings) { strings }                  // <3>
+            List<? extends Number> narrower(List<? extends Integer> ints) { ints } // <4>
+            // end::stc_generics_wildcards[]
+            assert producer([1]) == [1]
+            assert consumer([1]) == [1]
+            assert anything(['a']) == ['a']
+            assert narrower([1]) == [1]
+        '''
+
+        shouldFailWithMessages '''
+            // tag::stc_generics_wildcard_range_fail[]
+            List<? extends Integer> narrow(List<? extends Number> numbers) {
+                numbers                                 // fails
+            }
+            // end::stc_generics_wildcard_range_fail[]
+        ''', 'Incompatible generic argument types. Cannot assign java.util.List<? extends java.lang.Number> to: java.util.List<? extends java.lang.Integer>'
+
+        shouldFailWithMessages '''
+            // tag::stc_generics_wildcard_unbounded_fail[]
+            List<? extends Number> assume(List<?> values) {
+                values                                  // fails
+            }
+            // end::stc_generics_wildcard_unbounded_fail[]
+        ''', 'Incompatible generic argument types. Cannot assign java.util.List<?> to: java.util.List<? extends java.lang.Number>'
+
+        shouldFailWithMessages '''
+            // tag::stc_generics_wildcard_exact_fail[]
+            List<Number> exact(List<? extends Number> numbers) {
+                numbers                                 // fails
+            }
+            // end::stc_generics_wildcard_exact_fail[]
+        ''', 'Incompatible generic argument types. Cannot assign java.util.List<? extends java.lang.Number> to: java.util.List<java.lang.Number>'
+    }
+
+    @Test
+    void testWildcardReadAndWrite() {
+        assertScript '''
+            // tag::stc_generics_read_write[]
+            Number first(List<? extends Number> numbers) {
+                numbers.get(0)                          // <1>
+            }
+            void fill(List<? super Integer> sink) {
+                sink.add(42)                            // <2>
+            }
+            // end::stc_generics_read_write[]
+            assert first([1.5]) == 1.5
+            def sink = []
+            fill(sink)
+            assert sink == [42]
+        '''
+
+        shouldFailWithMessages '''
+            // tag::stc_generics_write_extends_fail[]
+            void fill(List<? extends Number> numbers) {
+                numbers.add(42)                         // fails
+            }
+            // end::stc_generics_write_extends_fail[]
+        ''', 'Cannot call java.util.List#add(capture-of ? extends java.lang.Number) with arguments [int]'
+
+        shouldFailWithMessages '''
+            // tag::stc_generics_write_super_fail[]
+            void fill(List<? super Integer> sink) {
+                sink.add('forty-two')                   // fails
+            }
+            // end::stc_generics_write_super_fail[]
+        ''', 'Cannot call java.util.List#add(capture-of ? super java.lang.Integer) with arguments [java.lang.String]'
+    }
+
+    @Test
+    void testRawTypes() {
+        assertScript '''
+            // tag::stc_generics_raw[]
+            List<String> assume(List raw) { raw }       // <1>
+            List forget(List<String> strings) { strings } // <2>
+            int count(List<Number> numbers) { numbers.size() }
+            int countRaw(List raw) { count(raw) }       // <3>
+            // end::stc_generics_raw[]
+            assert assume(['a']) == ['a']
+            assert forget(['a']) == ['a']
+            assert countRaw([1, 2]) == 2
+        '''
+
+        shouldFailWithMessages '''
+            // tag::stc_generics_raw_element_fail[]
+            Integer first(List raw) {
+                raw.get(0)                              // fails
+            }
+            // end::stc_generics_raw_element_fail[]
+        ''', 'Cannot return value of type java.lang.Object for method returning java.lang.Integer'
+    }
+
+    @Test
+    void testGenericTypeArgumentsFromTheTarget() {
+        assertScript '''
+            // tag::stc_generics_literal[]
+            List<Number> numbers = [1, 2.5]             // <1>
+            Map<String, Number> totals = [a: 1]
+            List<Number> more = new ArrayList<>()       // <2>
+            more.add(3)
+            // end::stc_generics_literal[]
+            assert numbers.size() == 2
+            assert totals.a == 1
+            assert more == [3]
+        '''
+    }
+
+    @Test
+    void testGenericMethodCall() {
+        assertScript '''
+            // tag::stc_generics_method[]
+            <T extends Number> T first(List<T> list) { list.get(0) }
+
+            Integer firstOf(List<Integer> ints) {
+                first(ints)                             // <1>
+            }
+            // end::stc_generics_method[]
+            assert firstOf([4, 5]) == 4
+        '''
+
+        shouldFailWithMessages '''
+            <T extends Number> T first(List<T> list) { list.get(0) }
+
+            // tag::stc_generics_method_fail[]
+            def firstOf(List<String> strings) {
+                first(strings)                          // fails
+            }
+            // end::stc_generics_method_fail[]
+        ''', '#first(java.util.List<T>) with arguments [java.util.List<java.lang.String>]'
+    }
+
+    @Test
+    void testCheckedExceptionsAreNotChecked() {
+        assertScript '''
+            // tag::stc_checked_exceptions[]
+            String firstLine(File file) {
+                file.withReader { it.readLine() }       // <1>
+            }
+            void fail() {
+                throw new IOException('not declared')   // <2>
+            }
+            // end::stc_checked_exceptions[]
+            try {
+                fail()
+                assert false
+            } catch (IOException e) {
+                assert e.message == 'not declared'
+            }
+        '''
+    }
+
+    @Test
+    void testClassTypeArgument() {
+        assertScript '''
+            // tag::stc_generics_class[]
+            Class<? extends Number> numberType(Class<Integer> type) { type }    // <1>
+            // end::stc_generics_class[]
+            assert numberType(Integer) == Integer
+        '''
+
+        shouldFailWithMessages '''
+            // tag::stc_generics_class_fail[]
+            Class<Number> exactType(Class<Integer> type) {
+                type                                    // fails
+            }
+            // end::stc_generics_class_fail[]
+        ''', 'Incompatible generic argument types. Cannot assign java.lang.Class<java.lang.Integer> to: java.lang.Class<java.lang.Number>'
+    }
+}

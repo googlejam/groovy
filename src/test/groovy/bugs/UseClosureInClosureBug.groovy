@@ -16,13 +16,15 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
+
 
 /**
  */
-class UseClosureInClosureBug extends GroovyTestCase {
+class UseClosureInClosureBug {
+    @Test
     void testBugWithPrintln() {
         def inner = { it * 3 }
         def outer1 = { inner(it) + 5 }

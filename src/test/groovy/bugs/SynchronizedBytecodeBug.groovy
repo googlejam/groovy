@@ -16,122 +16,130 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class SynchronizedBytecodeBug extends GroovyTestCase {
+
+class SynchronizedBytecodeBug {
 
     /**
-     * Groovy's bytecode associated with syncrhonized(foo) construct used to generate invalid bytecode
+     * Groovy's bytecode associated with synchronized(foo) construct used to generate invalid bytecode
      * This test method shows that the standard wait()/notify() works.
      */
+    @Test
     void testSynchronized() {
         Integer foo = 0
 
-        Thread.start{
+        Thread.start {
             sleep 100
-            synchronized(foo) {
+            synchronized (foo) {
                 foo.notify()
             }
         }
 
-        synchronized(foo) {
+        synchronized (foo) {
             foo.wait()
         }
 
         // if this point is reached, the test worked :-)
         assert true
     }
-  
-  /* more tests to ensure a monitor exit is done at the right place */
-    
-  void testBreakInSynchronized() {
-    Object lock = new Object()
-    while (true) {
-        synchronized(lock) {
-            break
-        }
-    }
-    checkNotHavingAMonitor(lock)
-  }
-  
-  void testContinueInSynchronized() {
-    Object lock = new Object()  
-    boolean b = true
-    while (b) {
-        synchronized(lock) {
-            b = false
-            continue
-        }
-    }
-    checkNotHavingAMonitor(lock)
-  }
-  
-  void testReturnInSynchronized() {
-    Object lock = new Object()  
-    methodWithReturn(lock)
-    checkNotHavingAMonitor(lock)
-  }
-  
-  def methodWithReturn(lock) {
-    synchronized (lock) {
-      return
-    }
-  }
-  
-  void testBreakInClosureWithSynchronized() {
-    Object lock = new Object()
-    def c = {
-      while (true) {
-          synchronized(lock) {
-            break
-          }
-      }
-      checkNotHavingAMonitor(lock)
-    }
-    c()
-    checkNotHavingAMonitor(lock)
-  }
-  
-  void testContinueInClosureWithSynchronized() {
-    Object lock = new Object()
-    def c = {
-      boolean b = true
-      while (b) {
-          synchronized(lock) {
-            b = false
-            continue
-          }
-      }
-      checkNotHavingAMonitor(lock)
-    }
-    c()
-    checkNotHavingAMonitor(lock)
-  }
 
-  // GROOVY-4159
-  void testExceptionInSynchronized() {
-    def obj = 1
-    try {
-      synchronized(obj) {
-        obj.e
-      }
-      assert false
-    } catch (MissingPropertyException e) {
-      assert true
+    /* more tests to ensure a monitor exit is done at the right place */
+
+    @Test
+    void testBreakInSynchronized() {
+        Object lock = new Object()
+        while (true) {
+            synchronized (lock) {
+                break
+            }
+        }
+        checkNotHavingAMonitor(lock)
     }
-    checkNotHavingAMonitor(obj) 
-  }
-  
-  def checkNotHavingAMonitor(Object lock){
-    // if we call notify* or wait without having the
-    // monitor, we get an exception.
-    try {
-      lock.notifyAll()
-      assert false,"should have no monitor!"
-    } catch (IllegalMonitorStateException imse) {
-      assert true
+
+    @Test
+    void testContinueInSynchronized() {
+        Object lock = new Object()
+        boolean b = true
+        while (b) {
+            synchronized (lock) {
+                b = false
+                continue
+            }
+        }
+        checkNotHavingAMonitor(lock)
     }
-  }
+
+    @Test
+    void testReturnInSynchronized() {
+        Object lock = new Object()
+        methodWithReturn(lock)
+        checkNotHavingAMonitor(lock)
+    }
+
+    def methodWithReturn(lock) {
+        synchronized (lock) {
+            return
+        }
+    }
+
+    @Test
+    void testBreakInClosureWithSynchronized() {
+        Object lock = new Object()
+        def c = {
+            while (true) {
+                synchronized (lock) {
+                    break
+                }
+            }
+            checkNotHavingAMonitor(lock)
+        }
+        c()
+        checkNotHavingAMonitor(lock)
+    }
+
+    @Test
+    void testContinueInClosureWithSynchronized() {
+        Object lock = new Object()
+        def c = {
+            boolean b = true
+            while (b) {
+                synchronized (lock) {
+                    b = false
+                    continue
+                }
+            }
+            checkNotHavingAMonitor(lock)
+        }
+        c()
+        checkNotHavingAMonitor(lock)
+    }
+
+    // GROOVY-4159
+    @Test
+    void testExceptionInSynchronized() {
+        def obj = 1
+        try {
+            synchronized (obj) {
+                obj.e
+            }
+            assert false
+        } catch (MissingPropertyException e) {
+            assert true
+        }
+        checkNotHavingAMonitor(obj)
+    }
+
+    def checkNotHavingAMonitor(Object lock) {
+        // if we call notify* or wait without having the
+        // monitor, we get an exception.
+        try {
+            lock.notifyAll()
+            assert false, "should have no monitor!"
+        } catch (IllegalMonitorStateException imse) {
+            assert true
+        }
+    }
 }

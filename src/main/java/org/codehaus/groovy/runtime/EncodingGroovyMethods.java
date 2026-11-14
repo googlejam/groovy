@@ -21,7 +21,6 @@ package org.codehaus.groovy.runtime;
 import groovy.lang.StringWriterIOException;
 import groovy.lang.Writable;
 import org.apache.groovy.io.StringBuilderWriter;
-import org.codehaus.groovy.runtime.typehandling.DefaultTypeTransformation;
 
 import java.io.IOException;
 import java.io.Writer;
@@ -52,12 +51,23 @@ public class EncodingGroovyMethods {
      * information on Base64 encoding and chunking see <code>RFC 4648</code>.
      *
      * @param data Byte array to be encoded
-     * @param chunked whether or not the Base64 encoded data should be MIME chunked
+     * @param chunked whether the Base64 encoded data should be MIME chunked
      * @return object which will write the Base64 encoding of the byte array
      * @since 1.5.1
      */
     public static Writable encodeBase64(Byte[] data, final boolean chunked) {
-        return encodeBase64(DefaultTypeTransformation.convertToByteArray(data), chunked);
+        return encodeBase64(toPrimitiveByteArray(data), chunked);
+    }
+
+    private static byte[] toPrimitiveByteArray(Byte[] data) {
+        if (data == null) return null;
+
+        byte[] result = new byte[data.length];
+        for (int i = 0; i < data.length; i++) {
+            Byte b = data[i];
+            result[i] = b == null ? 0 : b;
+        }
+        return result;
     }
 
     /**
@@ -70,7 +80,7 @@ public class EncodingGroovyMethods {
      * @since 1.0
      */
     public static Writable encodeBase64(Byte[] data) {
-        return encodeBase64(DefaultTypeTransformation.convertToByteArray(data), false);
+        return encodeBase64(toPrimitiveByteArray(data), false);
     }
 
     /**
@@ -79,7 +89,7 @@ public class EncodingGroovyMethods {
      * information on Base64 encoding and chunking see <code>RFC 4648</code>.
      *
      * @param data byte array to be encoded
-     * @param chunked whether or not the Base64 encoded data should be MIME chunked
+     * @param chunked whether the Base64 encoded data should be MIME chunked
      * @return object which will write the Base64 encoding of the byte array
      * @since 1.5.7
      */
@@ -168,12 +178,12 @@ public class EncodingGroovyMethods {
      * Base 64 Encoding with URL and Filename Safe Alphabet</code>.
      * <p>
      * The method omits padding and is equivalent to calling
-     * {@link org.codehaus.groovy.runtime.EncodingGroovyMethods#encodeBase64Url(Byte[], boolean)} with a
+     * {@link EncodingGroovyMethods#encodeBase64Url(Byte[], boolean)} with a
      * value of {@code false}.
      *
      * @param data Byte array to be encoded
      * @return object which will write the Base64 URL and Filename Safe encoding of the byte array
-     * @see org.codehaus.groovy.runtime.EncodingGroovyMethods#encodeBase64Url(Byte[], boolean)
+     * @see EncodingGroovyMethods#encodeBase64Url(Byte[], boolean)
      * @since 2.5.0
      */
     public static Writable encodeBase64Url(Byte[] data) {
@@ -187,12 +197,12 @@ public class EncodingGroovyMethods {
      * Base 64 Encoding with URL and Filename Safe Alphabet</code>.
      *
      * @param data Byte array to be encoded
-     * @param pad whether or not the encoded data should be padded
+     * @param pad whether the encoded data should be padded
      * @return object which will write the Base64 URL and Filename Safe encoding of the byte array
      * @since 2.5.0
      */
     public static Writable encodeBase64Url(Byte[] data, boolean pad) {
-        return encodeBase64Url(DefaultTypeTransformation.convertToByteArray(data), pad);
+        return encodeBase64Url(toPrimitiveByteArray(data), pad);
     }
 
     /**
@@ -202,12 +212,12 @@ public class EncodingGroovyMethods {
      * Base 64 Encoding with URL and Filename Safe Alphabet</code>.
      * <p>
      * The method omits padding and is equivalent to calling
-     * {@link org.codehaus.groovy.runtime.EncodingGroovyMethods#encodeBase64Url(byte[], boolean)} with a
+     * {@link EncodingGroovyMethods#encodeBase64Url(byte[], boolean)} with a
      * value of {@code false}.
      *
      * @param data Byte array to be encoded
      * @return object which will write the Base64 URL and Filename Safe encoding of the byte array
-     * @see org.codehaus.groovy.runtime.EncodingGroovyMethods#encodeBase64Url(byte[], boolean)
+     * @see EncodingGroovyMethods#encodeBase64Url(byte[], boolean)
      * @since 2.5.0
      */
     public static Writable encodeBase64Url(final byte[] data) {
@@ -221,7 +231,7 @@ public class EncodingGroovyMethods {
      * Base 64 Encoding with URL and Filename Safe Alphabet</code>.
      *
      * @param data Byte array to be encoded
-     * @param pad whether or not the encoded data should be padded
+     * @param pad whether the encoded data should be padded
      * @return object which will write the Base64 URL and Filename Safe encoding of the byte array
      * @since 2.5.0
      */
@@ -255,6 +265,8 @@ public class EncodingGroovyMethods {
         int byteShift = 4;
         int tmp = 0;
         boolean done = false;
+        int dataInGroup = 0; // base64 data characters seen in the current four-character group
+        int padInGroup = 0;  // '=' padding characters seen in the current group
         final StringBuilder buffer = new StringBuilder();
         final byte[] table = urlSafe ? TRANSLATE_TABLE_URLSAFE : TRANSLATE_TABLE;
         for (int i = 0; i != value.length(); i++) {
@@ -266,6 +278,7 @@ public class EncodingGroovyMethods {
                     throw new RuntimeException("= character not at end of base64 value"); // TODO: change this exception type
 
                 tmp = (tmp << 6) | sixBit;
+                dataInGroup++;
 
                 if (byteShift-- != 4) {
                     buffer.append((char) ((tmp >> (byteShift * 2)) & 0XFF));
@@ -273,6 +286,12 @@ public class EncodingGroovyMethods {
 
             } else if (sixBit == 64) {
 
+                // '=' is padding, valid only completing a group that already holds at least two
+                // data characters (one sextet cannot form a byte); a further check below rejects
+                // padding that does not fill the group exactly
+                if (dataInGroup < 2)
+                    throw new RuntimeException("= padding without enough data in base64 value"); // TODO: change this exception type
+                padInGroup++;
                 byteShift--;
                 done = true;
 
@@ -283,8 +302,20 @@ public class EncodingGroovyMethods {
                 throw new RuntimeException("bad character in base64 value"); // TODO: change this exception type
             }
 
-            if (byteShift == 0) byteShift = 4;
+            if (byteShift == 0) {
+                // a padded group must be filled exactly: two data and two pad, or three and one
+                if (padInGroup > 0 && dataInGroup + padInGroup != 4)
+                    throw new RuntimeException("malformed padding in base64 value"); // TODO: change this exception type
+                byteShift = 4;
+                dataInGroup = 0;
+                padInGroup = 0;
+            }
         }
+
+        // the final group need not be padded (missing padding is tolerated), but padding that is
+        // present must still fill it exactly
+        if (padInGroup > 0 && dataInGroup + padInGroup != 4)
+            throw new RuntimeException("malformed padding in base64 value"); // TODO: change this exception type
 
         return buffer.toString().getBytes(StandardCharsets.ISO_8859_1);
     }
@@ -299,7 +330,7 @@ public class EncodingGroovyMethods {
      * @see Integer#toHexString(int)
      */
     public static Writable encodeHex(final Byte[] data) {
-        return encodeHex(DefaultTypeTransformation.convertToByteArray(data));
+        return encodeHex(toPrimitiveByteArray(data));
     }
 
     /**
@@ -362,10 +393,17 @@ public class EncodingGroovyMethods {
 
         byte[] bytes = new byte[value.length() / 2];
         for (int i = 0; i < value.length(); i += 2) {
-            bytes[i / 2] = (byte) Integer.parseInt(value.substring(i, i + 2), 16);
+            bytes[i / 2] = (byte) ((hexToNibble(value.charAt(i)) << 4) | hexToNibble(value.charAt(i + 1)));
         }
 
         return bytes;
+    }
+
+    private static int hexToNibble(final char c) {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        throw new NumberFormatException("illegal hexadecimal character '" + c + "' in hex string");
     }
 
     /**

@@ -16,9 +16,10 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
+
 
 /**
   * Test that ensures that:
@@ -28,7 +29,8 @@ import groovy.test.GroovyTestCase
   *       without the methods being trapped endlessly by createNode()</li>
   * </ul>
   */
-class InvokeNormalMethodFromBuilder_Bug657 extends GroovyTestCase {
+class InvokeNormalMethodFromBuilder_Bug657 {
+    @Test
     void testInvokeNormalMethod() {
         def b = new Builder()
         assert b.callNormalMethod() == "first"
@@ -52,5 +54,5 @@ class Builder extends BuilderSupport {
 
     String callNormalMethod()               { return "first" }
     String callOtherStaticallyTypedMethod() { return "second" }
-    
+
 }

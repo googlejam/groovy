@@ -16,7 +16,7 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 // tag::jsr223_imports[]
 import javax.script.ScriptEngine;
@@ -25,7 +25,7 @@ import javax.script.ScriptException;
 // end::jsr223_imports[]
 import javax.script.Invocable;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 
 public class JSR223SpecTest {
@@ -38,7 +38,7 @@ public class JSR223SpecTest {
 
         // tag::jsr223_basic[]
         Integer sum = (Integer) engine.eval("(1..10).sum()");
-        assertEquals(new Integer(55), sum);
+        assertEquals(Integer.valueOf(55), sum);
         // end::jsr223_basic[]
 
         // tag::jsr223_variables[]
@@ -59,7 +59,7 @@ public class JSR223SpecTest {
         Invocable inv = (Invocable) engine;
         Object[] params = {5};
         Object result = inv.invokeFunction("factorial", params);
-        assertEquals(new Integer(120), result);
+        assertEquals(Integer.valueOf(120), result);
         // end::jsr223_invocable[]
     }
 }

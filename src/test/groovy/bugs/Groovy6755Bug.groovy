@@ -16,14 +16,15 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
 import org.codehaus.groovy.control.CompilerConfiguration
 import org.codehaus.groovy.tools.FileSystemCompiler
+import org.junit.jupiter.api.Test
 
-class Groovy6755Bug extends GroovyTestCase {
+class Groovy6755Bug {
 
+    @Test
     public void testDeeepGenericJointCompilationImportResolution() {
         File workDir = new File("build/tmp/Groovy6755Bug")
         workDir.deleteDir()
@@ -75,6 +76,7 @@ class ItemListList {
             // I'm sure there's a nicer way of triggering this via the classloader, but this will do
             new GroovyShell(cc).evaluate("""
 import b.ItemListList
+import org.junit.jupiter.api.Test
 
 def x = ItemListList.ITEMS
 

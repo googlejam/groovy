@@ -18,10 +18,11 @@
  */
 package builder
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class NodeBuilderTest extends GroovyTestCase {
+final class NodeBuilderTest {
 
+    @Test
     void testNodeBuilder() {
         // tag::node_builder_example[]
         def nodeBuilder = new NodeBuilder()
@@ -33,7 +34,7 @@ class NodeBuilderTest extends GroovyTestCase {
             user(id: '2', firstname: 'Alice', lastname: 'Doe')
         }
         // end::node_builder_example[]
-         
+
         // tag::node_builder_gpath_assert[]
         assert userlist.user.@firstname.join(', ') == 'John, Alice'
         assert userlist.user.find { it.@lastname == 'Smith' }.address.size() == 2
@@ -41,6 +42,7 @@ class NodeBuilderTest extends GroovyTestCase {
     }
 
     // GROOVY-7044
+    @Test
     void testNodeCloning() {
         def node = new NodeBuilder().a {
             b()
@@ -53,6 +55,7 @@ class NodeBuilderTest extends GroovyTestCase {
     }
 
     // GROOVY-7044
+    @Test
     void testNodeCloningWithAttributes() {
         def node = new NodeBuilder().a(foo: 'bar') {
             b()

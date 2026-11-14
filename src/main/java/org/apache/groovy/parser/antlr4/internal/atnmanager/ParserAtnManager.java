@@ -18,19 +18,27 @@
  */
 package org.apache.groovy.parser.antlr4.internal.atnmanager;
 
-import org.antlr.v4.runtime.atn.ATN;
+import org.antlr.v4.runtime.atn.ATNDeserializer;
 import org.apache.groovy.parser.antlr4.GroovyLangParser;
 
 /**
  * Manage ATN for parser to avoid memory leak
  */
 public class ParserAtnManager extends AtnManager {
-    private final AtnWrapper parserAtnWrapper = new AtnManager.AtnWrapper(GroovyLangParser._ATN);
+    /**
+     * Shared manager for the parser ATN.
+     */
     public static final ParserAtnManager INSTANCE = new ParserAtnManager();
 
     @Override
-    public ATN getATN() {
-        return parserAtnWrapper.checkAndClear();
+    protected AtnWrapper createAtnWrapper() {
+        // The wrapper must own a private ATN: its DFA/context caches are released by the
+        // wrapper becoming unreachable, which the generated parser's static ATN never is.
+        // When dropping is disabled the static ATN is used directly so its caches persist
+        // for the life of the class (the documented "never drop" behaviour).
+        return new AtnWrapper(droppingEnabled()
+                ? new ATNDeserializer().deserialize(GroovyLangParser._serializedATN)
+                : GroovyLangParser._ATN);
     }
 
     @Override

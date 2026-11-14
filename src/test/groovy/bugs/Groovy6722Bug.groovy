@@ -16,11 +16,16 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
 
-class Groovy6722Bug extends GroovyTestCase {
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.assertScript
+
+
+class Groovy6722Bug {
+    @Test
     void testThatCompilerRecognizesCovariantArray() {
         assertScript '''
 abstract class Top<Elem,Result> {

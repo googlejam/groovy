@@ -49,16 +49,34 @@ import java.awt.event.TextEvent;
 import java.awt.event.TextListener;
 import java.util.EventListener;
 
+/**
+ * Shared find/replace dialog support for text components used by the console.
+ */
 public final class FindReplaceUtility {
 
+    /**
+     * Action command for find operations.
+     */
     public static final String FIND_ACTION_COMMAND = "Find";
 
+    /**
+     * Action command for single replace operations.
+     */
     public static final String REPLACE_ACTION_COMMAND = "Replace";
 
+    /**
+     * Action command for replace-all operations.
+     */
     public static final String REPLACE_ALL_ACTION_COMMAND = "Replace All";
 
+    /**
+     * Action command for closing the dialog.
+     */
     public static final String CLOSE_ACTION_COMMAND = "Close";
 
+    /**
+     * Shared action that repeats a find against the active text component.
+     */
     public static final Action FIND_ACTION = new FindAction();
 
     private static final JDialog FIND_REPLACE_DIALOG = new JDialog();
@@ -69,11 +87,11 @@ public final class FindReplaceUtility {
 
     private static final JPanel FIND_PANEL = new JPanel();
     private static final JLabel FIND_LABEL = new JLabel("Find What:    ");
-    private static final JComboBox FIND_FIELD = new JComboBox();
+    private static final JComboBox<String> FIND_FIELD = new JComboBox<>();
 
     private static final JPanel REPLACE_PANEL = new JPanel();
     private static final JLabel REPLACE_LABEL = new JLabel("Replace With:");
-    private static final JComboBox REPLACE_FIELD = new JComboBox();
+    private static final JComboBox<String> REPLACE_FIELD = new JComboBox<>();
 
     private static final JPanel BUTTON_PANEL = new JPanel();
     private static final JButton FIND_BUTTON = new JButton();
@@ -101,6 +119,12 @@ public final class FindReplaceUtility {
     private static final Segment SEGMENT = new Segment();
 
     private static final FocusAdapter TEXT_FOCUS_LISTENER = new FocusAdapter() {
+        /**
+         * Records the focused component as the active editor and keeps its
+         * document's default root attributes for later replacements.
+         *
+         * @param fe the focus event whose source is the text component
+         */
         @Override
         public void focusGained(FocusEvent fe) {
             textComponent = (JTextComponent) fe.getSource();
@@ -116,6 +140,11 @@ public final class FindReplaceUtility {
         /* KeyStroke keyStroke = */
         KeyStroke.getKeyStroke("enter");
         KeyAdapter keyAdapter = new KeyAdapter() {
+            /**
+             * Clicks the Find button when the typed character is Enter.
+             *
+             * @param ke the key event
+             */
             @Override
             public void keyTyped(KeyEvent ke) {
                 if (ke.getKeyChar() == KeyEvent.VK_ENTER) {
@@ -198,6 +227,11 @@ public final class FindReplaceUtility {
     private FindReplaceUtility() {
     }
 
+    /**
+     * Registers a listener for dialog text events.
+     *
+     * @param tl the listener to add
+     */
     public static void addTextListener(TextListener tl) {
         EVENT_LISTENER_LIST.add(TextListener.class, tl);
     }
@@ -236,12 +270,19 @@ public final class FindReplaceUtility {
     }
 
     /**
+     * Starts tracking the supplied text component for find/replace actions.
+     *
      * @param textComponent the text component to listen to
      */
     public static void registerTextComponent(JTextComponent textComponent) {
         textComponent.addFocusListener(TEXT_FOCUS_LISTENER);
     }
 
+    /**
+     * Removes a listener for dialog text events.
+     *
+     * @param tl the listener to remove
+     */
     public static void removeTextListener(TextListener tl) {
         EVENT_LISTENER_LIST.remove(TextListener.class, tl);
     }
@@ -258,7 +299,7 @@ public final class FindReplaceUtility {
         backwards = backwards ? !reverse : reverse;
 
         String pattern = (String) FIND_FIELD.getSelectedItem();
-        if (pattern != null && pattern.length() > 0) {
+        if (pattern != null && !pattern.isEmpty()) {
             try {
                 Document doc = textComponent.getDocument();
                 doc.getText(0, doc.getLength(), SEGMENT);
@@ -321,8 +362,8 @@ public final class FindReplaceUtility {
     }
 
     private static void setListStrings() {
-        Object findObject = FIND_FIELD.getSelectedItem();
-        Object replaceObject = REPLACE_FIELD.isShowing() ?
+        String findObject = (String) FIND_FIELD.getSelectedItem();
+        String replaceObject = REPLACE_FIELD.isShowing() ?
                 (String) REPLACE_FIELD.getSelectedItem() : "";
 
         if (findObject != null && replaceObject != null) {
@@ -353,11 +394,16 @@ public final class FindReplaceUtility {
 
     }
 
+    /**
+     * Shows the find dialog for the active text component.
+     */
     public static void showDialog() {
         showDialog(false);
     }
 
     /**
+     * Shows either the find or replace dialog for the active text component.
+     *
      * @param isReplace show a replace dialog rather than a find dialog if true
      */
     public static void showDialog(boolean isReplace) {
@@ -391,7 +437,7 @@ public final class FindReplaceUtility {
         FIND_REPLACE_DIALOG.repaint();
         FIND_REPLACE_DIALOG.pack();
 
-        java.awt.Frame[] frames = java.awt.Frame.getFrames();
+        Frame[] frames = Frame.getFrames();
         for (Frame frame : frames) {
             if (frame.isFocused()) {
                 FIND_REPLACE_DIALOG.setLocationRelativeTo(frame);
@@ -403,6 +449,8 @@ public final class FindReplaceUtility {
     }
 
     /**
+     * Stops tracking the supplied text component for find/replace actions.
+     *
      * @param textComponent the text component to stop listening to
      */
     public static void unregisterTextComponent(JTextComponent textComponent) {
@@ -411,12 +459,20 @@ public final class FindReplaceUtility {
 
     private static class FindAction extends AbstractAction {
 
-        public FindAction() {
+        FindAction() {
             putValue(Action.NAME, FIND_ACTION_COMMAND);
             putValue(Action.ACTION_COMMAND_KEY, FIND_ACTION_COMMAND);
             putValue(Action.MNEMONIC_KEY, KeyEvent.VK_F);
         }
 
+        /**
+         * Searches from the caret, or from the selection start when text is
+         * selected. Shift reverses the direction chosen by the backwards
+         * checkbox. A match is selected and counted. The search string is
+         * stored in the history, and listeners are notified.
+         *
+         * @param ae the action event; Shift reverses the search direction
+         */
         @Override
         public void actionPerformed(ActionEvent ae) {
             lastAction = FIND_ACTION_COMMAND;
@@ -447,12 +503,20 @@ public final class FindReplaceUtility {
 
     private static class ReplaceAction extends AbstractAction {
 
-        public ReplaceAction() {
+        ReplaceAction() {
             putValue(Action.NAME, REPLACE_ACTION_COMMAND);
             putValue(Action.ACTION_COMMAND_KEY, REPLACE_ACTION_COMMAND);
             putValue(Action.MNEMONIC_KEY, KeyEvent.VK_R);
         }
 
+        /**
+         * Replaces the next match in the dialog's search direction, searching
+         * from just before the caret or selection. Selects the following match,
+         * or leaves the caret after the inserted text. Counts one replacement
+         * when a match was found, updates the history, and notifies listeners.
+         *
+         * @param ae the action event whose command is recorded as the last action
+         */
         @Override
         public void actionPerformed(ActionEvent ae) {
             lastAction = ae.getActionCommand();
@@ -495,12 +559,20 @@ public final class FindReplaceUtility {
 
     private static class ReplaceAllAction extends AbstractAction {
 
-        public ReplaceAllAction() {
+        ReplaceAllAction() {
             putValue(Action.NAME, REPLACE_ALL_ACTION_COMMAND);
             putValue(Action.ACTION_COMMAND_KEY, REPLACE_ALL_ACTION_COMMAND);
             putValue(Action.MNEMONIC_KEY, KeyEvent.VK_A);
         }
 
+        /**
+         * Replaces each match found in the dialog's search direction and counts
+         * each replacement. If a match position remains, that match is selected;
+         * otherwise the caret is placed after the last replacement. Updates the
+         * history and notifies listeners.
+         *
+         * @param ae the action event whose command is recorded as the last action
+         */
         @Override
         public void actionPerformed(ActionEvent ae) {
             lastAction = ae.getActionCommand();
@@ -544,19 +616,27 @@ public final class FindReplaceUtility {
 
     private static class CloseAction extends AbstractAction {
 
-        public CloseAction() {
+        CloseAction() {
             putValue(Action.NAME, CLOSE_ACTION_COMMAND);
             putValue(Action.ACTION_COMMAND_KEY, CLOSE_ACTION_COMMAND);
             putValue(Action.MNEMONIC_KEY, KeyEvent.VK_C);
             putValue(Action.ACCELERATOR_KEY, KeyStroke.getKeyStroke("ESCAPE"));
         }
 
+        /**
+         * Disposes the shared find/replace dialog.
+         *
+         * @param ae the action event
+         */
         @Override
         public void actionPerformed(ActionEvent ae) {
             FIND_REPLACE_DIALOG.dispose();
         }
     }
 
+    /**
+     * Disposes of the shared find/replace dialog.
+     */
     public static void dispose() {
         FIND_REPLACE_DIALOG.dispose();
     }

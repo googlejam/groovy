@@ -16,15 +16,16 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
 /**
- * A little performance test
+ * A little performance test.
  */
-class BenchmarkBug extends GroovyTestCase {
-    
+final class BenchmarkBug {
+
+    @Test
     void testPerformance() {
         def start = System.currentTimeMillis()
 
@@ -44,7 +45,7 @@ class BenchmarkBug extends GroovyTestCase {
         // assert total == size * 10 + 10
         assert total == 100010
     }
-    
+
     def callSomeMethod(text, total) {
         return 10
     }

@@ -16,11 +16,14 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
 import gls.CompilableTestSupport
+import org.junit.jupiter.api.Test
 
-class Groovy8595Bug extends CompilableTestSupport {
+final class Groovy8595Bug extends CompilableTestSupport {
+
+    @Test
     void testGroovy8595() {
         shouldCompile '''
             @groovy.transform.CompileStatic
@@ -28,12 +31,12 @@ class Groovy8595Bug extends CompilableTestSupport {
               List<Foo> foo() {
                 return []
               }
-            
+
               List<String> bar() {
                 return foo().collect { Foo it -> it.instanceId }
               }
             }
-            
+
             @groovy.transform.CompileStatic
             class Foo {
               String instanceId
@@ -41,6 +44,7 @@ class Groovy8595Bug extends CompilableTestSupport {
         '''
     }
 
+    @Test
     void testMethodCallInPropertyExpression() {
         shouldCompile '''
             @groovy.transform.CompileStatic
@@ -48,12 +52,12 @@ class Groovy8595Bug extends CompilableTestSupport {
                 List<Foo> foo() {
                     return []
                 }
-            
+
                 List<String> bar() {
                     return foo()*.instanceId
                 }
             }
-            
+
             @groovy.transform.CompileStatic
             class Foo {
               String instanceId

@@ -31,6 +31,7 @@ import org.codehaus.groovy.ast.expr.PropertyExpression;
 import org.codehaus.groovy.ast.expr.TupleExpression;
 import org.codehaus.groovy.control.CompilationUnit;
 import org.codehaus.groovy.control.SourceUnit;
+import org.codehaus.groovy.macro.runtime.Macro;
 import org.codehaus.groovy.macro.runtime.MacroContext;
 import org.codehaus.groovy.macro.runtime.MacroStub;
 import org.codehaus.groovy.runtime.InvokerHelper;
@@ -44,7 +45,7 @@ import java.util.List;
 /**
  * Visitor to find and transform macro method calls. For the performance reasons it's not a transformer,
  * but transforming visitor - it mutates {@link MethodCallExpression} if it's a macro method call by replacing
- * original call (i.e. {@code myMacroMethod("foo", "bar")} with something like:
+ * original call (i.e. {@code myMacroMethod("foo", "bar")}) with something like:
  * {@code MacroStub.INSTANCE.macroMethod(123)}
  * (where {@code myMacroMethod} returns constant expression {@code 123})
  *
@@ -65,17 +66,33 @@ class MacroCallTransformingVisitor extends ClassCodeVisitorSupport {
     private final CompilationUnit unit;
     private final ClassLoader classLoader;
 
+    /**
+     * Creates a visitor that rewrites macro method calls in a source unit.
+     *
+     * @param sourceUnit the current source unit
+     * @param unit the current compilation unit
+     */
     public MacroCallTransformingVisitor(SourceUnit sourceUnit, CompilationUnit unit) {
         this.sourceUnit = sourceUnit;
         this.unit = unit;
         this.classLoader = unit.getTransformLoader();
     }
 
+    /**
+     * Returns the source unit currently being rewritten.
+     *
+     * @return the active source unit
+     */
     @Override
     protected SourceUnit getSourceUnit() {
         return sourceUnit;
     }
 
+    /**
+     * Rewrites matching method calls to their macro-expanded form.
+     *
+     * @param call the method call to inspect
+     */
     @Override
     public void visitMethodCallExpression(MethodCallExpression call) {
         super.visitMethodCallExpression(call);
@@ -113,7 +130,7 @@ class MacroCallTransformingVisitor extends ClassCodeVisitorSupport {
 
     /**
      * Finds all extension methods of {@link MacroContext} for given methodName
-     * with @{@link org.codehaus.groovy.macro.runtime.Macro} annotation.
+     * with @{@link Macro} annotation.
      */
     private List<MethodNode> findMacroMethods(String methodName, List<Expression> callArguments) {
         List<MethodNode> methods = MACRO_METHOD_CACHE.get(classLoader).get(methodName);

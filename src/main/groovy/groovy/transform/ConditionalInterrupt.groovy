@@ -20,6 +20,7 @@ package groovy.transform
 
 import org.codehaus.groovy.transform.GroovyASTTransformationClass
 
+import java.lang.annotation.Documented
 import java.lang.annotation.ElementType
 import java.lang.annotation.Retention
 import java.lang.annotation.RetentionPolicy
@@ -104,10 +105,10 @@ import java.lang.annotation.Target
  * @see ThreadInterrupt
  * @since 1.8.0
  */
-@java.lang.annotation.Documented
+@Documented
 @Retention(RetentionPolicy.SOURCE)
 @Target([ElementType.PACKAGE, ElementType.METHOD, ElementType.FIELD, ElementType.TYPE, ElementType.LOCAL_VARIABLE])
-@GroovyASTTransformationClass(['org.codehaus.groovy.transform.ConditionalInterruptibleASTTransformation'])
+@GroovyASTTransformationClass('org.codehaus.groovy.transform.ConditionalInterruptibleASTTransformation')
 @interface ConditionalInterrupt {
     /**
      * Set this to false if you have multiple classes within one source file and only
@@ -117,6 +118,7 @@ import java.lang.annotation.Target
      *
      * For even finer-grained control see {@code applyToAllMembers}.
      *
+     * @return {@code true} if interrupt checks apply to all classes in the compilation unit
      * @see #applyToAllMembers()
      */
     boolean applyToAllClasses() default true
@@ -129,23 +131,31 @@ import java.lang.annotation.Target
      * Set to true (the default) for blanket coverage of conditional checks on all methods, loops
      * and closures within the class/script.
      *
-     * @since 2.2.0* @see #applyToAllClasses()
+     * @return {@code true} if interrupt checks apply to all members of the annotated class or script
+     * @since 2.2.0
+     * @see #applyToAllClasses()
      */
     boolean applyToAllMembers() default true
 
     /**
      * By default a conditional check is added to the start of all user-defined methods. To turn this off simply
      * set this parameter to false.
+     *
+     * @return {@code true} if the condition is evaluated at method entry
      */
     boolean checkOnMethodStart() default true
 
     /**
      * Sets the type of exception which is thrown.
+     *
+     * @return the exception type thrown when the condition evaluates to {@code true}
      */
     Class thrown() default InterruptedException
 
     /**
      * Conditional check - set as a closure expression.
+     *
+     * @return the closure expression used to decide whether execution should be interrupted
      */
     Class value()
 }

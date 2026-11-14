@@ -32,37 +32,62 @@ import java.nio.charset.CharsetEncoder;
 import java.util.Optional;
 import java.util.function.Function;
 
+/**
+ * Writer used by streaming markup support to escape XML lazily while honoring output encoding limits.
+ */
 public class StreamingMarkupWriter extends Writer {
+    /**
+     * Underlying destination writer.
+     */
     protected final Writer writer;
+    /**
+     * Normalized target encoding name.
+     */
     protected final String encoding;
+    /**
+     * Whether the target encoding was explicitly supplied or discovered from the wrapped writer.
+     */
     protected boolean encodingKnown;
+    /**
+     * Encoder used to decide when numeric character references are required.
+     */
     protected final CharsetEncoder encoder;
+    /**
+     * Whether output is currently inside an attribute value.
+     */
     protected boolean writingAttribute = false;
+    /**
+     * Whether a high surrogate is buffered awaiting its matching low surrogate.
+     */
     protected boolean haveHighSurrogate = false;
+    /**
+     * Temporary buffer for surrogate pair handling.
+     */
     protected StringBuilder surrogatePair = new StringBuilder(2);
     private final Function<Character, Optional<String>> stdFilter = new StandardXmlFilter();
     private final Function<Character, Optional<String>> attrFilter = new StandardXmlAttributeFilter();
     private final Function<Character, Optional<String>> quoteFilter;
     private final Writer escapedWriter = new Writer() {
-        /* (non-Javadoc)
-        * @see java.io.Writer#close()
-        */
+        /**
+         * Closes the outer writer, including its dangling-surrogate check.
+         */
         @Override
         public void close() throws IOException {
             StreamingMarkupWriter.this.close();
         }
 
-        /* (non-Javadoc)
-        * @see java.io.Writer#flush()
-        */
+        /**
+         * Flushes the outer writer, including its dangling-surrogate check.
+         */
         @Override
         public void flush() throws IOException {
             StreamingMarkupWriter.this.flush();
         }
 
-        /* (non-Javadoc)
-        * @see java.io.Writer#write(int)
-        */
+        /**
+         * Writes the standard XML replacement for {@code c} when one exists;
+         * otherwise writes {@code c} through the outer writer.
+         */
         @Override
         public void write(final int c) throws IOException {
             Optional<String> transformed = stdFilter.apply((char) c);
@@ -73,9 +98,9 @@ public class StreamingMarkupWriter extends Writer {
             StreamingMarkupWriter.this.write(c);
         }
 
-        /* (non-Javadoc)
-        * @see java.io.Writer#write(char[], int, int)
-        */
+        /**
+         * Writes {@code len} characters from {@code cbuf} one code unit at a time.
+         */
         @Override
         public void write(final char[] cbuf, int off, int len) throws IOException {
             while (len-- > 0) {
@@ -83,23 +108,45 @@ public class StreamingMarkupWriter extends Writer {
             }
         }
 
+        /**
+         * Sets whether subsequent characters are escaped as an attribute value.
+         */
         public void setWritingAttribute(final boolean writingAttribute) {
             StreamingMarkupWriter.this.writingAttribute = writingAttribute;
         }
 
+        /**
+         * Returns this escaping view.
+         */
         public Writer escaped() {
             return escapedWriter;
         }
 
+        /**
+         * Returns the outer writer, which does not apply this view's text escaping.
+         */
         public Writer unescaped() {
             return StreamingMarkupWriter.this;
         }
     };
 
+    /**
+     * Creates a streaming writer using the supplied encoding name and single-quote attribute escaping.
+     *
+     * @param writer destination writer
+     * @param encoding target encoding, or {@code null} to infer it
+     */
     public StreamingMarkupWriter(final Writer writer, final String encoding) {
         this(writer, encoding, false);
     }
 
+    /**
+     * Creates a streaming writer.
+     *
+     * @param writer destination writer
+     * @param encoding target encoding, or {@code null} to infer it
+     * @param useDoubleQuotes whether attribute escaping should target double quotes instead of single quotes
+     */
     public StreamingMarkupWriter(final Writer writer, final String encoding, boolean useDoubleQuotes) {
         this.quoteFilter = useDoubleQuotes ? new DoubleQuoteFilter() : new SingleQuoteFilter();
         this.writer = writer;
@@ -125,33 +172,52 @@ public class StreamingMarkupWriter extends Writer {
         return Charset.forName(unnormalized).name();
     }
 
+    /**
+     * Creates a streaming writer that infers its encoding from the wrapped writer when possible.
+     *
+     * @param writer destination writer
+     */
     public StreamingMarkupWriter(final Writer writer) {
         this(writer, null);
     }
 
-    /* (non-Javadoc)
-    * @see java.io.Writer#close()
-    */
+    /** {@inheritDoc} */
     @Override
     public void close() throws IOException {
+        boolean danglingHighSurrogate = this.haveHighSurrogate;
+        this.haveHighSurrogate = false;
+        this.surrogatePair.setLength(0);
         this.writer.close();
+        if (danglingHighSurrogate) {
+            throw new IOException("High Surrogate not followed by Low Surrogate");
+        }
     }
 
-    /* (non-Javadoc)
-    * @see java.io.Writer#flush()
-    */
+    /** {@inheritDoc} */
     @Override
     public void flush() throws IOException {
+        // A high surrogate is buffered awaiting its low surrogate; reaching flush/close with one
+        // still pending means the stream ended mid-pair. That is malformed UTF-16 (as unrepresentable
+        // as the write-time cases already rejected), so fail loud rather than silently drop it.
+        // StreamingMarkupBuilder finalizes via flush(), not close(), so the check must live here too.
+        boolean danglingHighSurrogate = this.haveHighSurrogate;
+        this.haveHighSurrogate = false;
+        this.surrogatePair.setLength(0);
         this.writer.flush();
+        if (danglingHighSurrogate) {
+            throw new IOException("High Surrogate not followed by Low Surrogate");
+        }
     }
 
-    /* (non-Javadoc)
-    * @see java.io.Writer#write(int)
-    */
+    /** {@inheritDoc} */
     @Override
     public void write(final int c) throws IOException {
         if (c >= 0XDC00 && c <= 0XDFFF) {
             // Low surrogate
+            if (!this.haveHighSurrogate) {
+                this.surrogatePair.setLength(0);
+                throw new IOException("Low Surrogate not preceded by High Surrogate");
+            }
             this.surrogatePair.append((char) c);
 
             if (this.encoder.canEncode(this.surrogatePair)) {
@@ -175,8 +241,9 @@ public class StreamingMarkupWriter extends Writer {
                 // High surrogate
                 this.surrogatePair.append((char) c);
                 this.haveHighSurrogate = true;
-
-            } else if (!this.encoder.canEncode((char) c)) {
+                return;
+            }
+            if (!this.encoder.canEncode((char) c)) {
                 this.writer.write("&#x");
                 this.writer.write(Integer.toHexString(c));
                 this.writer.write(';');
@@ -198,9 +265,7 @@ public class StreamingMarkupWriter extends Writer {
         }
     }
 
-    /* (non-Javadoc)
-    * @see java.io.Writer#write(char[], int, int)
-    */
+    /** {@inheritDoc} */
     @Override
     public void write(final char[] cbuf, int off, int len) throws IOException {
         while (len-- > 0) {
@@ -208,22 +273,47 @@ public class StreamingMarkupWriter extends Writer {
         }
     }
 
+    /**
+     * Switches escaping rules between element text and attribute value output.
+     *
+     * @param writingAttribute {@code true} when writing an attribute value
+     */
     public void setWritingAttribute(final boolean writingAttribute) {
         this.writingAttribute = writingAttribute;
     }
 
+    /**
+     * Returns a writer view that applies XML escaping before delegating here.
+     *
+     * @return escaped writer view
+     */
     public Writer escaped() {
         return this.escapedWriter;
     }
 
+    /**
+     * Returns a writer view that bypasses the additional escaping layer.
+     *
+     * @return unescaped writer view
+     */
     public Writer unescaped() {
         return this;
     }
 
+    /**
+     * Returns the normalized target encoding used for numeric escape decisions.
+     *
+     * @return target encoding name
+     */
     public String getEncoding() {
         return this.encoding;
     }
 
+    /**
+     * Returns whether the encoding came from an explicit or discoverable source.
+     *
+     * @return {@code true} if the encoding is known precisely
+     */
     public boolean getEncodingKnown() {
         return this.encodingKnown;
     }

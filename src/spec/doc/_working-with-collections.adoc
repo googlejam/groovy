@@ -85,6 +85,29 @@ something else. This operation, often called mapping, is done in Groovy thanks t
 include::../test/gdk/WorkingWithCollectionsTest.groovy[tags=list_collect,indent=0]
 ----------------------------------------------------------------------------
 
+When each element maps to a collection of results, `collectMany` transforms and flattens in a single step.
+It is the idiomatic (and more efficient) alternative to `collect { ... }.flatten()`:
+
+[source,groovy]
+----------------------------------------------------------------------------
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tags=list_collectMany,indent=0]
+----------------------------------------------------------------------------
+
+To build a `Map` from a list, `collectEntries` collects a key/value pair for each element:
+
+[source,groovy]
+----------------------------------------------------------------------------
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tags=list_collectEntries,indent=0]
+----------------------------------------------------------------------------
+
+When you need each element together with its position, `withIndex` provides a more composable alternative
+to `eachWithIndex`, while `indexed` returns a map from index to element:
+
+[source,groovy]
+----------------------------------------------------------------------------
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tags=list_withIndex,indent=0]
+----------------------------------------------------------------------------
+
 === Manipulating lists
 
 [[List-Filtering]]
@@ -191,6 +214,26 @@ from using closures to comparators, as in the following examples:
 include::../test/gdk/WorkingWithCollectionsTest.groovy[tags=list_sort,indent=0]
 ----------------------------------------------------------------------------
 
+==== Removing duplicates
+
+The `unique` method removes duplicate elements *in place*, while `toUnique` returns a *new* list, leaving the
+original untouched. Both accept an optional closure or comparator to define what "the same" means:
+
+[source,groovy]
+----------------------------------------------------------------------------
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tags=list_unique,indent=0]
+----------------------------------------------------------------------------
+
+==== Taking and dropping elements
+
+Groovy can select or discard elements from either end of a list, either by count (`take`, `drop`, `takeRight`,
+`dropRight`) or by predicate (`takeWhile`, `dropWhile`). None of these methods mutate the original list:
+
+[source,groovy]
+----------------------------------------------------------------------------
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tags=list_take_drop,indent=0]
+----------------------------------------------------------------------------
+
 ==== Duplicating elements
 
 The {gdk} also takes advantage of operator overloading to provide methods allowing duplication of elements
@@ -242,6 +285,11 @@ Groovy identifiers:
 include::../test/gdk/WorkingWithCollectionsTest.groovy[tags=map_property,indent=0]
 --------------------------------------------------
 
+NOTE: Since Groovy 7, under `@TypeChecked` and `@CompileStatic`, writing to a map whose value type is known,
+by property or subscript, converts the value to that type as an assignment to a variable of that type would:
+`Map<String,String> m; m.name = "$first $last"` stores a `String`, not a `GString`. See the
+link:core-semantics.html#classtag-annotation[`@ClassTag` documentation]. Dynamic code stores the value as it is.
+
 Note: by design `map.foo` will always look for the key `foo` in the map. This
 means `foo.class` will return `null` on a map that doesn't contain the `class` key. Should you really want to know
 the class, then you must use `getClass()`:
@@ -250,6 +298,115 @@ the class, then you must use `getClass()`:
 --------------------------------------------------
 include::../test/gdk/WorkingWithCollectionsTest.groovy[tags=map_property_gotcha,indent=0]
 --------------------------------------------------
+
+[[Maps-PropertyVsSubscript]]
+==== Property access versus subscript and `get`
+
+Because `map.k` reads the *key* `k` (rather than a bean property), property access, the subscript operator
+and `get` can diverge once a key collides with a real property. Every cell in the tables below is included
+from a passing assertion in `WorkingWithCollectionsTest`, so they always reflect the current runtime.
+
+For a *plain* map there are only entries, so all four forms agree:
+
+[cols="2,^1a,^1a,^1a,^1a",options="header"]
+.Plain map (`[foo:'bar']`, `[class:'C']`, `[:]`)
+|===
+| key | `m.k` | `m.k` (`@CompileStatic`) | `m['k']` | `m.get('k')`
+
+| ordinary (`'foo'`)
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t1_ordinary,indent=0]
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t1_ordinary,indent=0]
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t1_ordinary,indent=0]
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t1_ordinary,indent=0]
+
+| meta-name present (`'class'`)
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t1_present,indent=0]
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t1_present,indent=0]
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t1_present,indent=0]
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t1_present,indent=0]
+
+| meta-name absent (`'class'`)
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t1_absent,indent=0]
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t1_absent,indent=0]
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t1_absent,indent=0]
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t1_absent,indent=0]
+|===
+
+A map *subclass* can declare real properties. Then `m.k` reads the property (identically under dynamic and
+`@CompileStatic` compilation), while `m['k']` and `m.get('k')` read the entry:
+
+[source,groovy]
+--------------------------------------------------
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t2_class,indent=0]
+--------------------------------------------------
+
+then, after `m.put('foo', 11)` and `m.put('baz', 33)`:
+
+[cols="2,^1a,^1a,^1a,^1a",options="header"]
+.Map subclass with declared properties `foo`, `bar`
+|===
+| key | `m.k` | `m.k` (`@CompileStatic`) | `m['k']` | `m.get('k')`
+
+| `'foo'` (property=1, entry=11)
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t2_foo_prop,indent=0]
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t2_foo_prop,indent=0]
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t2_foo_entry,indent=0]
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t2_foo_entry,indent=0]
+
+| `'bar'` (property=2, no entry)
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t2_bar_prop,indent=0]
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t2_bar_prop,indent=0]
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t2_bar_entry,indent=0]
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t2_bar_entry,indent=0]
+
+| `'baz'` (no property, entry=33)
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t2_baz,indent=0]
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t2_baz,indent=0]
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t2_baz,indent=0]
+a|
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=t2_baz,indent=0]
+|===
+
+Two things to take away: after the addition of `getAt(Map, String)`/`putAt(Map, String, V)`, `m['k']` is
+equivalent to `m.get('k')` in every row and both compilation modes; and `m.k` resolves to a declared
+property when one exists (use `['k']`/`get` to be sure of reading the entry).
+
+The tables above all use an explicit receiver `m`. A separate gotcha applies to an *unqualified* name read
+inside the body of a `Map` subclass -- a method, a `with(map) { ... }` block, or an anonymous-inner-class
+initializer. There the implicit receiver is the map itself, so the name is a property read on `this` and
+resolves to the *entry*, not to any binding in an enclosing scope. From Groovy 5, this self property takes
+precedence over an enclosing-class field of the same name (see https://issues.apache.org/jira/browse/GROOVY-10985[GROOVY-10985]),
+so such a reference silently yields `null` for a missing entry rather than reading the field:
+
+[source,groovy]
+--------------------------------------------------
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tag=bare_self_shadow,indent=0]
+--------------------------------------------------
+
+Qualify the outer reference (`Outer.NAME` above) to read the enclosing field.
 
 === Iterating on maps
 
@@ -327,6 +484,27 @@ We can group a list into a map using some criteria:
 include::../test/gdk/WorkingWithCollectionsTest.groovy[tags=map_gdk3,indent=0]
 ----------------------------------------------------------------
 
+[[Maps-WithDefault]]
+==== Maps with a default value
+
+The `withDefault` method wraps a map so that reading a missing key returns (and stores) a value computed by
+a closure. This is particularly handy for accumulating into per-key collections without having to pre-populate
+them:
+
+[source,groovy]
+----------------------------------------------------------------
+include::../test/gdk/WorkingWithCollectionsTest.groovy[tags=map_withDefault,indent=0]
+----------------------------------------------------------------
+
+NOTE: Since Groovy 6, under static compilation, calling `withDefault` on a map with statically-known key/value
+types automatically selects the type-checked variant: the wrapped map rejects ill-typed keys and values at
+runtime instead of silently growing entries that violate the map's declared generics
+(link:https://issues.apache.org/jira/browse/GROOVY-11807[GROOVY-11807]). Code that (usually inadvertently)
+relied on the lenient behaviour can defer the upgrade with the
+`groovy.classtag.preemption.disable` system property — see the
+link:core-semantics.html#classtag-annotation[`@ClassTag` documentation] for details. Dynamic code is
+unaffected.
+
 [[Collections-Ranges]]
 == Ranges
 
@@ -364,7 +542,7 @@ next / previous item in the range. For example, you can create a range of `Strin
 include::../test/gdk/WorkingWithCollectionsTest.groovy[tags=stringrange,indent=0]
 --------------------------------------
 
-You can iterate on a range using a classic `for` loop:
+You can iterate on a range using a `for` loop:
 
 [source,groovy]
 ----------------------

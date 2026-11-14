@@ -25,6 +25,13 @@ import groovy.lang.GroovySystem;
 import groovy.lang.MetaClass;
 import groovy.lang.MetaClassRegistry;
 import groovy.lang.MetaMethod;
+import groovy.transform.Internal;
+import org.apache.groovy.lang.annotation.GroovyABI;
+import org.apache.groovy.runtime.indy.IndyInvalidation;
+import org.apache.groovy.runtime.indy.SwitchPointInvalidator;
+import org.apache.groovy.util.concurrent.ConcurrentReferenceHashMap;
+import org.apache.groovy.util.concurrent.ConcurrentReferenceHashMap.Option;
+import org.apache.groovy.util.concurrent.ConcurrentReferenceHashMap.ReferenceType;
 import org.apache.groovy.util.concurrent.ManagedIdentityConcurrentMap;
 import org.codehaus.groovy.reflection.GroovyClassValue.ComputeValue;
 import org.codehaus.groovy.reflection.stdclasses.ArrayCachedClass;
@@ -49,21 +56,23 @@ import org.codehaus.groovy.util.LockableObject;
 import org.codehaus.groovy.util.ManagedConcurrentLinkedQueue;
 import org.codehaus.groovy.util.ManagedReference;
 import org.codehaus.groovy.util.ReferenceBundle;
-import org.codehaus.groovy.vmplugin.VMPluginFactory;
+import org.codehaus.groovy.vmplugin.VMPlugin;
 
+import java.io.Serial;
+import java.lang.invoke.SwitchPoint;
 import java.lang.ref.WeakReference;
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.security.AccessController;
-import java.security.PrivilegedAction;
 import java.util.Collection;
+import java.util.EnumSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Handle for all information we want to keep about the class
  * <p>
- * This class handles caching internally and its advisable to not store
+ * This class handles caching internally and it's advisable to not store
  * references directly to objects of this class.  The static factory method
  * {@link ClassInfo#getClassInfo(Class)} should be used to retrieve an instance
  * from the cache.  Internally the {@code Class} associated with a {@code ClassInfo}
@@ -75,9 +84,29 @@ public class ClassInfo implements Finalizable {
     private final LazyCachedClassRef cachedClassRef;
     private final LazyClassLoaderRef artifactClassLoader;
     private final LockableObject lock = new LockableObject();
+    /**
+     * Unused. Always {@code -1}.
+     */
     public final int hash = -1;
     private final WeakReference<Class<?>> classRef;
     private final AtomicInteger version = new AtomicInteger();
+    /**
+     * The class-level indy SwitchPoint domain: one domain per class, covering
+     * the pre-MetaClass link window and every installed MetaClass generation.
+     * Owned here so exact-class invalidation can always reach the domain — in
+     * particular after a soft/weak MetaClass object has been collected while
+     * linked guards remain installed. Retired (and re-allocated on next link)
+     * whenever the MetaClass state of this class changes.
+     */
+    private final SwitchPointInvalidator indySwitchPointDomain = new SwitchPointInvalidator();
+
+    /**
+     * Whether {@link #indySwitchPointDomain} has its reclaim anchor installed
+     * (see {@link IndyInvalidation#anchorClassDomain}). Set on first link so
+     * classes that never install an indy MOP guard pay nothing. The benign
+     * race (two threads anchoring) just creates a second idempotent reclaim.
+     */
+    private volatile boolean indyDomainAnchored;
     private MetaClass strongMetaClass;
     private ManagedReference<MetaClass> weakMetaClass;
     MetaMethod[] dgmMetaMethods = MetaMethod.EMPTY_ARRAY;
@@ -91,13 +120,30 @@ public class ClassInfo implements Finalizable {
             new ManagedConcurrentLinkedQueue<ClassInfo>(weakBundle);
 
     private static final GroovyClassValue<ClassInfo> globalClassValue = GroovyClassValueFactory.createGroovyClassValue(new ComputeValue<ClassInfo>(){
+        /**
+         * Returns the {@code ClassInfo} for the given class type from the global set,
+         * creating and registering one if the class has none that is still reachable.
+         * An instance that {@link #remove(Class)} detached stays reachable as long as
+         * default Groovy methods or extension methods refer to it.
+         *
+         * @param type the class to create information for
+         * @return the {@code ClassInfo} for the class
+         */
         @Override
         public ClassInfo computeValue(Class<?> type) {
-            ClassInfo ret = new ClassInfo(type);
-            globalClassSet.add(ret);
-            return ret;
+            return globalClassSet.getOrCreate(type);
         }
     });
+
+    /**
+     * Whether {@link #globalClassValue} can collect a ClassInfo while its
+     * class is still alive ({@code -Dgroovy.use.classvalue=soft}, GROOVY-12281
+     * investigation prototype). Reclaimable values need two cooperating pieces
+     * here: ephemeron pinning of instances carrying non-reconstructible state
+     * ({@link #updateReclaimability()}) and per-Class indy domain continuity
+     * (see {@link #indyDomain()}).
+     */
+    private static final boolean RECLAIMABLE_CLASS_VALUES = globalClassValue.valuesReclaimable();
 
     private static final GlobalClassSet globalClassSet = new GlobalClassSet();
 
@@ -107,15 +153,161 @@ public class ClassInfo implements Finalizable {
         artifactClassLoader = new LazyClassLoaderRef(softBundle, this);
     }
 
+    /**
+     * Returns the version number of this class information.
+     * The version increments when the metaclass is modified (e.g., methods/properties added).
+     *
+     * @return the current version
+     */
     public int getVersion() {
         return version.get();
     }
 
+    /**
+     * Increments the version number and invalidates this class's MetaClass
+     * SwitchPoint domain (exact class only). Called when metaclass modifications
+     * occur (e.g., adding methods to an {@code ExpandoMetaClass}).
+     * <p>
+     * <strong>Behavioral change in 6.0 (GROOVY-12191):</strong> this method no longer
+     * triggers a process-wide call-site flush. It scopes invalidation to this class
+     * only. Subtype sites are not retired: stock missing-method / missing-property
+     * hierarchy walks re-resolve live on the dynamic route (see
+     * {@link IndyInvalidation}). Callers that previously relied on
+     * {@code incVersion()} as a global “flush everything” hammer should invoke
+     * {@link VMPlugin#invalidateCallSites()} (or
+     * {@link IndyInvalidation#invalidateCategory()}) explicitly when a bulk flush
+     * is required. Unrelated classes keep their optimized targets.
+     * <p>
+     * Category enter/leave still bulk-invalidates MetaClass SwitchPoints via
+     * {@link VMPlugin#invalidateCallSites()}.
+     * SwitchPoint policy is owned by {@link IndyInvalidation}; this method only
+     * bumps generation then delegates exact-class invalidation.
+     */
     public void incVersion() {
         version.incrementAndGet();
-        VMPluginFactory.getPlugin().invalidateCallSites();
+        Class<?> type = getTheClass();
+        if (type != null) {
+            IndyInvalidation.invalidateClass(type);
+        } else {
+            invalidateIndySwitchPoint();
+        }
     }
 
+    /**
+     * Bumps {@link #getVersion()} and retires the current class-domain
+     * SwitchPoint generation so linked sites re-select against the new
+     * MetaClass state. Retiring an unallocated generation is a no-op, so this
+     * is safe (and cheap) for first installs as well as replace/clear. When
+     * the change also fires a MetaClass registry event, the listener applies
+     * width policy ({@link IndyInvalidation#invalidateForMetaClassChange}) —
+     * often a second detach of an already-empty domain (idempotent).
+     */
+    private void bumpGenerationLocal() {
+        version.incrementAndGet();
+        // Local domain ownership: width policy is IndyInvalidation's job.
+        invalidateIndySwitchPoint();
+    }
+
+    /**
+     * Resolves the SwitchPoint domain all indy guard operations act on.
+     * <p>
+     * Default mode: the instance-owned {@link #indySwitchPointDomain}, whose
+     * lifetime equals this ClassInfo's — sound because the strong ClassValue
+     * keeps the instance alive as long as its class.
+     * <p>
+     * Reclaimable values (GROOVY-12281, soft mode): the per-Class domain from
+     * {@link IndyInvalidation#classDomainFor}, seeded with the local domain on
+     * first touch. Domain identity then survives ClassInfo recreation: a
+     * successor instance adopts its predecessor's domain, so a MetaClass
+     * change applied through the successor deterministically retires guards
+     * that were linked under the predecessor (POJO direct-dispatch guards
+     * capture only the SwitchPoint invoker, never this instance, so they can
+     * outlive it — the lazy {@code DomainReclaim} pump alone would leave an
+     * unbounded stale-guard window). When the class itself has been collected
+     * no receiver can reach any guard, so the local domain suffices.
+     */
+    private SwitchPointInvalidator indyDomain() {
+        if (RECLAIMABLE_CLASS_VALUES) {
+            Class<?> type = getTheClass();
+            if (type != null) {
+                return IndyInvalidation.classDomainFor(type, indySwitchPointDomain);
+            }
+        }
+        return indySwitchPointDomain;
+    }
+
+    /**
+     * Returns the SwitchPoint for monomorphic indy MOP guards on this class:
+     * the current generation of the class-level domain, which covers both the
+     * pre-MetaClass link window and installed MetaClass generations.
+     *
+     * @return the class-domain SwitchPoint
+     * @since 6.0.0
+     */
+    @Internal
+    public SwitchPoint getIndySwitchPoint() {
+        SwitchPointInvalidator domain = indyDomain();
+        if (!indyDomainAnchored) {
+            if (RECLAIMABLE_CLASS_VALUES) {
+                // Reclaimable values retire domains when the Class dies, not
+                // when a ClassInfo instance does: instances are replaceable
+                // (their successor adopts the same domain), classes are not.
+                Class<?> type = getTheClass();
+                if (type != null) {
+                    IndyInvalidation.anchorClassDomainToClass(type, domain);
+                }
+            } else {
+                IndyInvalidation.anchorClassDomain(this, indySwitchPointDomain);
+            }
+            indyDomainAnchored = true;
+        }
+        return domain.getSwitchPoint();
+    }
+
+    /**
+     * Invalidates this class's domain SwitchPoint without bumping
+     * {@link #getVersion()}. Prefer {@link #incVersion()} when the MetaClass
+     * actually changed.
+     *
+     * @since 6.0.0
+     */
+    @Internal
+    public void invalidateIndySwitchPoint() {
+        indyDomain().invalidate();
+    }
+
+    /**
+     * Detaches this class's live domain SwitchPoint (if any) into {@code out}.
+     * Does not create a MetaClass.
+     *
+     * @param out destination list (must not be {@code null})
+     * @since 6.0.0
+     */
+    @Internal
+    public void collectLiveIndySwitchPoints(final List<SwitchPoint> out) {
+        SwitchPoint live = indyDomain().detachLive();
+        if (live != null) {
+            out.add(live);
+        }
+    }
+
+    /**
+     * Detaches this class's live domain SwitchPoint. The caller must
+     * invalidate any non-null return value.
+     *
+     * @return the detached SwitchPoint, or {@code null} if none was live
+     * @since 6.0.0
+     */
+    @Internal
+    public SwitchPoint detachLiveIndySwitchPoint() {
+        return indyDomain().detachLive();
+    }
+
+    /**
+     * Returns the modified {@code ExpandoMetaClass} for this class, if one exists.
+     *
+     * @return the modified expando metaclass, or {@code null} if not modified or not an ExpandoMetaClass
+     */
     public ExpandoMetaClass getModifiedExpando() {
         // safe value here to avoid multiple reads with possibly
         // differing values due to concurrency
@@ -123,6 +315,10 @@ public class ClassInfo implements Finalizable {
         return strongRef == null ? null : strongRef instanceof ExpandoMetaClass ? (ExpandoMetaClass)strongRef : null;
     }
 
+    /**
+     * Clears all modified {@code ExpandoMetaClass} instances for all classes.
+     * Removes strong references to metaclasses and disassociates them from their class information.
+     */
     public static void clearModifiedExpandos() {
         for (Iterator<ClassInfo> itr = modifiedExpandos.iterator(); itr.hasNext(); ) {
             ClassInfo info = itr.next();
@@ -144,14 +340,34 @@ public class ClassInfo implements Finalizable {
         return classRef.get();
     }
 
+    /**
+     * Returns the cached class representation for this class.
+     * Lazily initializes on first access.
+     *
+     * @return the cached class
+     */
     public CachedClass getCachedClass() {
         return cachedClassRef.get();
     }
 
+    /**
+     * Returns the class loader for loading class artifacts (e.g., compiled bytecode).
+     * Lazily initializes on first access.
+     *
+     * @return the artifact class loader
+     */
     public ClassLoaderForClassArtifacts getArtifactClassLoader() {
         return artifactClassLoader.get();
     }
 
+    /**
+     * Retrieves the {@code ClassInfo} for the given class.
+     * Lazily creates one if not already cached.
+     *
+     * @param cls the class to get information for
+     * @return the class information, or {@code null} if {@code cls} is {@code null}
+     */
+    @GroovyABI(since = "1.6.0")
     public static ClassInfo getClassInfo (Class cls) {
         return globalClassValue.get(cls);
     }
@@ -164,18 +380,48 @@ public class ClassInfo implements Finalizable {
      * is not retained or cached.  Removing the {@code ClassInfo} associated with the Class
      * will make the Class and its ClassLoader eligible for garbage collection sooner that
      * it would otherwise.
+     * <p>
+     * The MetaClasses set for the class and for its instances are dropped. If the
+     * {@code ClassInfo} is still reachable when the class is used again, as it is for a
+     * class that has default Groovy methods or extension methods, the class gets it back
+     * with those methods; otherwise a new one is created. A class that has no
+     * {@code ClassInfo} is left without one.
      *
      * @param cls the Class associated with the ClassInfo to remove
      *            from cache
      */
     public static void remove(Class<?> cls) {
+        ClassInfo info = globalClassSet.get(cls);
+        if (info != null) {
+            info.lock();
+            try {
+                info.perInstanceMetaClassMap = null;
+                info.setStrongMetaClass(null); // also drops the weak MetaClass and retires the SwitchPoint generation
+            } finally {
+                info.unlock();
+            }
+        }
+        // A hard detach drops the whole association — including any pin the
+        // detached instance held there — so undeploy semantics need no
+        // store-specific handling.
         globalClassValue.remove(cls);
     }
 
+    /**
+     * Returns all cached class information across the runtime.
+     *
+     * @return a collection of all cached class info objects
+     */
     public static Collection<ClassInfo> getAllClassInfo () {
         return getAllGlobalClassInfo();
     }
 
+    /**
+     * Executes the given action on all cached class information.
+     * Allows processing of all classes currently tracked by the runtime.
+     *
+     * @param action the action to execute on each ClassInfo
+     */
     public static void onAllClassInfo(ClassInfoAction action) {
         for (ClassInfo classInfo : getAllGlobalClassInfo()) {
             action.onClassInfo(classInfo);
@@ -186,12 +432,29 @@ public class ClassInfo implements Finalizable {
         return globalClassSet.values();
     }
 
+    /**
+     * Returns the strong (immutable) metaclass for this class, if one has been set.
+     * A strong reference keeps the metaclass in memory regardless of garbage collection.
+     *
+     * @return the strong metaclass, or {@code null} if not set
+     */
     public MetaClass getStrongMetaClass() {
         return strongMetaClass;
     }
 
+    /**
+     * Sets the strong (immutable) metaclass for this class.
+     * Increments the version number, retires the class-domain SwitchPoint
+     * generation, and manages the ExpandoMetaClass registry.
+     *
+     * @param answer the metaclass to set, or {@code null} to clear
+     */
     public void setStrongMetaClass(MetaClass answer) {
-        version.incrementAndGet();
+        // Version always; the class-domain SwitchPoint generation is retired so
+        // sites linked against the previous MetaClass state re-select (a no-op
+        // when no generation was allocated). Exact-class (stock) or bulk
+        // (custom) width policy is applied by registry listeners / incVersion.
+        bumpGenerationLocal();
 
         // safe value here to avoid multiple reads with possibly
         // differing values due to concurrency
@@ -215,8 +478,47 @@ public class ClassInfo implements Finalizable {
         }
 
         replaceWeakMetaClassRef(null);
+        updateReclaimability();
     }
 
+    /**
+     * Reclaimability bookkeeping (GROOVY-12281): while this ClassInfo carries
+     * state that could not be reconstructed after collection — an installed
+     * class-level MetaClass, per-instance MetaClasses, or registry-written
+     * DGM/extension method arrays — it is pinned <em>inside its own
+     * association</em> ({@link GroovyClassValue#pin}), so it lives exactly as
+     * long as its class: an immortal platform key retains it (it must — the
+     * state is not reconstructible), while a dropped script class releases it
+     * together with its loader. A global strong root would get the second half
+     * wrong, extending dirty script classes (and their loaders) to the
+     * runtime's lifetime — the "reverse" leak raised in review of PR #2820.
+     * The DGM condition also enforces the registry-rooting invariant by
+     * construction rather than by audit: any instance holding non-empty MOP
+     * arrays is pinned, so a recreated instance never needs to rebuild them.
+     * Removal is conservative: lingering weak entries in the per-instance map
+     * merely delay unpinning, which is the safe direction (today's default
+     * retains every ClassInfo for its class's lifetime). No-op unless the
+     * value store reclaims values ({@link GroovyClassValue#valuesReclaimable}).
+     */
+    void updateReclaimability() {
+        Class<?> type = getTheClass();
+        if (type == null) return;
+        if (strongMetaClass != null
+                || (perInstanceMetaClassMap != null && !perInstanceMetaClassMap.isEmpty())
+                || dgmMetaMethods.length != 0
+                || newMetaMethods.length != 0) {
+            globalClassValue.pin(type, this);
+        } else {
+            globalClassValue.unpin(type, this);
+        }
+    }
+
+    /**
+     * Returns the weak (mutable) metaclass for this class, if one has been set.
+     * A weak reference allows garbage collection of the metaclass when no longer needed.
+     *
+     * @return the weak metaclass, or {@code null} if not set or if it has been garbage collected
+     */
     public MetaClass getWeakMetaClass() {
         // safe value here to avoid multiple reads with possibly
         // differing values due to concurrency
@@ -224,8 +526,15 @@ public class ClassInfo implements Finalizable {
         return weakRef == null ? null : weakRef.get();
     }
 
+    /**
+     * Sets the weak (mutable) metaclass for this class.
+     * Clears the strong metaclass, increments the version number, and retires
+     * the class-domain SwitchPoint generation.
+     *
+     * @param answer the metaclass to set, or {@code null} to clear
+     */
     public void setWeakMetaClass(MetaClass answer) {
-        version.incrementAndGet();
+        bumpGenerationLocal();
 
         strongMetaClass = null;
         ManagedReference<MetaClass> newRef = null;
@@ -233,6 +542,7 @@ public class ClassInfo implements Finalizable {
             newRef = new ManagedReference<MetaClass> (softBundle,answer);
         }
         replaceWeakMetaClassRef(newRef);
+        updateReclaimability();
     }
 
     private void replaceWeakMetaClassRef(ManagedReference<MetaClass> newRef) {
@@ -245,25 +555,60 @@ public class ClassInfo implements Finalizable {
         weakMetaClass = newRef;
     }
 
+    /**
+     * Returns the most appropriate metaclass for this class.
+     * Prefers strong metaclass if available, then weak metaclass if valid, otherwise the default.
+     *
+     * @return the metaclass for this class
+     */
     public MetaClass getMetaClassForClass() {
         // safe value here to avoid multiple reads with possibly
         // differing values due to concurrency
         MetaClass strongMc = strongMetaClass;
         if (strongMc!=null) return strongMc;
         MetaClass weakMc = getWeakMetaClass();
-        if (isValidWeakMetaClass(weakMc)) {
+        // During GroovySystem bootstrap the registry is not yet published;
+        // treat a non-null weak MC as valid rather than querying the handler.
+        MetaClassRegistry registry = GroovySystem.getMetaClassRegistry();
+        if (registry == null) {
+            return weakMc;
+        }
+        if (isValidWeakMetaClass(weakMc, registry.getMetaClassCreationHandler())) {
             return weakMc;
         }
         return null;
     }
 
+    /**
+     * Creates or returns the class-level MetaClass while holding {@link #lock}.
+     * Callers must already hold the lock ({@link #getMetaClass()}).
+     * <p>
+     * Mirrors {@link #getMetaClassForClass()} bootstrap safety: when
+     * {@link GroovySystem#getMetaClassRegistry()} is not yet published, a
+     * cached weak MetaClass is returned if present; otherwise creation is
+     * impossible and an {@link IllegalStateException} is thrown rather than
+     * an NPE on a null registry (Sonar javabugs:S2259 / PR #2736).
+     */
     private MetaClass getMetaClassUnderLock() {
         MetaClass answer = getStrongMetaClass();
-        if (answer!=null) return answer;
+        if (answer != null) {
+            return answer;
+        }
 
         answer = getWeakMetaClass();
         final MetaClassRegistry metaClassRegistry = GroovySystem.getMetaClassRegistry();
-        MetaClassRegistry.MetaClassCreationHandle mccHandle = metaClassRegistry.getMetaClassCreationHandler();
+        // Same bootstrap window as getMetaClassForClass: registry may be null
+        // while GroovySystem is still initializing.
+        if (metaClassRegistry == null) {
+            if (answer != null) {
+                return answer;
+            }
+            throw new IllegalStateException( // NOSONAR javabugs:S6416 — bootstrap: unpublished registry, creation is impossible
+                    "MetaClassRegistry is not yet initialized; cannot create MetaClass for "
+                            + getTheClass());
+        }
+        MetaClassRegistry.MetaClassCreationHandle mccHandle =
+                metaClassRegistry.getMetaClassCreationHandler();
 
         if (isValidWeakMetaClass(answer, mccHandle)) {
             return answer;
@@ -280,16 +625,14 @@ public class ClassInfo implements Finalizable {
         return answer;
     }
 
-    private static boolean isValidWeakMetaClass(MetaClass metaClass) {
-        return isValidWeakMetaClass(metaClass, GroovySystem.getMetaClassRegistry().getMetaClassCreationHandler());
-    }
-
     /**
      * if EMC.enableGlobally() is OFF, return whatever the cached answer is.
      * but if EMC.enableGlobally() is ON and the cached answer is not an EMC, come up with a fresh answer
      */
     private static boolean isValidWeakMetaClass(MetaClass metaClass, MetaClassRegistry.MetaClassCreationHandle mccHandle) {
-        if(metaClass==null) return false;
+        if (metaClass == null) {
+            return false;
+        }
         boolean enableGloballyOn = (mccHandle instanceof ExpandoMetaClassCreationHandle);
         boolean cachedAnswerIsEMC = (metaClass instanceof ExpandoMetaClass);
         return (!enableGloballyOn || cachedAnswerIsEMC);
@@ -300,12 +643,13 @@ public class ClassInfo implements Finalizable {
      * If no {@code MetaClass} exists one will be created.
      * <p>
      * It is not safe to call this method without a {@code Class} associated with this {@code ClassInfo}.
-     * It is advisable to aways retrieve a ClassInfo instance from the cache by using the static
+     * It is advisable to always retrieve a ClassInfo instance from the cache by using the static
      * factory method {@link ClassInfo#getClassInfo(Class)} to ensure the referenced Class is
      * strongly reachable.
      *
      * @return a {@code MetaClass} instance
      */
+    @GroovyABI(since = "1.6.0")
     public final MetaClass getMetaClass() {
         MetaClass answer = getMetaClassForClass();
         if (answer != null) return answer;
@@ -318,6 +662,13 @@ public class ClassInfo implements Finalizable {
         }
     }
 
+    /**
+     * Returns the metaclass for an object.
+     * If the object has a per-instance metaclass, returns that; otherwise returns this class's metaclass.
+     *
+     * @param obj the object to get the metaclass for
+     * @return the metaclass for the object
+     */
     public MetaClass getMetaClass(Object obj) {
         final MetaClass instanceMetaClass = getPerInstanceMetaClass(obj);
         if (instanceMetaClass != null)
@@ -325,10 +676,20 @@ public class ClassInfo implements Finalizable {
         return getMetaClass();
     }
 
+    /**
+     * Returns the number of cached class information entries.
+     *
+     * @return the count of cached ClassInfo instances
+     */
     public static int size () {
         return globalClassSet.size();
     }
 
+    /**
+     * Returns the total size including soft-referenced (potentially garbage-collectable) entries.
+     *
+     * @return the full count of class information entries
+     */
     public static int fullSize () {
         return globalClassSet.fullSize();
     }
@@ -389,14 +750,27 @@ public class ClassInfo implements Finalizable {
         return CachedSAMClass.getSAMMethod(c) !=null;
     }
 
+    /**
+     * Acquires a lock for this class information.
+     * Used to synchronize modifications to metaclass and per-instance metaclass maps.
+     */
     public void lock () {
         lock.lock();
     }
 
+    /**
+     * Releases the lock for this class information.
+     */
     public void unlock () {
         lock.unlock();
     }
 
+    /**
+     * Returns the per-instance metaclass for the given object, if one has been set.
+     *
+     * @param obj the object to get the per-instance metaclass for
+     * @return the per-instance metaclass, or {@code null} if not set
+     */
     public MetaClass getPerInstanceMetaClass(Object obj) {
         if (perInstanceMetaClassMap == null)
           return null;
@@ -404,8 +778,17 @@ public class ClassInfo implements Finalizable {
         return perInstanceMetaClassMap.get(obj);
     }
 
+    /**
+     * Sets the per-instance metaclass for the given object.
+     * Per-instance metaclasses override the class-level metaclass for that specific object.
+     *
+     * @param obj the object to associate with a metaclass
+     * @param metaClass the metaclass to set, or {@code null} to remove the association
+     */
     public void setPerInstanceMetaClass(Object obj, MetaClass metaClass) {
-        version.incrementAndGet();
+        // Per-instance MetaClass changes always retire the class SwitchPoint so
+        // sites that may observe instance-level dispatch re-link.
+        bumpGenerationLocal();
 
         if (metaClass != null) {
             if (perInstanceMetaClassMap == null)
@@ -418,13 +801,20 @@ public class ClassInfo implements Finalizable {
               perInstanceMetaClassMap.remove(obj);
             }
         }
+        updateReclaimability();
     }
 
+    /**
+     * Returns whether this class has any per-instance metaclasses associated with its objects.
+     *
+     * @return {@code true} if one or more per-instance metaclasses have been set; {@code false} otherwise
+     */
     public boolean hasPerInstanceMetaClasses () {
         return perInstanceMetaClassMap != null;
     }
 
     private static class LazyCachedClassRef extends LazyReference<CachedClass> {
+        @Serial
         private static final long serialVersionUID = -1400274148849287400L;
         private final ClassInfo info;
 
@@ -440,6 +830,7 @@ public class ClassInfo implements Finalizable {
     }
 
     private static class LazyClassLoaderRef extends LazyReference<ClassLoaderForClassArtifacts> {
+        @Serial
         private static final long serialVersionUID = 1639196133085420609L;
         private final ClassInfo info;
 
@@ -450,7 +841,7 @@ public class ClassInfo implements Finalizable {
 
         @Override
         public ClassLoaderForClassArtifacts initValue() {
-            return AccessController.doPrivileged((PrivilegedAction<ClassLoaderForClassArtifacts>) () -> new ClassLoaderForClassArtifacts(info.classRef.get()));
+            return new ClassLoaderForClassArtifacts(info.classRef.get());
         }
     }
 
@@ -461,29 +852,90 @@ public class ClassInfo implements Finalizable {
         artifactClassLoader.clear();
     }
 
+    /**
+     * Every {@code ClassInfo} still reachable, by class, both held weakly. An instance stays
+     * here after {@link #remove(Class)} detaches it, so its class gets that same instance back
+     * when it is used again while it is still reachable. The default Groovy methods and
+     * extension methods keep it reachable: they hold the {@code CachedClass} of their declaring
+     * and parameter types, and so its {@code ClassInfo}. A new instance would lack the methods
+     * the registry wrote into the detached one, and its {@code CachedClass} would not be the
+     * one those methods compare parameter types with by identity.
+     */
     private static class GlobalClassSet {
 
+        // Gradle's ClassInfoCleaningGroovySystemLoader reads this field and calls its iterator() reflectively
         private final ManagedConcurrentLinkedQueue<ClassInfo> items = new ManagedConcurrentLinkedQueue<ClassInfo>(weakBundle);
 
+        private final ConcurrentReferenceHashMap<Class<?>, ClassInfo> byClass =
+                new ConcurrentReferenceHashMap<>(ReferenceType.WEAK, ReferenceType.WEAK, EnumSet.of(Option.IDENTITY_COMPARISONS));
+
+        /**
+         * The number of {@link ClassInfo} instances still queued.
+         *
+         * @return the size of {@link #values()}
+         */
         public int size(){
             return values().size();
         }
 
+        /**
+         * The number of {@link ClassInfo} instances still queued.
+         * This is the same count {@link #size()} returns.
+         *
+         * @return the size of {@link #values()}
+         */
         public int fullSize(){
             return values().size();
         }
 
+        /**
+         * The {@link ClassInfo} instances still queued, including ones kept after
+         * their class was detached from the lookup map.
+         *
+         * @return the queued instances
+         */
         public Collection<ClassInfo> values(){
             return items.values();
         }
 
-        public void add(ClassInfo value){
-            items.add(value);
+        /**
+         * The {@link ClassInfo} already associated with {@code type}.
+         *
+         * @param type the class to look up
+         * @return the associated instance, or {@code null} when the map has none
+         */
+        public ClassInfo get(Class<?> type){
+            return byClass.get(type);
+        }
+
+        /**
+         * Returns the {@link ClassInfo} for {@code type}, creating one when the map
+         * does not already hold it. Only the instance that is actually stored is
+         * added to the queue.
+         *
+         * @param type the class whose {@link ClassInfo} is required
+         * @return the instance already stored, or the one this call stored
+         */
+        public ClassInfo getOrCreate(Class<?> type){
+            ClassInfo info = byClass.get(type);
+            if (info != null) return info;
+            ClassInfo created = new ClassInfo(type);
+            info = byClass.apply(type, (t, existing) -> existing != null ? existing : created);
+            if (info == created) items.add(created); // outside the map's lock: adding may finalize stale references
+            return info;
         }
 
     }
 
+    /**
+     * Functional interface for performing actions on {@code ClassInfo} instances.
+     */
     public interface ClassInfoAction {
+        /**
+         * Performs an action on the given {@code ClassInfo}.
+         *
+         * @param classInfo the class information to act upon
+         */
         void onClassInfo(ClassInfo classInfo);
     }
 }

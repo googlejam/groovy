@@ -19,7 +19,7 @@
 package groovy.json
 
 import groovy.io.LineColumnReader
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
 import static groovy.json.JsonTokenType.CLOSE_BRACKET
 import static groovy.json.JsonTokenType.CLOSE_CURLY
@@ -31,9 +31,11 @@ import static groovy.json.JsonTokenType.NUMBER
 import static groovy.json.JsonTokenType.OPEN_BRACKET
 import static groovy.json.JsonTokenType.OPEN_CURLY
 import static groovy.json.JsonTokenType.TRUE
+import static groovy.test.GroovyAssert.shouldFail
 
-class JsonLexerTest extends GroovyTestCase {
+class JsonLexerTest {
 
+    @Test
     void testSkipWhitespace() {
         def content = "    true"
         def reader = new LineColumnReader(new StringReader(content))
@@ -47,18 +49,20 @@ class JsonLexerTest extends GroovyTestCase {
         assert new String(charsLeftRead) == "true"
     }
 
+    @Test
     void testNextToken() {
-        def content = [" true ", " false ", " null ", " -123.456e78 ", " [ ", " ] ", " { ", " } ", " : ", " , "]
+        def content = [" true ", "true", " false ", "false", " null ", "null", " -123.456e78 ", "-123.456e78", " [ ", " ] ", " { ", " } ", " : ", " , "]
 
         assert content.collect {
             def lexer = new JsonLexer(new StringReader(it))
-            lexer.nextToken().type
+            lexer.nextToken()?.type
         } == [
-                TRUE, FALSE, NULL, NUMBER,
+                TRUE, TRUE, FALSE, FALSE, NULL, NULL, NUMBER, NUMBER,
                 OPEN_BRACKET, CLOSE_BRACKET, OPEN_CURLY, CLOSE_CURLY, COLON, COMMA
         ]
     }
 
+    @Test
     void testSuiteOfTokens() {
         def content = ' [ true, null, false, { "a" : 1, "b": "hi"}, 12.34 ] '
         def lexer = new JsonLexer(new StringReader(content))
@@ -88,6 +92,7 @@ class JsonLexerTest extends GroovyTestCase {
         ]
     }
 
+    @Test
     void testBeginningOfAValidToken() {
         def content = "  truaaa "
         def lexer = new JsonLexer(new StringReader(content))
@@ -96,11 +101,12 @@ class JsonLexerTest extends GroovyTestCase {
             lexer.nextToken()
         }
 
-        assert msg.contains("trua")
-        assert msg.contains("constant 'true'")
-        assert msg.contains("column: 7")
+        assert msg.message.contains("trua")
+        assert msg.message.contains("constant 'true'")
+        assert msg.message.contains("column: 7")
     }
 
+    @Test
     void testBeginningOfValidNumber() {
         def content = " 2134.432a"
         def lexer = new JsonLexer(new StringReader(content))
@@ -111,6 +117,7 @@ class JsonLexerTest extends GroovyTestCase {
         }
     }
 
+    @Test
     void testIteratorRemoveUnimplemented() {
         def lexer = new JsonLexer(new StringReader(""))
 
@@ -119,14 +126,16 @@ class JsonLexerTest extends GroovyTestCase {
         }
     }
 
+    @Test
     void testUnescapingWithLexer() {
-        // use string concatenation so that the unicode escape characters are not decoded 
+        // use string concatenation so that the unicode escape characters are not decoded
         // by Groovy's lexer but by the JsonLexer
         def lexer = new JsonLexer(new StringReader('"\\' + 'u004A\\' + 'u0053\\' + 'u004F\\' + 'u004E"'))
 
         assert lexer.nextToken().value == 'JSON'
     }
 
+    @Test
     void testUnescaping() {
         assert JsonLexer.unescape('\\b') == '\b'
         assert JsonLexer.unescape('\\f') == '\f'
@@ -142,6 +151,7 @@ class JsonLexerTest extends GroovyTestCase {
         assert JsonLexer.unescape('\\' + 'u004A\\' + 'u0053\\' + 'u004F\\' + 'u004E') == 'JSON'
     }
 
+    @Test
     void testBackSlashEscaping() {
         def lexer = new JsonLexer(new StringReader('["Guill\\\\aume"]'))
 

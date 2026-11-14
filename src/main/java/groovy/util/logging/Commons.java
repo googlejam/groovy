@@ -30,6 +30,7 @@ import org.codehaus.groovy.ast.expr.MethodCallExpression;
 import org.codehaus.groovy.transform.GroovyASTTransformationClass;
 import org.codehaus.groovy.transform.LogASTTransformation;
 
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -41,7 +42,7 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.ternaryX;
 
 /**
  * This local transform adds a logging ability to your program using
- * Apache Commons logging. Every method call on a unbound variable named <i>log</i>
+ * Apache Commons logging. Every method call on an unbound variable named <i>log</i>
  * will be mapped to a call to the logger. For this a <i>log</i> field will be
  * inserted in the class. If the field already exists the usage of this transform
  * will cause a compilation error. The method name will be used to determine
@@ -53,18 +54,31 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.ternaryX;
  * if (log.isNameEnabled() {
  *    log.name(exp)
  * }</pre>
- * Here name is a place holder for info, debug, warning, error, etc.
+ * Here name is a placeholder for info, debug, warning, error, etc.
  * If the expression exp is a constant or only a variable access the method call will
  * not be transformed. But this will still cause a call on the injected logger.
  *
  * @since 1.8.0
  */
-@java.lang.annotation.Documented
+@Documented
 @Retention(RetentionPolicy.SOURCE)
-@Target({ElementType.TYPE})
+@Target(ElementType.TYPE)
 @GroovyASTTransformationClass("org.codehaus.groovy.transform.LogASTTransformation")
 public @interface Commons {
+    /**
+     * Returns the injected logger field name.
+     * Defaults to {@code "log"}.
+     *
+     * @return the logger field name
+     */
     String value() default "log";
+
+    /**
+     * Returns the logger category name.
+     * Defaults to {@link LogASTTransformation#DEFAULT_CATEGORY_NAME}, which uses the host class name.
+     *
+     * @return the logger category name
+     */
     String category() default LogASTTransformation.DEFAULT_CATEGORY_NAME;
 
     /**
@@ -72,17 +86,34 @@ public @interface Commons {
      */
     String visibilityId() default Undefined.STRING;
 
+    /**
+     * Returns the logging strategy implementation used by this transform.
+     * Defaults to {@link CommonsLoggingStrategy}.
+     *
+     * @return the logging strategy type
+     */
     Class<? extends LogASTTransformation.LoggingStrategy> loggingStrategy() default CommonsLoggingStrategy.class;
 
+    /**
+     * Logging strategy for Apache Commons Logging.
+     */
     class CommonsLoggingStrategy extends LogASTTransformation.AbstractLoggingStrategyV2 {
 
         private static final String LOGGER_NAME = "org.apache.commons.logging.Log";
         private static final String LOGGERFACTORY_NAME = "org.apache.commons.logging.LogFactory";
 
+        /**
+         * Creates a Commons Logging strategy.
+         *
+         * @param loader the class loader used to resolve logger classes
+         */
         protected CommonsLoggingStrategy(final GroovyClassLoader loader) {
             super(loader);
         }
 
+        /**
+         * {@inheritDoc}
+         */
         @Override
         public FieldNode addLoggerFieldToClass(ClassNode classNode, String logFieldName, String categoryName, int fieldModifiers) {
             return classNode.addField(logFieldName,
@@ -94,11 +125,17 @@ public @interface Commons {
                             new ConstantExpression(getCategoryName(classNode, categoryName))));
         }
 
+        /**
+         * {@inheritDoc}
+         */
         @Override
         public boolean isLoggingMethod(String methodName) {
             return methodName.matches("fatal|error|warn|info|debug|trace");
         }
 
+        /**
+         * {@inheritDoc}
+         */
         @Override
         public Expression wrapLoggingMethodCall(Expression logVariable, String methodName, Expression originalExpression) {
             MethodCallExpression condition = new MethodCallExpression(

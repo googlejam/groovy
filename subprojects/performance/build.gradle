@@ -20,15 +20,18 @@ plugins {
     id 'org.apache.groovy-performance'
 }
 
-performanceTests {
-    versions '1.8.9',
-            '2.0.8',
-            '2.1.9',
-            '2.2.2',
-            '2.3.10',
-            '2.3.11',
-            '2.4.7',
-            'current'
+cyclonedxDirectBom {
+    // A benchmark-only transitive dependency (mstor -> jcrom) has a POM that
+    // cannot be resolved into an effective model, which the plugin logs noisily
+    // during metadata resolution. This module is never published, so skip it.
+    includeMetadataResolution = false
+}
 
-    testFiles project.files("src/files")
+performanceTests {
+    versions 'current', versions.latest3, versions.latest4, versions.latest5, versions.latest6
+
+    testFiles project.files("src/files") +
+            project.files('src/jmh/groovy/org/apache/groovy/bench/Ackermann.groovy') +
+            project.files('src/jmh/groovy/org/apache/groovy/bench/Ary.groovy') +
+            project.files('src/jmh/groovy/org/apache/groovy/bench/Fibo.groovy')
 }

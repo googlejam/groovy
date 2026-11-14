@@ -24,16 +24,41 @@ import org.codehaus.groovy.reflection.v7.GroovyClassValueJava7;
 
 class GroovyClassValueFactory {
 	/**
-	 * This flag is introduced as a (hopefully) temporary workaround for a JVM bug, that is to say that using
-	 * ClassValue prevents the classes and classloaders from being unloaded.
-	 * See https://bugs.openjdk.java.net/browse/JDK-8136353
-	 * This issue does not exist on IBM Java (J9) so use ClassValue by default on that JVM.
+	 * Escape hatch for deployments where {@code java.lang.ClassValue} pins
+	 * class loaders (JDK-8136353): associations on immortal classes never
+	 * release their value's loader, leaking every Groovy copy a container
+	 * deploys and undeploys (GROOVY-12142). Set
+	 * {@code -Dgroovy.use.classvalue=false} at JVM startup to use a weak-key
+	 * map instead; the default remains ClassValue for its per-Class fast path.
 	 */
-	private static final boolean USE_CLASSVALUE = Boolean.parseBoolean(SystemUtil.getSystemPropertySafe("groovy.use.classvalue", "true"));
+	private static final String CLASSVALUE_MODE = SystemUtil.getSystemPropertySafe("groovy.use.classvalue", "true");
 
+	/**
+	 * GROOVY-12281; see {@link #createGroovyClassValue}. Callers needing
+	 * behavior differences never consult the mode: they ask the created store
+	 * for its capabilities ({@link GroovyClassValue#valuesReclaimable}).
+	 */
+	private static final boolean SOFT_MODE = "soft".equalsIgnoreCase(CLASSVALUE_MODE);
+
+	/**
+	 * Creates the per-class store selected by {@code groovy.use.classvalue}.
+	 * {@code soft} uses {@link GroovyClassValueSoft}. A value Java parses as
+	 * {@code true}, which is the default, uses {@link GroovyClassValueJava7}.
+	 * Any other value uses {@link GroovyClassValueMapBased}.
+	 *
+	 * @param <T> the type of the value computed for each class
+	 * @param computeValue computes the value the first time a class is seen
+	 * @return the store that caches those values
+	 */
 	public static <T> GroovyClassValue<T> createGroovyClassValue(ComputeValue<T> computeValue) {
-		return (USE_CLASSVALUE)
-                ? new GroovyClassValueJava7<>(computeValue)
-                : new GroovyClassValuePreJava7<>(computeValue);
+		// GROOVY-12281: "soft" keeps ClassValue for all keys but holds values softly with
+		// resurrection and ephemeron pinning, so immortal keys hold no strong chain to the
+		// value's loader.
+		if (SOFT_MODE) {
+			return new GroovyClassValueSoft<>(computeValue);
+		}
+		return Boolean.parseBoolean(CLASSVALUE_MODE)
+				? new GroovyClassValueJava7<>(computeValue)
+				: new GroovyClassValueMapBased<>(computeValue);
 	}
 }

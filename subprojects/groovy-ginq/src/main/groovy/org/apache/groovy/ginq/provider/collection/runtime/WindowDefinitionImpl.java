@@ -36,89 +36,183 @@ class WindowDefinitionImpl<T, U extends Comparable<? super U>> implements Window
     private final RowBound rows;
     private final ValueBound<? extends U> range;
 
-    public WindowDefinitionImpl(Function<? super T, ?> partitionBy, List<Queryable.Order<? super T, ? extends U>> orderBy,
-                                RowBound rows, ValueBound<? extends U> range) {
+    /**
+     * Creates a window definition with explicit partitioning, ordering, and bounds.
+     *
+     * @param partitionBy the partitioning function
+     * @param orderBy the ordering rules
+     * @param rows the row bounds
+     * @param range the range bounds
+     */
+    WindowDefinitionImpl(Function<? super T, ?> partitionBy, List<Queryable.Order<? super T, ? extends U>> orderBy,
+                                 RowBound rows, ValueBound<? extends U> range) {
         this.partitionBy = partitionBy;
         this.orderBy = orderBy;
         this.rows = rows;
         this.range = range;
     }
 
-    public WindowDefinitionImpl() {
+    /**
+     * Creates the default window definition.
+     */
+    WindowDefinitionImpl() {
         this((T t) -> Queryable.NULL, Collections.emptyList(), RowBound.DEFAULT, null);
     }
 
-    public WindowDefinitionImpl(Function<? super T, ?> partitionBy) {
+    /**
+     * Creates a partitioned window definition.
+     *
+     * @param partitionBy the partitioning function
+     */
+    WindowDefinitionImpl(Function<? super T, ?> partitionBy) {
         this(partitionBy, Collections.emptyList(), RowBound.DEFAULT, null);
     }
 
-    public WindowDefinitionImpl(List<Queryable.Order<? super T, ? extends U>> orderBy) {
+    /**
+     * Creates an ordered window definition.
+     *
+     * @param orderBy the ordering rules
+     */
+    WindowDefinitionImpl(List<Queryable.Order<? super T, ? extends U>> orderBy) {
         this((T t) -> Queryable.NULL, orderBy, RowBound.DEFAULT, null);
     }
 
-    public WindowDefinitionImpl(Function<? super T, ?> partitionBy, List<Queryable.Order<? super T, ? extends U>> orderBy) {
+    /**
+     * Creates a partitioned and ordered window definition.
+     *
+     * @param partitionBy the partitioning function
+     * @param orderBy the ordering rules
+     */
+    WindowDefinitionImpl(Function<? super T, ?> partitionBy, List<Queryable.Order<? super T, ? extends U>> orderBy) {
         this(partitionBy, orderBy, RowBound.DEFAULT, null);
     }
 
-    public WindowDefinitionImpl(List<Queryable.Order<? super T, ? extends U>> orderBy,
-                                RowBound rows) {
+    /**
+     * Creates an ordered window definition with row bounds.
+     *
+     * @param orderBy the ordering rules
+     * @param rows the row bounds
+     */
+    WindowDefinitionImpl(List<Queryable.Order<? super T, ? extends U>> orderBy, RowBound rows) {
         this((T t) -> Queryable.NULL, orderBy, rows, null);
     }
 
-    public WindowDefinitionImpl(Function<? super T, ?> partitionBy, List<Queryable.Order<? super T, ? extends U>> orderBy,
-                                RowBound rows) {
+    /**
+     * Creates a partitioned and ordered window definition with row bounds.
+     *
+     * @param partitionBy the partitioning function
+     * @param orderBy the ordering rules
+     * @param rows the row bounds
+     */
+    WindowDefinitionImpl(Function<? super T, ?> partitionBy, List<Queryable.Order<? super T, ? extends U>> orderBy,
+                         RowBound rows) {
         this(partitionBy, orderBy, rows, null);
     }
 
-    public WindowDefinitionImpl(Function<? super T, ?> partitionBy, List<Queryable.Order<? super T, ? extends U>> orderBy,
-                                ValueBound<? extends U> range) {
+    /**
+     * Creates a partitioned and ordered window definition with range bounds.
+     *
+     * @param partitionBy the partitioning function
+     * @param orderBy the ordering rules
+     * @param range the range bounds
+     */
+    WindowDefinitionImpl(Function<? super T, ?> partitionBy, List<Queryable.Order<? super T, ? extends U>> orderBy,
+                         ValueBound<? extends U> range) {
         this(partitionBy, orderBy, RowBound.DEFAULT, range);
     }
 
-    public WindowDefinitionImpl(List<Queryable.Order<? super T, ? extends U>> orderBy,
-                                ValueBound<? extends U> range) {
+    /**
+     * Creates an ordered window definition with range bounds.
+     *
+     * @param orderBy the ordering rules
+     * @param range the range bounds
+     */
+    WindowDefinitionImpl(List<Queryable.Order<? super T, ? extends U>> orderBy, ValueBound<? extends U> range) {
         this((T t) -> Queryable.NULL, orderBy, RowBound.DEFAULT, range);
     }
 
+    /**
+     * Returns the partition function supplied to the constructor.
+     * Shorter constructors store a function that yields {@code Queryable.NULL}.
+     *
+     * @return the partition function
+     */
     @Override
     public Function<? super T, ?> partitionBy() {
         return partitionBy;
     }
 
+    /**
+     * Returns the order list supplied to the constructor.
+     * Shorter constructors store an empty list.
+     *
+     * @return the order list
+     */
     @Override
     public List<Queryable.Order<? super T, ? extends U>> orderBy() {
         return orderBy;
     }
 
+    /**
+     * Returns the row bounds for this window.
+     *
+     * @return the row bounds
+     */
     @Override
     public RowBound rows() {
         return rows;
     }
 
+    /**
+     * Returns the range bounds for this window.
+     *
+     * @return the range bounds
+     */
     @Override
     public ValueBound<? extends U> range() {
         return range;
     }
 
+    /**
+     * Returns the cached window-definition identifier.
+     *
+     * @return the identifier
+     */
     @Override
     public Object getId() {
         return id;
     }
 
+    /**
+     * Sets the cached window-definition identifier.
+     *
+     * @param id the identifier to set
+     * @return this definition
+     */
     @Override
     public WindowDefinition<T, U> setId(Object id) {
         this.id = id;
         return this;
     }
 
+    /**
+     * Compares this definition with another one by identifier.
+     *
+     * @param o the other object
+     * @return {@code true} if both identifiers match
+     */
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
-        if (!(o instanceof WindowDefinitionImpl)) return false;
-        WindowDefinitionImpl<?, ?> that = (WindowDefinitionImpl<?, ?>) o;
+        if (!(o instanceof WindowDefinitionImpl<?, ?> that)) return false;
         return Objects.equals(id, that.id);
     }
 
+    /**
+     * Returns the hash code of this definition identifier.
+     *
+     * @return the hash code
+     */
     @Override
     public int hashCode() {
         return Objects.hash(id);

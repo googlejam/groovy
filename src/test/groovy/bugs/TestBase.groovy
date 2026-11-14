@@ -16,25 +16,25 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
 /**
  * A base class for testing constructors
- * 
+ *
  */
 
  class TestBase {
 
      String foo
-     
+
      TestBase() {
      }
-     
+
      TestBase(String aFoo) {
          this.foo = aFoo
      }
      /** @todo fix bug */
-     
+
      def doSomething() {
          "TestBase"
      }

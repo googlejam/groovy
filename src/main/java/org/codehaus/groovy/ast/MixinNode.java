@@ -23,8 +23,12 @@ package org.codehaus.groovy.ast;
  */
 public class MixinNode extends ClassNode {
 
+    /**
+     * Empty mixin array. The constructors pass it to {@link ClassNode} when the class
+     * declares no further mixins.
+     */
     public static final MixinNode[] EMPTY_ARRAY = {};
-    
+
     /**
      * @param name is the full name of the class
      * @param modifiers the modifiers, @see org.objectweb.asm.Opcodes

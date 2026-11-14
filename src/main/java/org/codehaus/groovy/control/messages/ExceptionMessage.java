@@ -30,9 +30,22 @@ import java.util.Objects;
 public class ExceptionMessage extends Message {
 
     private final Exception cause;
+    /**
+     * Indicates whether debug output is enabled for this message.
+     */
     protected final boolean debug;
+    /**
+     * Processing unit that reported the exception.
+     */
     protected final ProcessingUnit owner;
 
+    /**
+     * Creates an exception-backed compilation message.
+     *
+     * @param cause the underlying exception
+     * @param debug whether debug output is enabled
+     * @param owner the owning processing unit
+     */
     public ExceptionMessage(final Exception cause, final boolean debug, final ProcessingUnit owner) {
         this.cause = Objects.requireNonNull(cause);
         this.debug = debug;
@@ -47,6 +60,17 @@ public class ExceptionMessage extends Message {
     }
 
     /**
+     * The exception summary without its stack trace, which only the full
+     * rendering includes.
+     */
+    @Override
+    public Diagnostic toDiagnostic() {
+        String message = cause.getMessage();
+        return new Diagnostic(null, -1, -1, "General error during " + owner.getPhaseDescription() + ": "
+                + Objects.requireNonNullElse(message, cause.toString()));
+    }
+
+    /**
      * Writes out a nicely formatted summary of the exception.
      */
     @Override
@@ -54,11 +78,7 @@ public class ExceptionMessage extends Message {
         String description = "General error during " + owner.getPhaseDescription() + ": ";
 
         String message = cause.getMessage();
-        if (message != null) {
-            output.println(description + message);
-        } else {
-            output.println(description + cause);
-        }
+        output.println(description + Objects.requireNonNullElse(message, cause));
         output.println();
 
         /*if (debug)*/ cause.printStackTrace(output);

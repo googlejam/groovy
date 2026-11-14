@@ -19,9 +19,9 @@
 package groovy.xml
 
 import groovy.namespace.QName
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class XmlParserTest extends GroovyTestCase {
+class XmlParserTest {
 
     def getRoot = { xml -> new XmlParser().parseText(xml) }
 
@@ -54,14 +54,15 @@ class XmlParserTest extends GroovyTestCase {
 </html>
 """
 
-    void testNodePrinter() {
+    @Test
+    void nodePrinter() {
         def text = """
 <p>Please read the <a href="index.html">Home</a> page</p>
 """
         def node = new XmlParser(trimWhitespace: true).parseText(text)
         StringWriter sw = new StringWriter()
         new NodePrinter(new PrintWriter(sw)).print(node)
-        def result = fixEOLs(sw.toString())
+        def result = sw.toString().normalize()
         def expected = '''\
 p() {
   Please read the
@@ -74,14 +75,15 @@ p() {
         assert result == expected
     }
 
-    void testXmlNodePrinter() {
+    @Test
+    void xmlNodePrinter() {
         def text = """
 <p>Please read the <a href="index.html">Home</a> page</p>
 """
         def node = new XmlParser(trimWhitespace: true).parseText(text)
         StringWriter sw = new StringWriter()
         new XmlNodePrinter(new PrintWriter(sw)).print(node)
-        def result = fixEOLs(sw.toString())
+        def result = sw.toString().normalize()
         def expected = '''\
 <p>
   Please read the
@@ -94,11 +96,12 @@ p() {
         assert result == expected
     }
 
-    void testXmlNodePrinterNamespaces() {
+    @Test
+    void xmlNodePrinterNamespaces() {
         def html = new XmlParser(trimWhitespace: true).parseText(bookXml)
         StringWriter sw = new StringWriter()
         new XmlNodePrinter(new PrintWriter(sw)).print(html)
-        def result = fixEOLs(sw.toString())
+        def result = sw.toString().normalize()
         def expected = '''\
 <html xmlns="http://www.w3.org/HTML/1998/html4">
   <head>
@@ -174,7 +177,8 @@ p() {
         assert result == expected
     }
 
-    void testNamespaceGPath() {
+    @Test
+    void namespaceGPath() {
         def anyName = new QName("*", "*")
         def anyHtml = new QName("http://www.w3.org/HTML/1998/html4", "*")
         def anyTitle = new QName("*", "title")
@@ -200,7 +204,8 @@ p() {
         assert html.'**'['dc:*']*.name()*.localPart == ["title", "author", "date"]
     }
 
-    void testElement() {
+    @Test
+    void element() {
         GpathSyntaxTestSupport.checkUpdateElementValue(getRoot)
         GpathSyntaxTestSupport.checkElement(getRoot)
         GpathSyntaxTestSupport.checkFindElement(getRoot)
@@ -210,40 +215,47 @@ p() {
         GpathSyntaxTestSupport.checkCDataText(getRoot)
     }
 
-    void testAttribute() {
+    @Test
+    void attribute() {
         GpathSyntaxTestSupport.checkAttribute(getRoot)
         GpathSyntaxTestSupport.checkAttributes(getRoot)
         GpathSyntaxTestSupport.checkAttributeTruth(getRoot)
     }
 
-    void testNavigation() {
+    @Test
+    void navigation() {
         GpathSyntaxTestSupport.checkChildren(getRoot)
         GpathSyntaxTestSupport.checkParent(getRoot)
         GpathSyntaxTestSupport.checkNestedSizeExpressions(getRoot)
     }
 
-    void testTraversal() {
+    @Test
+    void traversal() {
         TraversalTestSupport.checkDepthFirst(getRoot)
         TraversalTestSupport.checkBreadthFirst(getRoot)
     }
 
-    void testIndices() {
+    @Test
+    void indices() {
         GpathSyntaxTestSupport.checkNegativeIndices(getRoot)
         GpathSyntaxTestSupport.checkRangeIndex(getRoot)
     }
 
-    void testReplacementsAndAdditions() {
+    @Test
+    void replacementsAndAdditions() {
         GpathSyntaxTestSupport.checkReplaceNode(getRoot)
         GpathSyntaxTestSupport.checkReplaceMultipleNodes(getRoot)
         GpathSyntaxTestSupport.checkPlus(getRoot)
     }
 
-    void testMixedMarkup() {
+    @Test
+    void mixedMarkup() {
         MixedMarkupTestSupport.checkMixedMarkup(getRoot)
         MixedMarkupTestSupport.checkMixedMarkupText(getRoot)
     }
 
-    void testWhitespaceTrimming() {
+    @Test
+    void whitespaceTrimming() {
         def text = '<outer><inner>   Here is some text    </inner></outer>'
         def parser = new XmlParser(trimWhitespace: true)
         def outer = parser.parseText(text)
@@ -253,7 +265,8 @@ p() {
         assert outer.inner.text() == '   Here is some text    '
     }
 
-    void testUpdate() {
+    @Test
+    void update() {
         def xml = '<root></root>'
         def parser = new XmlParser()
         def root = parser.parseText(xml)
@@ -282,7 +295,8 @@ p() {
 '''
     }
 
-    void testReplaceNode() {
+    @Test
+    void replaceNode() {
         def xml = '<root><old/></root>'
         def parser = new XmlParser()
         def root = parser.parseText(xml)
@@ -304,13 +318,15 @@ p() {
 '''
     }
 
-    void testXmlParserExtensionPoints() {
+    @Test
+    void xmlParserExtensionPoints() {
         def html = new CustomXmlParser().parseText(bookXml)
         assert html.getClass() == CustomNode
         assert html.name() == new Integer(42)
     }
 
-    void testCloning() {
+    @Test
+    void cloning() {
         def xml = '<root><foo bar="baz"><inner/></foo></root>'
         def parser = new XmlParser()
         def root = parser.parseText(xml)
@@ -326,5 +342,31 @@ p() {
         new XmlNodePrinter(ip).print(root)
         def result = writer.toString()
         assert result == '<root><foo bar="baz"><inner/></foo><foo bar="zab"><inner>text</inner></foo></root>'
+    }
+
+    @Test
+    void namedParameterConstruction() {
+        def xml = '<root><item name="test">value</item></root>'
+
+        // named parameters via setters
+        def parser = new XmlParser(namespaceAware: false, trimWhitespace: true)
+        def result = parser.parseText(xml)
+        assert result.item[0].text() == 'value'
+        assert result.item[0].@name == 'test'
+
+        // setter after boolean constructor, before first parse
+        def parser2 = new XmlParser(false, false)
+        parser2.allowDocTypeDeclaration = true
+        assert parser2.parseText(xml).item[0].text() == 'value'
+
+        // setter after parse should fail
+        def parser3 = new XmlParser()
+        parser3.parseText(xml)
+        try {
+            parser3.namespaceAware = false
+            assert false, 'should have thrown'
+        } catch (IllegalStateException e) {
+            assert e.message.contains('must be set before parsing')
+        }
     }
 }

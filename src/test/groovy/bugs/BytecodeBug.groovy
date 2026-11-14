@@ -16,24 +16,23 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-/**
- */
-class BytecodeBug extends GroovyTestCase {
-     
+final class BytecodeBug {
+
+    @Test
     void testTedsBytecodeBug() {
         //def a = ['tom','dick','harry']
         def a = [1, 2, 3, 4]
         doTest(a)
     }
-    
+
     void doTest(args) {
         def m = [:]
         def i = 1
-        args.each { 
+        args.each {
             talk(it)
             m.put(it, i++)
         }
@@ -42,7 +41,7 @@ class BytecodeBug extends GroovyTestCase {
             println(it)
         }
     }
-    
+
     def talk(a) {
         println("hello "+a)
     }

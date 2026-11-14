@@ -16,11 +16,15 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy4009Bug extends GroovyTestCase {
+import static groovy.test.GroovyAssert.assertScript
+import static groovy.test.GroovyAssert.fail
+
+class Groovy4009Bug {
+    @Test
     void testNoOfTimesResolveCallIsMade() {
         try {
             assertScript """

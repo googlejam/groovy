@@ -18,9 +18,9 @@
  */
 package groovy.xml
 
-import groovy.test.GroovyTestCase
 import org.custommonkey.xmlunit.Diff
 import org.custommonkey.xmlunit.XMLUnit
+import org.junit.jupiter.api.Test
 
 import javax.xml.stream.XMLOutputFactory
 
@@ -29,9 +29,10 @@ import javax.xml.stream.XMLOutputFactory
 /**
  * Tests Stax builder with XML
  */
-class StaxBuilderTest extends GroovyTestCase {
+class StaxBuilderTest {
 
-    void testJava6() {
+    @Test
+    void java6() {
         def factory = XMLOutputFactory.newInstance()
         def writer = new StringWriter()
         def builder = new StaxBuilder(factory.createXMLStreamWriter(writer))
@@ -47,7 +48,7 @@ class StaxBuilderTest extends GroovyTestCase {
     }
 
 //    @Grab('org.codehaus.jettison:jettison:1.2')
-//    void testJettison() {
+//    void jettison() {
 //        def conv = new MappedNamespaceConvention()
 //        def writer = new StringWriter()
 //        def mappedWriter = new MappedXMLStreamWriter(conv, writer)

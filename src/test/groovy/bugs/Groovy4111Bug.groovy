@@ -16,12 +16,15 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
 import org.codehaus.groovy.control.MultipleCompilationErrorsException
+import org.junit.jupiter.api.Test
 
-class Groovy4111Bug extends GroovyTestCase {
+import static org.junit.jupiter.api.Assertions.fail
+
+class Groovy4111Bug {
+    @Test
     void testConstructorCallOnAnAbstractType() {
         try {
             new GroovyShell().parse """
@@ -30,7 +33,7 @@ class Groovy4111Bug extends GroovyTestCase {
                         def obj = new I4111()
                     }
                 }
-                
+
                 interface I4111 {}
             """
             fail('The compilation should have failed as the constructor call is on an interface')

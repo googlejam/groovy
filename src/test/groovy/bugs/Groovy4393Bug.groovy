@@ -16,13 +16,14 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
-import org.junit.Ignore
+import org.junit.jupiter.api.Disabled
+import org.junit.jupiter.api.Test
 
-@Ignore('requires a specific configuration, see: https://issues.apache.org/jira/browse/GROOVY-4393 for details')
-class Groovy4393Bug extends GroovyTestCase {
+@Disabled('requires a specific configuration, see: https://issues.apache.org/jira/browse/GROOVY-4393 for details')
+class Groovy4393Bug {
+    @Test
     void testIfSourceFilesWithOtherExtensionsGotCompiledFine() {
         assert Groovy4393BugV1 != null
     }

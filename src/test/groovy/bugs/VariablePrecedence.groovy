@@ -16,14 +16,18 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class VariblePrecedence extends GroovyTestCase {
-    
+import static groovy.test.GroovyAssert.assertScript
+
+
+class VariblePrecedence {
+
+    @Test
     void testVariablePrecedence() {
- 
+
         assertScript( """
             class VariableFoo {
                 def x = 100
@@ -54,6 +58,7 @@ class VariblePrecedence extends GroovyTestCase {
 
     }
 
+    @Test
     void testVariablePrecedenceInScript_FAILS() {
         assertScript( """
             c = { x -> assert x == 1; assert y == 93; }

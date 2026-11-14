@@ -16,14 +16,15 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-/**
- */
-class AssignmentInsideExpressionBug extends GroovyTestCase {
-    
+import static org.junit.jupiter.api.Assertions.fail
+
+final class AssignmentInsideExpressionBug {
+
+    @Test
     void testBug() {
         def x
         if ((x = someMethod()) != null) {
@@ -37,7 +38,7 @@ class AssignmentInsideExpressionBug extends GroovyTestCase {
         } else {
             fail("y [${y}] should be greater than 5")
         }
-        
+
         def a = 123, b = 123
         assert a == 123
         assert b == 123
@@ -46,7 +47,7 @@ class AssignmentInsideExpressionBug extends GroovyTestCase {
     def someMethod() {
         return "worked!"
     }
-    
+
     def getFoo() {
         return 7
     }

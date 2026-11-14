@@ -16,18 +16,31 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-import org.gradle.util.GradleVersion
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+//        maven { url 'https://oss.sonatype.org/content/repositories/snapshots' }
+    }
+
+    includeBuild("build-logic")
+}
 
 plugins {
-    id "com.gradle.enterprise" version "3.5.2"
+    // Before updating this, please check the compatibility from https://docs.gradle.com/develocity/current/miscellaneous/compatibility/ and https://develocity.apache.org/scans.
+    id "com.gradle.develocity" version "4.6.1"
+    id 'com.gradle.common-custom-user-data-gradle-plugin' version '2.8.0'
 }
 
-gradleEnterprise {
-    buildScan {
-        termsOfServiceUrl = 'https://gradle.com/terms-of-service'
-        apply from: 'gradle/build-scans.gradle'
+apply from: 'gradle/build-scans.gradle'
+
+dependencyResolutionManagement {
+    repositories {
+        mavenCentral()
     }
 }
+
+enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 
 def subprojects = [
         'groovy-all',
@@ -37,32 +50,51 @@ def subprojects = [
         'groovy-bom',
         'groovy-cli-commons',
         'groovy-cli-picocli',
+        'groovy-concurrent-java',
         'groovy-console',
         'groovy-contracts',
+        'groovy-csv',
         'groovy-datetime',
         'groovy-dateutil',
         'groovy-docgenerator',
+        'groovy-fx',
+        'groovy-grape-ivy',
+        'groovy-grape-maven',
+        'groovy-grape-test',
         'groovy-groovydoc',
         'groovy-groovysh',
         'groovy-jmx',
         'groovy-json',
         'groovy-jsr223',
+        'groovy-lsp',
+        'groovy-mcp',
+        'groovy-callsite',
+        'groovy-logging-test',
         'groovy-ginq',
+        'groovy-http-builder',
+        'groovy-markdown',
         'groovy-macro',
         'groovy-macro-library',
         'groovy-nio',
+        'groovy-osgi-test',
         'groovy-servlet',
         'groovy-sql',
         'groovy-swing',
         'groovy-templates',
         'groovy-test',
         'groovy-test-junit5',
+        'groovy-test-junit6',
         'groovy-testng',
+        'groovy-reactor',
+        'groovy-rxjava',
+        'groovy-toml',
         'groovy-typecheckers',
         'groovy-xml',
         'groovy-yaml',
+        'asciidoc-extensions',
         'performance',
         'tests-preview',
+        'tests-native',
         'binary-compatibility',
         'stress'
 ]
@@ -75,8 +107,5 @@ rootProject.children.each { prj ->
 
 rootProject.name = 'groovy'
 
-GradleVersion gradleVersion = GradleVersion.current()
-GradleVersion gradle5_6 = GradleVersion.version('5.6')
-if (gradleVersion >= gradle5_6) {
-    enableFeaturePreview('GROOVY_COMPILATION_AVOIDANCE')
-}
+enableFeaturePreview('GROOVY_COMPILATION_AVOIDANCE')
+System.setProperty("sonar.gradle.skipCompile", "true")

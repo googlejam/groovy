@@ -16,12 +16,15 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-class ClosureWithStaticVariablesBug extends TestSupport {
-    
+import org.junit.jupiter.api.Test
+
+final class ClosureWithStaticVariablesBug {
+
     static def y = [:]
-    
+
+    @Test
     void testBug() {
         def c = { x ->
             return {
@@ -39,8 +42,8 @@ class ClosureWithStaticVariablesBug extends TestSupport {
         def answer = c2()
         assert answer == 6
     }
-}
 
-class Cheese {
-    public static z = [:]
+    static class Cheese {
+        public static z = [:]
+    }
 }

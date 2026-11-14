@@ -37,7 +37,7 @@ import java.util.Map;
  * the normal JDK SQL classes when inside the Groovy environment.
  * Static methods are used with the first parameter the destination class.
  */
-public class SqlExtensions {
+public final class SqlExtensions {
 
     /**
      * Returns a GroovyRowResult given a ResultSet.
@@ -98,10 +98,14 @@ public class SqlExtensions {
         private final ResultSetMetaData target;
         private int index = 1;
 
-        public ResultSetMetaDataIterator(ResultSetMetaData target) {
+        ResultSetMetaDataIterator(ResultSetMetaData target) {
             this.target = target;
         }
 
+        /**
+         * Returns whether {@code index} has not passed the column count.
+         * A failure reading the count is wrapped in a {@link GroovyRuntimeException}.
+         */
         @Override
         public boolean hasNext() {
             try {
@@ -112,11 +116,19 @@ public class SqlExtensions {
             }
         }
 
+        /**
+         * Returns a wrapper for the column at the current index and then advances
+         * the index.
+         */
         @Override
         public ResultSetMetaDataWrapper next() {
             return new ResultSetMetaDataWrapper(target, index++);
         }
 
+        /**
+         * Throws {@link UnsupportedOperationException}; columns cannot be removed
+         * from result-set metadata.
+         */
         @Override
         public void remove() {
             throw new UnsupportedOperationException("Cannot remove from ResultSetMetaData");

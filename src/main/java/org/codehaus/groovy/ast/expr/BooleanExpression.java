@@ -27,31 +27,41 @@ import org.codehaus.groovy.ast.GroovyCodeVisitor;
 public class BooleanExpression extends Expression {
     private final Expression expression;
 
-    public BooleanExpression(Expression expression) {
+    /**
+     * Wraps {@code expression} and types this node as primitive
+     * {@code boolean}.
+     *
+     * @param expression condition this node holds
+     */
+    public BooleanExpression(final Expression expression) {
         this.expression = expression;
         setType(ClassHelper.boolean_TYPE); // for consistency with AsmClassGenerator. see AsmClassGenerator.visitBooleanExpression.
     }
-    
+
+    /**
+     * Returns the condition held by this node.
+     *
+     * @return the wrapped condition
+     */
     public Expression getExpression() {
         return expression;
     }
 
     @Override
-    public void visit(GroovyCodeVisitor visitor) {
-        visitor.visitBooleanExpression(this);
+    public String getText() {
+        return getExpression().getText();
     }
 
     @Override
-    public Expression transformExpression(ExpressionTransformer transformer) {
-        Expression ret = new BooleanExpression(transformer.transform(expression));
+    public Expression transformExpression(final ExpressionTransformer transformer) {
+        Expression ret = new BooleanExpression(transformer.transform(getExpression()));
         ret.setSourcePosition(this);
         ret.copyNodeMetaData(this);
         return ret;
     }
-    
-    @Override
-    public String getText() {
-        return expression.getText();
-    }
 
+    @Override
+    public void visit(final GroovyCodeVisitor visitor) {
+        visitor.visitBooleanExpression(this);
+    }
 }

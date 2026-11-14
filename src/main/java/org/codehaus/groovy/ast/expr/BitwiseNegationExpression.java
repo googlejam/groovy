@@ -18,42 +18,63 @@
  */
 package org.codehaus.groovy.ast.expr;
 
+import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.GroovyCodeVisitor;
 
+/**
+ * Bitwise negation, written {@code ~(expression)}. A {@code String} or GString operand is
+ * reported by {@link #getType()} as {@code Pattern}.
+ */
 public class BitwiseNegationExpression extends Expression {
 
     private final Expression expression;
 
-    public BitwiseNegationExpression(Expression expression) {
+    /**
+     * Creates the negation of {@code expression}.
+     *
+     * @param expression the operand of {@code ~}
+     */
+    public BitwiseNegationExpression(final Expression expression) {
         this.expression = expression;
     }
 
+    /**
+     * Returns the operand of {@code ~}.
+     *
+     * @return the negated expression
+     */
     public Expression getExpression() {
         return expression;
     }
 
     @Override
-    public void visit(GroovyCodeVisitor visitor) {
-        visitor.visitBitwiseNegationExpression(this);
+    public String getText() {
+        return "~(" + getExpression().getText() + ")";
+    }
+
+    /**
+     * @see org.codehaus.groovy.runtime.InvokerHelper#bitwiseNegate(Object)
+     */
+    @Override
+    public ClassNode getType() {
+        ClassNode type = getExpression().getType();
+        if (ClassHelper.isStringType(type) || ClassHelper.isGStringType(type)) {
+            type = ClassHelper.PATTERN_TYPE; // GROOVY-10936
+        }
+        return type;
     }
 
     @Override
-    public Expression transformExpression(ExpressionTransformer transformer) {
-        Expression ret = new BitwiseNegationExpression(transformer.transform(expression));
+    public Expression transformExpression(final ExpressionTransformer transformer) {
+        Expression ret = new BitwiseNegationExpression(transformer.transform(getExpression()));
         ret.setSourcePosition(this);
         ret.copyNodeMetaData(this);
         return ret;
     }
 
     @Override
-    public String getText() {
-        return expression.getText();
+    public void visit(final GroovyCodeVisitor visitor) {
+        visitor.visitBitwiseNegationExpression(this);
     }
-
-    @Override
-    public ClassNode getType() {
-        return expression.getType();
-    }
-
 }

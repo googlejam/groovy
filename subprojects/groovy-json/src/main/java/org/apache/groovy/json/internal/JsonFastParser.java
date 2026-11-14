@@ -18,6 +18,8 @@
  */
 package org.apache.groovy.json.internal;
 
+import groovy.json.JsonDateHandling;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -30,32 +32,69 @@ public class JsonFastParser extends JsonParserCharArray {
     private final boolean useValues;
     private final boolean chop;
     private final boolean lazyChop;
-    private final boolean checkDates;
+    private final JsonDateHandling dateHandling;
 
+    /**
+     * Creates a parser with eager value containers and lazy chopping.
+     */
     public JsonFastParser() {
         this(true);
     }
 
+    /**
+     * Creates a parser with the supplied value-container mode.
+     *
+     * @param useValues whether to use eager {@link Value} containers
+     */
     public JsonFastParser(boolean useValues) {
         this(useValues, false);
     }
 
+    /**
+     * Creates a parser with explicit chopping behavior.
+     *
+     * @param useValues whether to use eager {@link Value} containers
+     * @param chop whether to eagerly copy overlay slices
+     */
     public JsonFastParser(boolean useValues, boolean chop) {
         this(useValues, chop, !chop);
     }
 
+    /**
+     * Creates a parser with explicit lazy chopping behavior.
+     *
+     * @param useValues whether to use eager {@link Value} containers
+     * @param chop whether to eagerly copy overlay slices
+     * @param lazyChop whether to defer chopping until values are accessed
+     */
     public JsonFastParser(boolean useValues, boolean chop, boolean lazyChop) {
-        this(useValues, chop, lazyChop, true);
+        this(useValues, chop, lazyChop, JsonDateHandling.UTIL_DATE);
     }
 
-    public JsonFastParser(boolean useValues, boolean chop, boolean lazyChop, boolean checkDates) {
+    /**
+     * Creates a parser with full overlay configuration.
+     *
+     * @param useValues whether to use eager {@link Value} containers
+     * @param chop whether to eagerly copy overlay slices
+     * @param lazyChop whether to defer chopping until values are accessed
+     * @param dateHandling what a date-like string should become
+     */
+    public JsonFastParser(boolean useValues, boolean chop, boolean lazyChop, JsonDateHandling dateHandling) {
         this.useValues = useValues;
         this.chop = chop;
         this.lazyChop = lazyChop;
-        this.checkDates = checkDates;
+        this.dateHandling = dateHandling;
     }
 
+    /**
+     * Decodes an object using overlay values and deferred materialization.
+     *
+     * @return parsed object value container
+     */
+    @SuppressWarnings("unchecked")
     protected final Value decodeJsonObjectLazyFinalParse() {
+        enterNesting();
+        try {
         char[] array = charArray;
 
         if (__currentChar == '{')
@@ -103,8 +142,16 @@ public class JsonFastParser extends JsonParserCharArray {
             }
         }
         return value;
+        } finally {
+            exitNesting();
+        }
     }
 
+    /**
+     * Decodes the next JSON value as an overlay {@link Value}.
+     *
+     * @return parsed overlay value
+     */
     @Override
     protected Value decodeValue() {
         return decodeValueOverlay();
@@ -113,45 +160,24 @@ public class JsonFastParser extends JsonParserCharArray {
     private Value decodeValueOverlay() {
         skipWhiteSpace();
 
-        switch (__currentChar) {
-            case '"':
-                return decodeStringOverlay();
-
-            case '{':
-                return decodeJsonObjectLazyFinalParse();
-
-            case 't':
-                return decodeTrue() ? ValueContainer.TRUE : ValueContainer.FALSE;
-
-            case 'f':
-                return !decodeFalse() ? ValueContainer.FALSE : ValueContainer.TRUE;
-
-            case 'n':
-                return decodeNull() == null ? ValueContainer.NULL : ValueContainer.NULL;
-
-            case '[':
-                return decodeJsonArrayOverlay();
-
-            case '1':
-            case '2':
-            case '3':
-            case '4':
-            case '5':
-            case '6':
-            case '7':
-            case '8':
-            case '9':
-            case '0':
-                return decodeNumberOverlay(false);
-
-            case '-':
-                return decodeNumberOverlay(true);
-
-            default:
+        return switch (__currentChar) {
+            case '"' -> decodeStringOverlay();
+            case '{' -> decodeJsonObjectLazyFinalParse();
+            case 't' -> decodeTrue() ? ValueContainer.TRUE : ValueContainer.FALSE;
+            case 'f' -> !decodeFalse() ? ValueContainer.FALSE : ValueContainer.TRUE;
+            case 'n' -> {
+                decodeNull();
+                yield ValueContainer.NULL;
+            }
+            case '[' -> decodeJsonArrayOverlay();
+            case '1', '2', '3', '4', '5', '6', '7', '8', '9', '0' -> decodeNumberOverlay(false);
+            case '-' -> decodeNumberOverlay(true);
+            default -> {
                 complain("Unable to determine the " +
-                        "current character, it is not a string, number, array, or object");
-                return null;
-        }
+                    "current character, it is not a string, number, array, or object");
+                yield null;
+            }
+        };
     }
 
     private Value decodeNumberOverlay(final boolean minus) {
@@ -218,6 +244,10 @@ public class JsonFastParser extends JsonParserCharArray {
 
         Type type = doubleFloat ? Type.DOUBLE : Type.INTEGER;
 
+        // Checked here rather than in NumberValue: the overlay defers conversion to first access,
+        // and a document over the limit should be rejected by the parse that read it.
+        checkNumberLength(__index - startIndex);
+
         return new NumberValue(chop, type, startIndex, __index, this.charArray);
     }
 
@@ -239,7 +269,7 @@ public class JsonFastParser extends JsonParserCharArray {
             index = findEndQuote(array, index);
         }
 
-        Value value = new CharSequenceValue(chop, Type.STRING, startIndex, index, array, encoded, checkDates);
+        Value value = new CharSequenceValue(chop, Type.STRING, startIndex, index, array, encoded, dateHandling);
 
         if (index < array.length) {
             index++;
@@ -250,6 +280,8 @@ public class JsonFastParser extends JsonParserCharArray {
     }
 
     private Value decodeJsonArrayOverlay() {
+        enterNesting();
+        try {
         char[] array = charArray;
         if (__currentChar == '[') {
             __index++;
@@ -260,7 +292,7 @@ public class JsonFastParser extends JsonParserCharArray {
         /* the list might be empty  */
         if (__currentChar == ']') {
             __index++;
-            return new ValueContainer(new ArrayList());
+            return new ValueContainer(new ArrayList<>());
         }
 
         List<Object> list;
@@ -320,8 +352,17 @@ public class JsonFastParser extends JsonParserCharArray {
             complain("Did not find end of Json Array");
         }
         return value;
+        } finally {
+            exitNesting();
+        }
     }
 
+    /**
+     * Parses a character buffer and unwraps top-level container values.
+     *
+     * @param cs JSON content to parse
+     * @return parsed Groovy JSON value
+     */
     @Override
     protected final Object decodeFromChars(char[] cs) {
         Value value = ((Value) super.decodeFromChars(cs));

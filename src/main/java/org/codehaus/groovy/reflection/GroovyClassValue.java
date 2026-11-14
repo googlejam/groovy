@@ -21,16 +21,77 @@ package org.codehaus.groovy.reflection;
 /** Abstraction for Java version dependent ClassValue implementations.
  * @see java.lang.ClassValue
  *
- * @param <T>
+ * @param <T> the value stored for each class
  */
 public interface GroovyClassValue<T> {
-	
-	interface ComputeValue<T>{
-		T computeValue(Class<?> type);
+
+    /**
+     * Computes the value stored for a class that has none yet.
+     *
+     * @param <T> the value type
+     */
+    interface ComputeValue<T> {
+        /**
+         * Computes the value for {@code type}.
+         *
+         * @param type the key class
+         * @return the value to associate with {@code type}
+         */
+        T computeValue(Class<?> type);
+    }
+
+    /**
+     * Returns the value associated with {@code type}, computing it when absent.
+     *
+     * @param type the key class
+     * @return the associated value
+     */
+    T get(Class<?> type);
+
+    /**
+     * Drops the association for {@code type}, including a pinned value.
+     *
+     * @param type the key class
+     */
+    void remove(Class<?> type);
+
+	/**
+	 * Whether an association's value can be collected while its key class is
+	 * still alive (GROOVY-12281, {@code -Dgroovy.use.classvalue=soft}). The
+	 * default — a value lives exactly as long as its key class — answers
+	 * {@code false}. Implementations answering {@code true} must honor
+	 * {@link #pin} so callers can exempt values whose state cannot be rebuilt
+	 * by recomputation.
+	 *
+	 * @return {@code true} if values may be collected before their key class
+	 */
+	default boolean valuesReclaimable() {
+		return false;
 	}
-	
-	T get(Class<?> type);
-	
-	void remove(Class<?> type);
-	
+
+	/**
+	 * Keeps {@code value} strongly reachable <em>from its own key's
+	 * association</em> until {@link #unpin} or {@link #remove}. The value then
+	 * lives exactly as long as {@code type} — like a plain
+	 * {@code java.lang.ClassValue} association: an immortal key retains it,
+	 * a collectible key releases it together with its loader. Implementations
+	 * must not root the value globally, which would extend a collectible key's
+	 * lifetime to the runtime's. No-op unless {@link #valuesReclaimable()}.
+	 *
+	 * @param type  the key class
+	 * @param value the current value for {@code type}
+	 */
+	default void pin(Class<?> type, T value) {
+	}
+
+	/**
+	 * Reverts {@link #pin}: the association holds {@code value} reclaimably
+	 * again. No-op when {@code value} is not the currently pinned value, and
+	 * unless {@link #valuesReclaimable()}.
+	 *
+	 * @param type  the key class
+	 * @param value the value to release
+	 */
+	default void unpin(Class<?> type, T value) {
+	}
 }

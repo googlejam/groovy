@@ -18,16 +18,23 @@
  */
 package groovy.json
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class JsonBuilderTest extends GroovyTestCase {
+import java.util.concurrent.atomic.AtomicBoolean
 
+import static groovy.test.GroovyAssert.shouldFail
+
+
+class JsonBuilderTest {
+
+    @Test
     void testJsonBuilderConstructor() {
         def json = new JsonBuilder([a: 1, b: true])
 
         assert json.toString() == '{"a":1,"b":true}'
     }
 
+    @Test
     void testEmptyArray() {
         def json = new JsonBuilder()
         json([])
@@ -35,6 +42,7 @@ class JsonBuilderTest extends GroovyTestCase {
         assert json.toString() == '[]'
     }
 
+    @Test
     void testSimpleArray() {
         def json = new JsonBuilder()
         json 1, 2, "a", "b"
@@ -42,6 +50,7 @@ class JsonBuilderTest extends GroovyTestCase {
         assert json.toString() == '[1,2,"a","b"]'
     }
 
+    @Test
     void testComplexArray() {
         def json = new JsonBuilder()
         json 1, 2, [k: true], "a", "b", [3, "c"]
@@ -49,6 +58,7 @@ class JsonBuilderTest extends GroovyTestCase {
         assert json.toString() == '[1,2,{"k":true},"a","b",[3,"c"]]'
     }
 
+    @Test
     void testMap() {
         def json = new JsonBuilder()
         json a: 1, b: 2
@@ -56,6 +66,7 @@ class JsonBuilderTest extends GroovyTestCase {
         assert json.toString() == '{"a":1,"b":2}'
     }
 
+    @Test
     void testEmptyObject() {
         def json = new JsonBuilder()
         json {}
@@ -63,6 +74,7 @@ class JsonBuilderTest extends GroovyTestCase {
         assert json.toString() == '{}'
     }
 
+    @Test
     void testBasicObject() {
         def json = new JsonBuilder()
         json {
@@ -73,7 +85,8 @@ class JsonBuilderTest extends GroovyTestCase {
 
         assert json.toString() == '{"a":1,"b":true,"c":null}'
     }
-    
+
+    @Test
     void testNestedObjects() {
         def json = new JsonBuilder()
         json {
@@ -87,6 +100,7 @@ class JsonBuilderTest extends GroovyTestCase {
         assert json.toString() == '{"a":{"b":{"c":1}}}'
     }
 
+    @Test
     void testStandardBuilderStyle() {
         def json = new JsonBuilder()
         json.person {
@@ -97,6 +111,7 @@ class JsonBuilderTest extends GroovyTestCase {
         assert json.toString() == '{"person":{"name":"Guillaume","age":33}}'
     }
 
+    @Test
     void testMethodCallWithNamedArguments() {
         def json = new JsonBuilder()
         json.person name: "Guillaume", age: 33
@@ -104,6 +119,7 @@ class JsonBuilderTest extends GroovyTestCase {
         assert json.toString() == '{"person":{"name":"Guillaume","age":33}}'
     }
 
+    @Test
     void testThrowAnExceptionWhenPassingSomethingElseThanAClosure() {
         def json = new JsonBuilder()
 
@@ -112,6 +128,7 @@ class JsonBuilderTest extends GroovyTestCase {
         }
     }
 
+    @Test
     void testListWithAnEmptyObject() {
         def json = new JsonBuilder()
         json([[:]])
@@ -119,6 +136,7 @@ class JsonBuilderTest extends GroovyTestCase {
         assert json.toString() == '[{}]'
     }
 
+    @Test
     void testListOfObjects() {
         def json = new JsonBuilder()
         json([name: "Guillaume"], [name: "Jochen"], [name: "Paul"])
@@ -126,6 +144,7 @@ class JsonBuilderTest extends GroovyTestCase {
         assert json.toString() == '[{"name":"Guillaume"},{"name":"Jochen"},{"name":"Paul"}]'
     }
 
+    @Test
     void testElementHasListOfObjects() {
         def json = new JsonBuilder()
         json.response {
@@ -139,6 +158,7 @@ class JsonBuilderTest extends GroovyTestCase {
         String name
     }
 
+    @Test
     void testCollectionAndClosure() {
         def authors = [new Author(name: "Guillaume"), new Author(name: "Jochen"), new Author(name: "Paul")]
 
@@ -150,6 +170,7 @@ class JsonBuilderTest extends GroovyTestCase {
         assert json.toString() == '[{"name":"Guillaume"},{"name":"Jochen"},{"name":"Paul"}]'
     }
 
+    @Test
     void testIterableAndClosure() {
         Iterable authorIterable = [iterator:{->
             [new Author(name: "Guillaume"), new Author(name: "Jochen"), new Author(name: "Paul")].iterator()
@@ -162,6 +183,7 @@ class JsonBuilderTest extends GroovyTestCase {
         assert json.toString() == '[{"name":"Guillaume"},{"name":"Jochen"},{"name":"Paul"}]'
     }
 
+    @Test
     void testMethodWithIterableAndClosure() {
         Iterable authorIterable = [iterator:{->
             [new Author(name: "Guillaume"), new Author(name: "Jochen"), new Author(name: "Paul")].iterator()
@@ -175,6 +197,7 @@ class JsonBuilderTest extends GroovyTestCase {
         assert json.toString() == '{"authors":[{"name":"Guillaume"},{"name":"Jochen"},{"name":"Paul"}]}'
     }
 
+    @Test
     void testNestedMethodWithIterableAndClosure() {
         Iterable authorIterable = [iterator:{->
             [new Author(name: "Guillaume"), new Author(name: "Jochen"), new Author(name: "Paul")].iterator()
@@ -190,6 +213,7 @@ class JsonBuilderTest extends GroovyTestCase {
         assert json.toString() == '{"authors":[{"name":"Guillaume"},{"name":"Jochen"},{"name":"Paul"}]}'
     }
 
+    @Test
     void testMethodWithArrayAndClosure() {
         def authorArray = [new Author(name: "Guillaume"), new Author(name: "Jochen"), new Author(name: "Paul")] as Author[]
         def json = new JsonBuilder()
@@ -200,6 +224,7 @@ class JsonBuilderTest extends GroovyTestCase {
         assert json.toString() == '{"authors":[{"name":"Guillaume"},{"name":"Jochen"},{"name":"Paul"}]}'
     }
 
+    @Test
     void testNestedMethodWithArrayAndClosure() {
         Author[] authorArray = [new Author(name: "Guillaume"), new Author(name: "Jochen"), new Author(name: "Paul")] as Author[]
         def json = new JsonBuilder()
@@ -212,6 +237,7 @@ class JsonBuilderTest extends GroovyTestCase {
         assert json.toString() == '{"authors":[{"name":"Guillaume"},{"name":"Jochen"},{"name":"Paul"}]}'
     }
 
+    @Test
     void testMethodWithCollectionAndClosure() {
         def authors = [new Author(name: "Guillaume"), new Author(name: "Jochen"), new Author(name: "Paul")]
 
@@ -223,6 +249,7 @@ class JsonBuilderTest extends GroovyTestCase {
         assert json.toString() == '{"authors":[{"name":"Guillaume"},{"name":"Jochen"},{"name":"Paul"}]}'
     }
 
+    @Test
     void testNestedMethodWithCollectionAndClosure() {
         def theAuthors = [new Author(name: "Guillaume"), new Author(name: "Jochen"), new Author(name: "Paul")]
 
@@ -236,6 +263,7 @@ class JsonBuilderTest extends GroovyTestCase {
         assert json.toString() == '{"authors":[{"name":"Guillaume"},{"name":"Jochen"},{"name":"Paul"}]}'
     }
 
+    @Test
     void testComplexStructureFromTheGuardian() {
         def json = new JsonBuilder()
         json.response {
@@ -271,6 +299,7 @@ class JsonBuilderTest extends GroovyTestCase {
                 '''{"response":{"status":"ok","userTier":"free","total":2413,"startIndex":1,"pageSize":10,"currentPage":1,"pages":242,"orderBy":"newest","results":[{"id":"world/video/2011/jan/19/tunisia-demonstrators-democracy-video","sectionId":"world","sectionName":"World news","webPublicationDate":"2011-01-19T15:12:46Z","webTitle":"Tunisian demonstrators demand new democracy - video","webUrl":"http://www.guardian.co.uk/world/video/2011/jan/19/tunisia-demonstrators-democracy-video","apiUrl":"http://content.guardianapis.com/world/video/2011/jan/19/tunisia-demonstrators-democracy-video"},{"id":"world/gallery/2011/jan/19/tunisia-protests-pictures","sectionId":"world","sectionName":"World news","webPublicationDate":"2011-01-19T15:01:09Z","webTitle":"Tunisia protests continue in pictures ","webUrl":"http://www.guardian.co.uk/world/gallery/2011/jan/19/tunisia-protests-pictures","apiUrl":"http://content.guardianapis.com/world/gallery/2011/jan/19/tunisia-protests-pictures"}]}}'''
     }
 
+    @Test
     void testNestedListMap() {
         def json = new JsonBuilder()
         json.content {
@@ -280,12 +309,14 @@ class JsonBuilderTest extends GroovyTestCase {
         assert json.toString() == '''{"content":{"list":[{},{"another":{"a":[1,2,3]}}]}}'''
     }
 
+    @Test
     void testEmptyList() {
         def json = new JsonBuilder()
         json()
         assert json.toString() == '''[]'''
     }
 
+    @Test
     void testTrendsFromTwitter() {
         def json = new JsonBuilder()
         json.trends {
@@ -310,6 +341,7 @@ class JsonBuilderTest extends GroovyTestCase {
         assert json.toString() == '''{"trends":{"2010-06-22 17:20":[{"name":"Groovy rules","query":"Groovy rules"},{"name":"#worldcup","query":"#worldcup"},{"name":"Uruguai","query":"Uruguai"}],"2010-06-22 06:20":[{"name":"#groovy","query":"#groovy"},{"name":"#java","query":"#java"}]}}'''
     }
 
+    @Test
     void testBuilderAsWritable() {
         def json = new JsonBuilder()
         json.person {
@@ -322,11 +354,12 @@ class JsonBuilderTest extends GroovyTestCase {
         assert output.toString() == '{"person":{"name":"Guillaume","age":33}}'
     }
 
+    @Test
     void testExampleFromTheGep7Page() {
-        def builder = new groovy.json.JsonBuilder()
+        def builder = new JsonBuilder()
         def root = builder.people {
             person {
-                firstName 'Guillame'
+                firstName 'Guillaume'
                 lastName 'Laforge'
                 // Maps are valid values for objects too
                 address(
@@ -342,9 +375,10 @@ class JsonBuilderTest extends GroovyTestCase {
         // creates a data structure made of maps (Json object) and lists (Json array)
         assert root instanceof Map
 
-        assert builder.toString() == '{"people":{"person":{"firstName":"Guillame","lastName":"Laforge","address":{"city":"Paris","country":"France","zip":12345},"married":true,"conferences":["JavaOne","Gr8conf"]}}}'
+        assert builder.toString() == '{"people":{"person":{"firstName":"Guillaume","lastName":"Laforge","address":{"city":"Paris","country":"France","zip":12345},"married":true,"conferences":["JavaOne","Gr8conf"]}}}'
     }
 
+    @Test
     void testEdgeCases() {
         def builder = new JsonBuilder()
 
@@ -358,14 +392,16 @@ class JsonBuilderTest extends GroovyTestCase {
         }
     }
 
+    @Test
     void testSupportForUUID() {
         def id = UUID.randomUUID()
-        def json = new groovy.json.JsonBuilder()
+        def json = new JsonBuilder()
         json { uuid id }
         assert json.toString() == "{\"uuid\":\"${id.toString()}\"}"
     }
 
     // GROOVY-4988
+    @Test
     void testStringEscape() {
         def original, serialized, deserialized
 
@@ -390,6 +426,7 @@ class JsonBuilderTest extends GroovyTestCase {
         assert original.elem == deserialized.elem
     }
 
+    @Test
     void testSpecialCharEscape() {
         assert new JsonBuilder({'"' 0}).toString() == '{"\\"":0}'
         assert new JsonBuilder({'\b' 0}).toString() == '{"\\b":0}'
@@ -402,13 +439,14 @@ class JsonBuilderTest extends GroovyTestCase {
         assert new JsonBuilder({'\u0002' 0}).toString() == '{"\\u0002":0}'
     }
 
+    @Test
     void testWithGenerator() {
         def generator = new JsonGenerator.Options()
                 .excludeNulls()
                 .dateFormat('yyyyMM')
                 .excludeFieldsByName('secretKey', 'creditCardNumber')
                 .excludeFieldsByType(URL)
-                .addConverter(java.util.concurrent.atomic.AtomicBoolean) { ab -> ab.get() }
+                .addConverter(AtomicBoolean) { ab -> ab.get() }
                 .build()
 
         def json = new JsonBuilder(generator)
@@ -419,7 +457,7 @@ class JsonBuilderTest extends GroovyTestCase {
             secretKey 'J79-A25'
             creditCardNumber '123-444-789-2233'
             site new URL('http://groovy-lang.org')
-            isActive new java.util.concurrent.atomic.AtomicBoolean(true)
+            isActive new AtomicBoolean(true)
         }
 
         assert json.toString() == '{"payload":{"id":"YT-1234","isActive":true}}'

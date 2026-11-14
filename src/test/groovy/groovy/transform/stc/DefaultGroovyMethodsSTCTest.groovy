@@ -1,0 +1,844 @@
+/*
+ *  Licensed to the Apache Software Foundation (ASF) under one
+ *  or more contributor license agreements.  See the NOTICE file
+ *  distributed with this work for additional information
+ *  regarding copyright ownership.  The ASF licenses this file
+ *  to you under the Apache License, Version 2.0 (the
+ *  "License"); you may not use this file except in compliance
+ *  with the License.  You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing,
+ *  software distributed under the License is distributed on an
+ *  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *  KIND, either express or implied.  See the License for the
+ *  specific language governing permissions and limitations
+ *  under the License.
+ */
+package groovy.transform.stc
+
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.shouldFail
+
+/**
+ * Unit tests for static type checking : default groovy methods.
+ */
+class DefaultGroovyMethodsSTCTest extends StaticTypeCheckingTestCase {
+
+    @Test
+    void testEach() {
+        assertScript '''
+            ['a','b'].each { // DGM#each(Object, Closure)
+                println it // DGM#println(Object,Object)
+            }
+        '''
+
+        assertScript '''
+            ['a','b'].eachWithIndex { it, i ->// DGM#eachWithIndex(Object, Closure)
+                println it // DGM#println(Object,Object)
+            }
+        '''
+    }
+
+    @Test
+    void testStringToInteger() {
+        assertScript '''
+            String name = "123"
+            name.toInteger() // toInteger() is defined by DGM
+        '''
+    }
+
+    @Test
+    void testVariousAssignmentsThenToInteger() {
+        assertScript '''
+            class A {
+                void foo() {}
+            }
+            def name = new A()
+            name.foo()
+            name = 1
+            name = '123'
+            name.toInteger() // toInteger() is defined by DGM
+        '''
+    }
+
+    @Test
+    void testMethodsOnPrimitiveTypes() {
+        assertScript '''
+            1.times { it }
+        '''
+
+        assertScript '''
+            true.equals { it }
+        '''
+    }
+
+    @Test
+    void testShouldAcceptMethodFromDefaultDateMethods() {
+      assertScript '''
+          def s = new Date()
+          println s.year
+          println s.format("yyyyMMdd")
+      '''
+    }
+
+    // GROOVY-5568, GROOVY-10815
+    @Test
+    void testPropertySemantics1() {
+        assertScript '''
+            String test(InputStream input) {
+                input.text // IOGroovyMethods#getText(InputStream)
+            }
+            assert test(new ByteArrayInputStream('foo'.bytes)) == 'foo'
+        '''
+
+        assertScript '''
+            def chars = new StringBuilder('foo').chars // StringGroovyMethods#getChars(CharSequence)
+            assert chars == new char[] {'f','o','o'}
+        '''
+
+        assertScript '''
+            def a = Character.valueOf((char) 'a')
+            assert a.letter // DefaultGroovyMethods#isLetter(Character)
+        '''
+
+        assertScript '''
+            class Pogo { String name } // Groovy type
+            Pogo pogo = new Pogo(name:'Frank Grimes')
+            def props = pogo.properties // DefaultGroovyMethods#getProperties(Object)
+            assert props.keySet() == ['name','class'] as Set
+        '''
+    }
+
+    // GROOVY-10075
+    @Test
+    void testPropertySemantics2() {
+        // see org.codehaus.groovy.runtime.m12n.TestStringExtension
+
+        assertScript '''
+            List<String> strings = ['x','y','z']
+            assert strings.getSequence() == 'x'
+            assert strings.getString() == 'x'
+            assert strings.sequence == 'x'
+            assert strings.string == 'x'
+        '''
+
+        shouldFailWithMessages '''
+            List<Number> numbers = [1, 2, 3]
+            numbers.getSequence()
+            numbers.getString()
+            numbers.sequence
+            numbers.string
+        ''',
+        'Cannot call <CS extends java.lang.CharSequence> org.codehaus.groovy.runtime.m12n.TestStringExtension#getSequence(java.util.List<CS>) with arguments [java.util.ArrayList<java.lang.Number>]',
+        'Cannot call org.codehaus.groovy.runtime.m12n.TestStringExtension#getString(java.util.List<java.lang.String>) with arguments [java.util.ArrayList<java.lang.Number>]',
+        'No such property: sequence for class: java.util.ArrayList',
+        'No such property: string for class: java.util.ArrayList'
+    }
+
+    // GROOVY-12534
+    @Test
+    void testListExtensionProperty() {
+        assertScript '''
+            class Person { String name }
+            class Row { String joined = 'p' }
+            class MyStrings extends ArrayList<String> {
+                String label = 'label'
+                String readLabel() { this.@label }
+            }
+
+            @groovy.transform.CompileStatic
+            class C {
+                String test(List<String> words) { words.joined }
+
+                void check() {
+                    List<String> words = ['x', 'y']
+                    assert words.getJoined() == 'x,y'
+                    assert words.joined == 'x,y'
+                    assert words.plural
+                    assert words?.joined == 'x,y'
+                    assert words.indices == 0..1
+                    assert words.sorted
+                    assert !words.empty
+
+                    @ASTTest(phase=INSTRUCTION_SELECTION, value={
+                        def expr = node.rightExpression
+                        assert !expr.spreadSafe
+                        def target = expr.getNodeMetaData(DIRECT_METHOD_CALL_TARGET)
+                        assert target instanceof org.codehaus.groovy.transform.stc.ExtensionMethodNode
+                        assert target.name == 'getJoined'
+                    })
+                    def joined = words.joined
+                    assert joined == 'x,y'
+
+                    List<String> empty = []
+                    assert empty.joined == ''
+                    assert !empty.plural
+                    assert empty.empty
+                    assert empty.sorted
+
+                    List<String> nothing = null
+                    assert nothing?.joined == null
+
+                    ArrayList<String> array = ['x', 'y']
+                    assert array.joined == 'x,y'
+                    assert array.arrayJoined == 'x:y'
+
+                    List<String> linked = new LinkedList<String>(['x', 'y'])
+                    assert linked.joined == 'x,y'
+                    List<String> fixed = Arrays.asList('x', 'y')
+                    assert fixed.joined == 'x,y'
+
+                    assert ['a', 'b'].sorted
+                    assert !(['b', 'a'] as List<String>).sorted
+
+                    List<Person> people = [new Person(name:'Joe'), new Person(name:'Bob')]
+                    assert people.name == ['Joe', 'Bob']
+                    assert people*.name == ['Joe', 'Bob']
+
+                    // getJoined(List<String>) does not apply to List<Row> under
+                    // @CompileStatic, which respects the receiver generics and
+                    // reads each element's property. The value ['p', 'p'] is
+                    // CS-specific: dynamic Groovy and @TypeChecked select that
+                    // extension by erasure, so this is not cross-mode semantics.
+                    List<Row> rows = [new Row(), new Row()]
+                    assert rows.joined == ['p', 'p']
+
+                    def mine = new MyStrings()
+                    mine.addAll(['x', 'y'])
+                    assert mine.joined == 'x,y'
+                    assert mine.arrayJoined == 'x:y'
+                    assert mine.label == 'label'
+                    assert mine.readLabel() == 'label'
+                    mine.label = 'renamed'
+                    assert mine.label == 'renamed'
+
+                    words.joined = 'a,b'
+                    assert words == ['a', 'b']
+                    assert words.joined == 'a,b'
+                }
+            }
+            assert new C().test(['x', 'y']) == 'x,y'
+            new C().check()
+        '''
+    }
+
+    // GROOVY-12534
+    @Test
+    void testListDeclaredFieldAndUnarySetter() {
+        assertScript '''
+            @groovy.transform.CompileStatic
+            class C {
+                void check(bugs.Groovy12534Support list) {
+                    list.add('x')
+
+                    // a field declared on the list is the list's own property
+                    @ASTTest(phase=INSTRUCTION_SELECTION, value={
+                        def expr = node.rightExpression
+                        assert !expr.spreadSafe
+                    })
+                    def tag = list.tag
+                    assert tag == 't'
+
+                    @ASTTest(phase=INSTRUCTION_SELECTION, value={
+                        def expr = node.rightExpression
+                        assert expr.leftExpression instanceof org.codehaus.groovy.ast.expr.PropertyExpression
+                        assert !expr.leftExpression.spreadSafe
+                    })
+                    def updatedTag = (list.tag = 'u')
+                    assert updatedTag == 'u'
+                    assert list.tag == 'u'
+
+                    // a one-argument setter declared on the list writes the list, not each element
+                    @ASTTest(phase=INSTRUCTION_SELECTION, value={
+                        def expr = node.rightExpression
+                        assert !expr.spreadSafe
+                        def target = expr.getNodeMetaData(DIRECT_METHOD_CALL_TARGET)
+                        assert target != null
+                        assert target.name == 'getMark'
+                    })
+                    def mark = list.mark
+                    assert mark == 'm'
+
+                    list.mark = 'renamed'
+                    assert list.mark == 'renamed'
+                    assert list == ['x']
+                    assert list.size() == 1
+                }
+            }
+            new C().check(new bugs.Groovy12534Support())
+        '''
+    }
+
+    // GROOVY-12534
+    @Test
+    void testListSubclassDeclaredFieldAndSpread() {
+        assertScript '''
+            class Person {
+                String name
+            }
+            class People extends ArrayList<Person> {
+                String name = 'the collection'
+            }
+            @groovy.transform.CompileStatic
+            def test() {
+                def people = new People()
+                people.add(new Person(name: 'Alice'))
+                people.add(new Person(name: 'Bob'))
+
+                assert people.name == 'the collection'
+                assert people*.name == ['Alice', 'Bob']
+            }
+            test()
+        '''
+    }
+
+    // GROOVY-12534
+    // see org.codehaus.groovy.runtime.m12n.TestStringExtension#getName
+    @Test
+    void testListSubclassExtensionPropertyAndSpread() {
+        assertScript '''
+            @groovy.transform.CompileStatic
+            def test() {
+                def people = new bugs.Groovy12534People()
+                people.add(new bugs.Groovy12534Person(name: 'Alice'))
+                people.add(new bugs.Groovy12534Person(name: 'Bob'))
+
+                assert people.name == 'the collection'
+                assert people*.name == ['Alice', 'Bob']
+            }
+            test()
+        '''
+    }
+
+    // GROOVY-12649
+    @Test
+    void testSetSubclassDeclaredFieldAndSpread() {
+        assertScript '''
+            class Person {
+                String name
+            }
+            class PeopleSet extends LinkedHashSet<Person> {
+                String name = 'the set'
+            }
+            @groovy.transform.CompileStatic
+            def test() {
+                def people = new PeopleSet()
+                people.add(new Person(name: 'Alice'))
+                people.add(new Person(name: 'Bob'))
+
+                assert people.name == 'the set'
+                assert people*.name == ['Alice', 'Bob']
+            }
+            test()
+        '''
+    }
+
+    // GROOVY-12649
+    @Test
+    void testSetSubclassDeclaredGetterAndSpread() {
+        assertScript '''
+            class Person {
+                String name
+            }
+            class PeopleSet extends LinkedHashSet<Person> {
+                String getName() { 'the set' }
+            }
+            @groovy.transform.CompileStatic
+            def test() {
+                def people = new PeopleSet()
+                people.add(new Person(name: 'Alice'))
+                people.add(new Person(name: 'Bob'))
+
+                assert people.name == 'the set'
+                assert people*.name == ['Alice', 'Bob']
+            }
+            test()
+        '''
+    }
+
+    // GROOVY-12649
+    // see org.codehaus.groovy.runtime.m12n.TestStringExtension#getName
+    @Test
+    void testSetSubclassExtensionPropertyAndSpread() {
+        assertScript '''
+            @groovy.transform.CompileStatic
+            def test() {
+                def people = new bugs.Groovy12649PeopleSet()
+                people.add(new bugs.Groovy12534Person(name: 'Alice'))
+                people.add(new bugs.Groovy12534Person(name: 'Bob'))
+
+                assert people.name == 'the set'
+                assert people*.name == ['Alice', 'Bob']
+            }
+            test()
+        '''
+    }
+
+    // GROOVY-12649
+    @Test
+    void testIterableDeclaredFieldAndSpread() {
+        assertScript '''
+            class Person {
+                String name
+            }
+            class People implements Iterable<Person> {
+                String name = 'the iterable'
+                List<Person> list = []
+                Iterator<Person> iterator() { list.iterator() }
+            }
+            @groovy.transform.CompileStatic
+            def test() {
+                def people = new People()
+                people.list.add(new Person(name: 'Alice'))
+                people.list.add(new Person(name: 'Bob'))
+
+                assert people.name == 'the iterable'
+                assert people*.name == ['Alice', 'Bob']
+            }
+            test()
+        '''
+    }
+
+    // GROOVY-12649
+    @Test
+    void testSetSubclassDeclaredFieldAndSpreadAssignment() {
+        assertScript '''
+            class Person {
+                String name
+            }
+            class PeopleSet extends LinkedHashSet<Person> {
+                String name = 'the set'
+            }
+            @groovy.transform.CompileStatic
+            def test() {
+                def people = new PeopleSet()
+                people.add(new Person(name: 'Alice'))
+                people.add(new Person(name: 'Bob'))
+
+                people*.name = 'Carol'
+                assert people*.name == ['Carol', 'Carol']
+                assert people.name == 'the set'
+            }
+            test()
+        '''
+    }
+
+    // GROOVY-12649
+    @Test
+    void testListSubclassDeclaredFieldAndSpreadAssignment() {
+        assertScript '''
+            class Person {
+                String name
+            }
+            class People extends ArrayList<Person> {
+                String name = 'the collection'
+            }
+            @groovy.transform.CompileStatic
+            def test() {
+                def people = new People()
+                people.add(new Person(name: 'Alice'))
+                people.add(new Person(name: 'Bob'))
+
+                def result = (people*.name = 'Carol')
+                assert result == ['Carol', 'Carol']
+                assert people*.name == ['Carol', 'Carol']
+                assert people.name == 'the collection'
+            }
+            test()
+        '''
+    }
+
+    // GROOVY-5584
+    @Test
+    void testEachOnMap() {
+        assertScript '''
+            import org.codehaus.groovy.transform.stc.ExtensionMethodNode
+            import org.codehaus.groovy.runtime.DefaultGroovyMethods
+
+            @ASTTest(phase=INSTRUCTION_SELECTION, value= {
+                def mn = node.rightExpression.getNodeMetaData(DIRECT_METHOD_CALL_TARGET)
+                assert mn
+                assert mn instanceof ExtensionMethodNode
+                assert mn.declaringClass == MAP_TYPE
+                def en = mn.extensionMethodNode
+                assert en.declaringClass == make(DefaultGroovyMethods)
+                assert en.parameters[0].type == MAP_TYPE
+            })
+            def x = [a:1, b:3].each { k, v -> "$k$v" }
+        '''
+    }
+
+    // GROOVY-6961
+    @Test
+    void testCollectMany() {
+        assertScript '''
+            class ListCompilerAndReverser {
+                static List<Integer> revlist(List<List<String>> list) {
+                    list.collectMany { strings ->
+                        strings.collect {
+                            it.toInteger()
+                        }
+                    } sort { int it ->
+                        -it
+                    }
+                }
+            }
+
+            assert ListCompilerAndReverser.revlist([["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"]]) == [9, 8, 7, 6, 5, 4, 3, 2, 1]
+        '''
+    }
+
+    // GROOVY-11073
+    @Test
+    void testArrayMaxOverloadSelection() {
+        assertScript '''import static org.codehaus.groovy.runtime.ArrayGroovyMethods.max
+            double[][] array2d = [ new double[0], new double[1], new double[2] ]
+            def theMax = max(array2d, { array1d -> array1d.length })
+            assert theMax instanceof double[]
+            assert theMax.length == 2
+        '''
+        assertScript '''
+            double[][] array2d = [ new double[0], new double[1], new double[2] ]
+            def theMax = array2d.max{ array1d -> array1d.length }
+            assert theMax instanceof double[]
+            assert theMax.length == 2
+        '''
+    }
+
+    // GROOVY-7283
+    @Test
+    void testArrayMinMaxSupportsOneAndTwoArgClosures() {
+        assertScript '''
+            Date now = new Date()
+            Date then = now + 7
+            def dates = [now, then] as Date[]
+            assert dates.min() == now
+            assert dates.max() == then
+            assert dates.min{ d -> d.time } == now
+            assert dates.max{ d1, d2 -> d2.time <=> d1.time } == now
+        '''
+    }
+
+    // GROOVY-7283
+    @Test
+    void testListWithDefault() {
+        assertScript '''
+            def list = [].withDefault{ it.longValue() }
+            //                         ^^ int parameter
+            list[0] = list[3]
+
+            assert list[0].class == Long
+            assert list[0] === 3L
+        '''
+    }
+
+    // GROOVY-7952
+    @Test
+    void testIsGetterMethodAsProperty() {
+        assertScript '''
+            assert !'abc'.allWhitespace
+        '''
+    }
+
+    // GROOVY-7976
+    @Test
+    void testSortMethodsWithComparatorAcceptingSubclass() {
+        assertScript '''
+            class SecondLetterComparator implements Comparator<CharSequence> {
+                int compare(CharSequence cs1, CharSequence cs2) {
+                    cs1.charAt(1) <=> cs2.charAt(1)
+                }
+            }
+
+            def orig1 = ['ant', 'rat', 'bug', 'dog']
+            def sorted1 = orig1.sort(false, new SecondLetterComparator())
+            assert orig1 == ['ant', 'rat', 'bug', 'dog']
+            assert sorted1 == ['rat', 'ant', 'dog', 'bug']
+
+            String[] orig2 = ['ant', 'rat', 'bug', 'dog']
+            def sorted2 = orig2.sort(false, new SecondLetterComparator())
+            assert orig2 == ['ant', 'rat', 'bug', 'dog']
+            assert sorted2 == ['rat', 'ant', 'dog', 'bug']
+            orig2.sort(new SecondLetterComparator())
+            assert orig2 == ['rat', 'ant', 'dog', 'bug']
+
+            def orig3 = [ant:5, rat:10, bug:15, dog:20]
+            def sorted3 = orig3.sort(new SecondLetterComparator())
+            assert orig3 == [ant:5, rat:10, bug:15, dog:20]
+            assert sorted3*.value == [10, 5, 20, 15]
+        '''
+    }
+
+    // GROOVY-7976, GROOVY-7992
+    @Test
+    void testSortMethodsWithComparatorAcceptingSuperclass() {
+        assertScript '''
+            List<Number> numbers = [2,1,3]
+            numbers.sort(new Comparator<Object>() {
+                int compare(o1, o2) {
+                    o1.toString() <=> o2.toString()
+                }
+            })
+            assert numbers == [1,2,3]
+        '''
+    }
+
+    // GROOVY-7992
+    @Test
+    void testMaxWithComparatorAcceptingSuperclass() {
+        assertScript '''
+            List<Number> numbers = [1,2,3]
+            // Cannot assign value of type Object to variable of type Number
+            Number highest = numbers.max(new Comparator<Object>() {
+                int compare(o1, o2) {
+                    o1.hashCode() <=> o2.hashCode()
+                }
+            })
+            assert highest == 3
+        '''
+    }
+
+    // GROOVY-8205
+    @Test
+    void testEachOnEnumValues() {
+        assertScript '''
+            enum Functions {
+                A, B, C
+            }
+            def m() {
+                def results = []
+                Functions.values().each { results << it.name() }
+                results
+            }
+            def m2() {
+                def results = [:]
+                Functions.values().eachWithIndex { val, idx -> results[idx] = val.name() }
+                results
+            }
+            assert m() == ['A', 'B', 'C']
+            assert m2() == [0: 'A', 1: 'B', 2: 'C']
+        '''
+    }
+
+    // GROOVY-11070
+    @Test
+    void testArrayGetAt1() {
+        String array = 'int[] array = [0, 1, 2, 3]'
+
+        assertScript array + '''
+            assert array?.getAt( 0) == 0
+            assert array?.getAt( 3) == 3
+            assert array?.getAt(-1) == 3
+            assert array?.getAt(-2) == 2
+            assert array?.getAt(-3) == 1
+            assert array?.getAt(-4) == 0
+        '''
+
+        shouldFail ArrayIndexOutOfBoundsException, array + '''
+            assert array?.getAt(4)
+        '''
+
+        shouldFail ArrayIndexOutOfBoundsException, array + '''
+            assert array?.getAt(-5)
+        '''
+    }
+
+    @Test
+    void testArrayGetAt2() {
+        assertScript '''
+            Serializable m() {
+                String[] arr = ['1','2','3']
+                arr.getAt(1)
+            }
+            assert m() == '2'
+        '''
+    }
+
+    @Test
+    void testArrayPutAt1() {
+        assertScript '''
+            Serializable[] arr = ['abc']
+            arr.putAt(0, new Integer(1))
+        '''
+
+        assertScript '''
+            Serializable[] arr = ['abc']
+            arr.putAt(0, 1)
+        '''
+    }
+
+    @Test
+    void testArrayPutAt2() {
+        shouldFailWithMessages '''
+            String[] arr = ['abc']
+            arr.putAt(0, new Object())
+        ''',
+        '#putAt(T[], int, U) with arguments [java.lang.String[], int, java.lang.Object]'
+
+        shouldFailWithMessages '''
+            Serializable[] arr = ['abc']
+            arr.putAt(0, new groovy.xml.XmlSlurper())
+        ''',
+        '#putAt(T[], int, U) with arguments [java.io.Serializable[], int, groovy.xml.XmlSlurper]'
+    }
+
+    @Test
+    void testListGetAtNext() {
+        assertScript '''
+            def list = [0, 1, 2, 3]
+            for (i in 1..2) {
+                list[i-1]++
+            }
+            assert list == [1, 2, 2, 3]
+        '''
+    }
+
+    // GROOVY-8840
+    @Test
+    void testListGetAtGetAtNext() {
+        assertScript '''
+            def test() {
+                def list = [0, 1, 2, 3]
+                List<Integer> other = [1]
+                list[other[0]]++
+                //   ^^^^^^^^ puts T on operand stack, not int/Integer
+                list
+            }
+            assert test() == [0, 2, 2, 3]
+        '''
+    }
+
+    @Test
+    void testListGetAtGetAtNext2() {
+        assertScript '''
+            def test() {
+                def list = [0, 1, 2, 3]
+                List<Integer> other = [1]
+                list[(int)other[0]]++
+                list
+            }
+            assert test() == [0, 2, 2, 3]
+        '''
+    }
+
+    @Test
+    void testListGetAtFirstNext() {
+        assertScript '''
+            def test() {
+                def list = [0, 1, 2, 3]
+                List<Integer> other = [1]
+                list[other.first()]++
+                list
+            }
+            assert test() == [0, 2, 2, 3]
+        '''
+    }
+
+    // GROOVY-9420
+    @Test
+    void testMapGetVsGetAt() {
+        assertScript '''
+            void check(String val) {
+                assert val == 'bar'
+            }
+
+            Object getKey() {
+                return 'foo'
+            }
+
+            void test() {
+                Map<String, String> map = [foo: 'bar']
+
+                def one = map.get(key)
+                check(one)
+
+                def two = map[key]
+                check(two)
+            }
+
+            test()
+        '''
+    }
+
+    // GROOVY-9529
+    @Test
+    void testMapGetAtVsObjectGetAt() {
+        assertScript '''
+            interface X extends Map<Object, Object> {}
+
+            interface Y extends X {}
+
+            class C extends HashMap<Object, Object> implements Y {}
+
+            Y newMap() {
+                new C().tap {
+                    put('foo', 'bar')
+                }
+            }
+
+            void test() {
+                def map = newMap()
+                assert map['foo'] == 'bar'
+            }
+
+            test()
+        '''
+    }
+
+    // GROOVY-11596
+    @Test
+    void testTapEveryTypeInference() {
+        assertScript '''
+            List<String> pets = ['canary', 'cat', 'cockroach']
+            pets.iterator().tapEvery { assert it.startsWith('c') }.collect()
+            pets.iterator().tapEvery(2) { assert contains('r') }.collect()
+        '''
+    }
+
+    // GROOVY-6668, GROOVY-8212
+    @Test
+    void testMapGetAtVsObjectGetAt2() {
+        assertScript '''
+            Map<String, String> map = [key:'val']
+
+            // no value type inference
+            assert map.getAt('key') == 'val'
+            assert map.getAt("${'key'}") == 'val'
+
+            // yes value type inference
+            assert map['key'].toUpperCase() == 'VAL'
+            assert map["${'key'}"].toUpperCase() == 'VAL'
+
+            assert map.get('key').toUpperCase() == 'VAL'
+            assert map.get("${'key'}")?.toUpperCase() == null // get(Object); no coerce
+        '''
+    }
+
+    // GROOVY-6668, GROOVY-8212
+    @Test
+    void testMapPutAtVsObjectPutAt() {
+        assertScript '''
+            Map<String, String> map = [:]
+
+            map['key'] = 'val'
+            assert map.remove('key') == 'val'
+
+            map["${'key'}"] = 'val'
+            assert map.remove('key') == 'val'
+
+            map.putAt('key','val')
+            assert map.remove('key') == 'val'
+
+            map.putAt("${'key'}",'val')
+            assert map.remove('key') == 'val'
+        '''
+        shouldFailWithMessages '''
+            Map<String, String> map = [:]
+            map.put("${'key'}",'val')
+        ''',
+        'Cannot call java.util.LinkedHashMap#put(java.lang.String, java.lang.String) with arguments [groovy.lang.GString, java.lang.String]'
+    }
+}

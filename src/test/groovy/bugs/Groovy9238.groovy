@@ -16,22 +16,21 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
 import groovy.transform.AnnotationCollector
 import groovy.transform.CompileStatic
 import groovy.transform.Immutable
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 import static groovy.test.GroovyAssert.assertScript
 
-@CompileStatic
 final class Groovy9238 {
 
     @Test
     void testAnnotationCollectorOfCollectedAnnotations() {
         assertScript '''
-            import groovy.bugs.Groovy9238.Collector
+            import bugs.Groovy9238.Collector
 
             @Collector
             class Pogo9238 {

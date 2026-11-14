@@ -37,18 +37,17 @@ import static org.objectweb.asm.Opcodes.ATHROW;
 import static org.objectweb.asm.Opcodes.DUP;
 import static org.objectweb.asm.Opcodes.INVOKESPECIAL;
 import static org.objectweb.asm.Opcodes.NEW;
-import static org.objectweb.asm.Opcodes.V1_3;
 
 /**
  * To generate a class that has all the fields and methods, except that fields are not initialized
- * and methods are empty. It's intended for being used as a place holder during code generation
+ * and methods are empty. It's intended for being used as a placeholder during code generation
  * of reference to the "this" class itself.
  */
 public class DummyClassGenerator extends ClassGenerator {
 
+    private final GeneratorContext context;
     private final ClassVisitor cv;
     private MethodVisitor mv;
-    private final GeneratorContext context;
 
     // current class details
     private ClassNode classNode;
@@ -56,29 +55,34 @@ public class DummyClassGenerator extends ClassGenerator {
     private String internalBaseClassName;
 
 
-    public DummyClassGenerator(
-            GeneratorContext context,
-            ClassVisitor classVisitor,
-            ClassLoader classLoader,
-            String sourceFile) {
+    /**
+     * Creates a new dummy class generator that produces class structures without implementation.
+     *
+     * @param context the generator context
+     * @param classVisitor the ASM class visitor to write to
+     * @param classLoader the class loader (currently unused)
+     * @param sourceFile the source file name (currently unused)
+     */
+    public DummyClassGenerator(final GeneratorContext context, final ClassVisitor classVisitor, final ClassLoader classLoader, final String sourceFile) {
         this.context = context;
         this.cv = classVisitor;
     }
 
+    //--------------------------------------------------------------------------
     // GroovyClassVisitor interface
-    //-------------------------------------------------------------------------
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
-    public void visitClass(ClassNode classNode) {
+    public void visitClass(final ClassNode classNode) {
         try {
             this.classNode = classNode;
             this.internalClassName = BytecodeHelper.getClassInternalName(classNode);
-
-            //System.out.println("Generating class: " + classNode.getName());
-
             this.internalBaseClassName = BytecodeHelper.getClassInternalName(classNode.getSuperClass());
 
             cv.visit(
-                    V1_3,
+                    classNode.getCompileUnit().getConfig().getBytecodeVersion(),
                     classNode.getModifiers(),
                     internalClassName,
                     null,
@@ -88,9 +92,8 @@ public class DummyClassGenerator extends ClassGenerator {
 
             classNode.visitContents(this);
 
-            for (ClassNode innerClass : innerClasses) {
-                ClassNode innerClassType = innerClass;
-                String innerClassInternalName = BytecodeHelper.getClassInternalName(innerClassType);
+            for (final ClassNode innerClass : innerClasses) {
+                String innerClassInternalName = BytecodeHelper.getClassInternalName(innerClass);
                 String outerClassName = internalClassName; // default for inner classes
                 MethodNode enclosingMethod = innerClass.getEnclosingMethod();
                 if (enclosingMethod != null) {
@@ -100,7 +103,7 @@ public class DummyClassGenerator extends ClassGenerator {
                 cv.visitInnerClass(
                         innerClassInternalName,
                         outerClassName,
-                        innerClassType.getName(),
+                        innerClass.getName(),
                         innerClass.getModifiers());
             }
             cv.visitEnd();
@@ -111,9 +114,11 @@ public class DummyClassGenerator extends ClassGenerator {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
-    public void visitConstructor(ConstructorNode node) {
-
+    public void visitConstructor(final ConstructorNode node) {
         visitParameters(node, node.getParameters());
 
         String methodType = BytecodeHelper.getMethodDescriptor(ClassHelper.VOID_TYPE, node.getParameters());
@@ -126,9 +131,11 @@ public class DummyClassGenerator extends ClassGenerator {
         mv.visitMaxs(0, 0);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
-    public void visitMethod(MethodNode node) {
-
+    public void visitMethod(final MethodNode node) {
         visitParameters(node, node.getParameters());
 
         String methodType = BytecodeHelper.getMethodDescriptor(node.getReturnType(), node.getParameters());
@@ -143,9 +150,11 @@ public class DummyClassGenerator extends ClassGenerator {
         mv.visitMaxs(0, 0);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
-    public void visitField(FieldNode fieldNode) {
-
+    public void visitField(final FieldNode fieldNode) {
         cv.visitField(
                 fieldNode.getModifiers(),
                 fieldNode.getName(),
@@ -155,31 +164,50 @@ public class DummyClassGenerator extends ClassGenerator {
     }
 
     /**
-     * Creates a getter, setter and field
+     * {@inheritDoc}
      */
     @Override
-    public void visitProperty(PropertyNode statement) {
+    public void visitProperty(final PropertyNode statement) {
     }
 
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void visitAnnotations(final AnnotatedNode node) {
+    }
+
+    /**
+     * Visits the parameters declared by the supplied member node.
+     *
+     * @param node the owning constructor or method
+     * @param parameters the parameters to visit
+     */
+    protected void visitParameters(final ASTNode node, final Parameter[] parameters) {
+        for (Parameter parameter : parameters) {
+            visitParameter(node, parameter);
+        }
+    }
+
+    /**
+     * Visits a single parameter declared by the supplied member node.
+     *
+     * @param node the owning constructor or method
+     * @param parameter the parameter to visit
+     */
+    protected void visitParameter(final ASTNode node, final Parameter parameter) {
+    }
+
+    /**
+     * Returns the compile unit associated with the class currently being emitted.
+     *
+     * @return the active compile unit
+     */
     protected CompileUnit getCompileUnit() {
         CompileUnit answer = classNode.getCompileUnit();
         if (answer == null) {
             answer = context.getCompileUnit();
         }
         return answer;
-    }
-
-    protected void visitParameters(ASTNode node, Parameter[] parameters) {
-        for (Parameter parameter : parameters) {
-            visitParameter(node, parameter);
-        }
-    }
-
-    protected void visitParameter(ASTNode node, Parameter parameter) {
-    }
-
-
-    @Override
-    public void visitAnnotations(AnnotatedNode node) {
     }
 }

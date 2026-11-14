@@ -16,22 +16,23 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class DefVariableBug extends GroovyTestCase {
-    
+final class DefVariableBug {
+
+    @Test
     void testBug() {
 
-     /* cpoirier - "def" can be refered to as a variable name,
+     /* cpoirier - "def" can be referred as a variable name,
         but cannot be declared as one (due to ambiguities)
 
         def = 123
-        
+
         assert def == 123
      */
-        
+
         def foo = new Expando(a:123, def:456)
         assert foo.def == 456
     }

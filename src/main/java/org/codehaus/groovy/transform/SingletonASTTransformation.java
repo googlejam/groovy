@@ -24,6 +24,7 @@ import org.codehaus.groovy.ast.AnnotationNode;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.ConstructorNode;
 import org.codehaus.groovy.ast.FieldNode;
+import org.codehaus.groovy.ast.MethodNode;
 import org.codehaus.groovy.ast.Parameter;
 import org.codehaus.groovy.ast.expr.Expression;
 import org.codehaus.groovy.ast.stmt.BlockStatement;
@@ -67,8 +68,7 @@ public class SingletonASTTransformation extends AbstractASTTransformation {
         AnnotatedNode parent = (AnnotatedNode) nodes[1];
         AnnotationNode node = (AnnotationNode) nodes[0];
 
-        if (parent instanceof ClassNode) {
-            ClassNode classNode = (ClassNode) parent;
+        if (parent instanceof ClassNode classNode) {
             String propertyName = getMemberStringValue(node, "property", "instance");
             boolean isLazy = memberHasValue(node, "lazy", true);
             boolean isStrict = !memberHasValue(node, "strict", false);
@@ -83,7 +83,18 @@ public class SingletonASTTransformation extends AbstractASTTransformation {
         createConstructor(classNode, fieldNode, propertyName, isStrict);
         final BlockStatement body = new BlockStatement();
         body.addStatement(isLazy ? lazyBody(classNode, fieldNode) : nonLazyBody(fieldNode));
-        addGeneratedMethod(classNode, getGetterName(propertyName), ACC_STATIC | ACC_PUBLIC, newClass(classNode), Parameter.EMPTY_ARRAY, ClassNode.EMPTY_ARRAY, body);
+
+        // GEP-21 Shape C: a stubber may have inserted a placeholder getter at
+        // CONVERSION so Foo.getInstance() appears in the joint-compilation
+        // stub. Replace its body rather than adding a duplicate method.
+        String getterName = getGetterName(propertyName);
+        MethodNode existing = classNode.getDeclaredMethod(getterName, Parameter.EMPTY_ARRAY);
+        if (StubberSupport.isStub(existing)) {
+            existing.setCode(body);
+            StubberSupport.clearStub(existing);
+        } else {
+            addGeneratedMethod(classNode, getterName, ACC_STATIC | ACC_PUBLIC, newClass(classNode), Parameter.EMPTY_ARRAY, ClassNode.EMPTY_ARRAY, body);
+        }
     }
 
     private static Statement nonLazyBody(FieldNode fieldNode) {
@@ -106,7 +117,11 @@ public class SingletonASTTransformation extends AbstractASTTransformation {
         );
     }
 
-    private static String getGetterName(String propertyName) {
+    /**
+     * Builds the getter name for the singleton accessor. Shared with
+     * {@link SingletonASTStubber} so both transforms agree on naming.
+     */
+    static String getGetterName(String propertyName) {
         return "get" + Character.toUpperCase(propertyName.charAt(0)) + propertyName.substring(1);
     }
 

@@ -32,52 +32,76 @@ import java.util.Set;
 
 import static org.apache.groovy.ast.tools.AnnotatedNodeUtils.hasAnnotation;
 import static org.apache.groovy.util.BeanUtils.decapitalize;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveBoolean;
 
+/**
+ * Utility methods for discovering and working with bean properties on {@link ClassNode} instances.
+ *
+ * <p>This utility supports JavaBean property conventions including:
+ * <ul>
+ *   <li>Explicit properties defined via the {@code @Property} annotation</li>
+ *   <li>Pseudo-properties from getter methods following JavaBean naming conventions (getXxx, isXxx)</li>
+ *   <li>Pseudo-properties from setter methods following JavaBean naming conventions (setXxx)</li>
+ *   <li>Inherited properties from superclasses and interfaces</li>
+ *   <li>Static property filtering</li>
+ * </ul>
+ *
+ * <p>Commonly used in AST transformation and type checking to analyze class structure and
+ * generate property access patterns.
+ *
+ * @see PropertyNode for property representation
+ * @see ClassNode for class information
+ */
 public class BeanUtils {
+    private BeanUtils() {}
+
     static final String GET_PREFIX = "get";
     static final String SET_PREFIX = "set";
     static final String IS_PREFIX = "is";
     private static final ClassNode INTERNAL_TYPE = ClassHelper.make(Internal.class);
 
     /**
-     * Get all properties including JavaBean pseudo properties matching getter conventions.
+     * Discovers all properties in a class, optionally including inherited and pseudo-properties.
+     * Pseudo-properties are derived from getter methods following JavaBean naming conventions.
      *
-     * @param type the ClassNode
-     * @param includeSuperProperties whether to include super properties
+     * @param type the {@link ClassNode} to analyze
+     * @param includeSuperProperties whether to include properties from superclasses
      * @param includeStatic whether to include static properties
-     * @param includePseudoGetters whether to include JavaBean pseudo (getXXX/isYYY) properties with no corresponding field
-     * @return the list of found property nodes
+     * @param includePseudoGetters whether to include pseudo-properties created from getXxx/isXxx methods
+     * @return a list of all discovered {@link PropertyNode}s, may be empty
+     * @see #getAllProperties(ClassNode, boolean, boolean, boolean, boolean, boolean)
      */
     public static List<PropertyNode> getAllProperties(ClassNode type, boolean includeSuperProperties, boolean includeStatic, boolean includePseudoGetters) {
         return getAllProperties(type, includeSuperProperties, includeStatic, includePseudoGetters, false, false);
     }
 
     /**
-     * Get all properties including JavaBean pseudo properties matching JavaBean getter or setter conventions.
+     * Discovers all properties in a class, optionally including both getter and setter pseudo-properties.
+     * Pseudo-properties include JavaBean getters (getXxx/isXxx) and setters (setXxx) without corresponding fields.
      *
-     * @param type the ClassNode
-     * @param includeSuperProperties whether to include super properties
+     * @param type the {@link ClassNode} to analyze
+     * @param includeSuperProperties whether to include properties from superclasses
      * @param includeStatic whether to include static properties
-     * @param includePseudoGetters whether to include JavaBean pseudo (getXXX/isYYY) properties with no corresponding field
-     * @param includePseudoSetters whether to include JavaBean pseudo (setXXX) properties with no corresponding field
-     * @param superFirst are properties gathered first from parent classes
-     * @return the list of found property nodes
+     * @param includePseudoGetters whether to include pseudo-properties from getter methods
+     * @param includePseudoSetters whether to include pseudo-properties from setter methods
+     * @param superFirst whether to list superclass properties before current class properties
+     * @return a list of all discovered {@link PropertyNode}s, with order controlled by superFirst, may be empty
      */
     public static List<PropertyNode> getAllProperties(ClassNode type, boolean includeSuperProperties, boolean includeStatic, boolean includePseudoGetters, boolean includePseudoSetters, boolean superFirst) {
-        return getAllProperties(type, type, new HashSet<String>(), includeSuperProperties, includeStatic, includePseudoGetters, includePseudoSetters, superFirst);
+        return getAllProperties(type, type, new HashSet<>(), includeSuperProperties, includeStatic, includePseudoGetters, includePseudoSetters, superFirst);
     }
 
     private static List<PropertyNode> getAllProperties(ClassNode origType, ClassNode type, Set<String> names, boolean includeSuperProperties, boolean includeStatic, boolean includePseudoGetters, boolean includePseudoSetters, boolean superFirst) {
         // TODO add generics support so this can be used for @EAHC
         if (type == null) {
-            return new ArrayList<PropertyNode>();
+            return new ArrayList<>();
         }
-        List<PropertyNode> result = new ArrayList<PropertyNode>();
+        List<PropertyNode> result = new ArrayList<>();
         if (superFirst && includeSuperProperties) {
             result.addAll(getAllProperties(origType, type.getSuperClass(), names, includeSuperProperties, includeStatic, includePseudoGetters, includePseudoSetters, superFirst));
         }
         addExplicitProperties(type, result, names, includeStatic);
-        addPseudoProperties(origType, type, result, names, includeStatic, includePseudoGetters, includePseudoSetters);
+        addPseudoProperties(origType, type, result, names, includeStatic, includePseudoGetters, includePseudoSetters, includeSuperProperties);
         if (!superFirst && includeSuperProperties) {
             result.addAll(getAllProperties(origType, type.getSuperClass(), names, includeSuperProperties, includeStatic, includePseudoGetters, includePseudoSetters, superFirst));
         }
@@ -95,14 +119,47 @@ public class BeanUtils {
         }
     }
 
+    /**
+     * Adds pseudo-properties for getters and setters to a property list.
+     * Pseudo-properties are created from methods following JavaBean naming conventions
+     * but without corresponding field declarations.
+     *
+     * @param origType the original type being analyzed (used for access checks)
+     * @param cNode the class node to scan for getter/setter methods
+     * @param result the list to accumulate discovered pseudo-properties
+     * @param names a set tracking property names already discovered (to prevent duplicates)
+     * @param includeStatic whether to include static methods
+     * @param includePseudoGetters whether to add properties from getter methods
+     * @param includePseudoSetters whether to add properties from setter methods
+     */
     public static void addPseudoProperties(ClassNode origType, ClassNode cNode, List<PropertyNode> result, Set<String> names, boolean includeStatic, boolean includePseudoGetters, boolean includePseudoSetters) {
+        addPseudoProperties(origType, cNode, result, names, includeStatic, includePseudoGetters, includePseudoSetters, true);
+    }
+
+    /**
+     * Adds pseudo-properties for getters and setters to a property list, optionally traversing superclasses.
+     * Pseudo-properties are created from methods following JavaBean naming conventions
+     * but without corresponding field declarations. Methods marked with {@code @Internal} are skipped.
+     *
+     * @param origType the original type being analyzed (used for access checks)
+     * @param cNode the class node to scan for getter/setter methods
+     * @param result the list to accumulate discovered pseudo-properties
+     * @param names a set tracking property names already discovered (to prevent duplicates)
+     * @param includeStatic whether to include static methods
+     * @param includePseudoGetters whether to add properties from getXxx/isXxx getter methods
+     * @param includePseudoSetters whether to add properties from setXxx setter methods
+     * @param traverseSuperClasses whether to include inherited methods from superclasses
+     */
+    public static void addPseudoProperties(ClassNode origType, ClassNode cNode, List<PropertyNode> result, Set<String> names, boolean includeStatic, boolean includePseudoGetters, boolean includePseudoSetters, boolean traverseSuperClasses) {
         if (!includePseudoGetters && !includePseudoSetters) return;
-        List<MethodNode> methods = cNode.getAllDeclaredMethods();
+        List<MethodNode> methods = traverseSuperClasses ?
+                cNode.getAllDeclaredMethods() :
+                cNode.getMethods();
         for (MethodNode mNode : methods) {
             if (!includeStatic && mNode.isStatic()) continue;
             if (hasAnnotation(mNode, INTERNAL_TYPE)) continue;
             String name = mNode.getName();
-            if ((name.length() <= 3 && !name.startsWith(IS_PREFIX)) || name.equals("getClass") || name.equals("getMetaClass") || name.equals("getDeclaringClass")) {
+            if ((name.length() <= 3 && !name.startsWith(IS_PREFIX)) || "getClass".equals(name) || "getMetaClass".equals(name) || "getDeclaringClass".equals(name)) {
                 // Optimization: skip invalid propertyNames
                 continue;
             }
@@ -120,7 +177,7 @@ public class BeanUtils {
                     // Simple getter
                     propName = decapitalize(name.substring(3));
                     getter = mNode.getCode();
-                } else if (includePseudoGetters && name.startsWith(IS_PREFIX) && paramType.equals(ClassHelper.boolean_TYPE)) {
+                } else if (includePseudoGetters && name.startsWith(IS_PREFIX) && isPrimitiveBoolean(paramType)) {
                     // boolean getter
                     propName = decapitalize(name.substring(2));
                     getter = mNode.getCode();

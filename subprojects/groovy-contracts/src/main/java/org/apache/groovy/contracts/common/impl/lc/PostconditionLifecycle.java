@@ -18,33 +18,51 @@
  */
 package org.apache.groovy.contracts.common.impl.lc;
 
-import org.apache.groovy.contracts.annotations.meta.Postcondition;
 import org.apache.groovy.contracts.common.base.BaseLifecycle;
+import org.apache.groovy.contracts.common.spi.Lifecycle;
 import org.apache.groovy.contracts.common.spi.ProcessingContextInformation;
 import org.apache.groovy.contracts.generation.CandidateChecks;
 import org.apache.groovy.contracts.generation.PostconditionGenerator;
-import org.apache.groovy.contracts.util.AnnotationUtils;
-import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
-import org.codehaus.groovy.ast.ConstructorNode;
 import org.codehaus.groovy.ast.MethodNode;
 
 /**
- * Internal {@link org.apache.groovy.contracts.common.spi.Lifecycle} implementation for post-conditions.
+ * Internal {@link Lifecycle} implementation for post-conditions.
  */
 public class PostconditionLifecycle extends BaseLifecycle {
 
+    /**
+     * Ensures the helper method for computing {@code old} values exists before postconditions are injected.
+     *
+     * @param processingContextInformation the current processing context
+     * @param classNode the class being prepared
+     */
     @Override
     public void beforeProcessingClassNode(ProcessingContextInformation processingContextInformation, ClassNode classNode) {
+        if (classNode.isInterface()) return;
         final PostconditionGenerator postconditionGenerator = new PostconditionGenerator(processingContextInformation.readerSource());
         postconditionGenerator.addOldVariablesMethod(classNode);
     }
 
+    /**
+     * Adds inherited default postconditions to the supplied constructor when needed.
+     *
+     * @param processingContextInformation the current processing context
+     * @param classNode the declaring class
+     * @param constructorNode the constructor to update
+     */
     @Override
     public void afterProcessingConstructorNode(ProcessingContextInformation processingContextInformation, ClassNode classNode, MethodNode constructorNode) {
         generatePostcondition(processingContextInformation, classNode, constructorNode);
     }
 
+    /**
+     * Adds inherited default postconditions to the supplied method when needed.
+     *
+     * @param processingContextInformation the current processing context
+     * @param classNode the declaring class
+     * @param methodNode the method to update
+     */
     @Override
     public void afterProcessingMethodNode(ProcessingContextInformation processingContextInformation, ClassNode classNode, MethodNode methodNode) {
         generatePostcondition(processingContextInformation, classNode, methodNode);
@@ -55,11 +73,6 @@ public class PostconditionLifecycle extends BaseLifecycle {
         if (!CandidateChecks.isPostconditionCandidate(classNode, methodNode)) return;
 
         final PostconditionGenerator postconditionGenerator = new PostconditionGenerator(processingContextInformation.readerSource());
-
-        if (!(methodNode instanceof ConstructorNode) && AnnotationUtils.getAnnotationNodeInHierarchyWithMetaAnnotation(classNode, methodNode, ClassHelper.makeWithoutCaching(Postcondition.class)).size() > 0) {
-            postconditionGenerator.generateDefaultPostconditionStatement(classNode, methodNode);
-        } else {
-            postconditionGenerator.generateDefaultPostconditionStatement(classNode, methodNode);
-        }
+        postconditionGenerator.generateDefaultPostconditionStatement(classNode, methodNode);
     }
 }

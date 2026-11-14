@@ -18,6 +18,8 @@
  */
 package groovy.console.ui
 
+import groovy.console.ui.Icons
+
 import javax.swing.KeyStroke
 import java.awt.Toolkit
 import java.awt.event.InputEvent
@@ -28,7 +30,7 @@ newFileAction = action(
         closure: controller.&fileNewFile,
         mnemonic: 'N',
         accelerator: shortcut('N'),
-        smallIcon: imageIcon(resource: 'icons/page.png', class: this),
+        smallIcon: Icons.menu('note_add'),
         shortDescription: 'New Groovy Script'
 )
 
@@ -44,7 +46,7 @@ openAction = action(
         closure: controller.&fileOpen,
         mnemonic: 'O',
         accelerator: shortcut('O'),
-        smallIcon: imageIcon(resource: 'icons/folder_page.png', class: this),
+        smallIcon: Icons.menu('folder_open'),
         shortDescription: 'Open Groovy Script'
 )
 
@@ -53,7 +55,7 @@ saveAction = action(
         closure: controller.&fileSave,
         mnemonic: 'S',
         accelerator: shortcut('S'),
-        smallIcon: imageIcon(resource: 'icons/disk.png', class: this),
+        smallIcon: Icons.menu('save'),
         shortDescription: 'Save Groovy Script',
         enabled: false // controller will enable as needed
 )
@@ -68,6 +70,7 @@ printAction = action(
         name: 'Print...',
         closure: controller.&print,
         mnemonic: 'P',
+        smallIcon: Icons.menu('print'),
         accelerator: shortcut('P')
 )
 
@@ -77,7 +80,7 @@ exitAction = action(
         mnemonic: 'X'
 // whether or not application exit should have an
 // accelerator is debatable in usability circles
-// at the very least a confirm dialog should dhow up
+// at the very least a confirm dialog should show up
 //accelerator: shortcut('Q')
 )
 
@@ -86,7 +89,7 @@ undoAction = action(
         closure: controller.&undo,
         mnemonic: 'U',
         accelerator: shortcut('Z'),
-        smallIcon: imageIcon(resource: 'icons/arrow_undo.png', class: this),
+        smallIcon: Icons.menu('undo'),
         shortDescription: 'Undo'
 )
 
@@ -95,7 +98,7 @@ redoAction = action(
         closure: controller.&redo,
         mnemonic: 'R',
         accelerator: shortcut('shift Z'), // is control-shift-Z or control-Y more common?
-        smallIcon: imageIcon(resource: 'icons/arrow_redo.png', class: this),
+        smallIcon: Icons.menu('redo'),
         shortDescription: 'Redo'
 )
 
@@ -104,7 +107,7 @@ findAction = action(
         closure: controller.&find,
         mnemonic: 'F',
         accelerator: shortcut('F'),
-        smallIcon: imageIcon(resource: 'icons/find.png', class: this),
+        smallIcon: Icons.menu('search'),
         shortDescription: 'Find'
 )
 
@@ -127,7 +130,7 @@ replaceAction = action(
         closure: controller.&replace,
         mnemonic: 'E',
         accelerator: shortcut('H'),
-        smallIcon: imageIcon(resource: 'icons/text_replace.png', class: this),
+        smallIcon: Icons.menu('find_replace'),
         shortDescription: 'Replace'
 )
 
@@ -136,7 +139,7 @@ cutAction = action(
         closure: controller.&cut,
         mnemonic: 'T',
         accelerator: shortcut('X'),
-        smallIcon: imageIcon(resource: 'icons/cut.png', class: this),
+        smallIcon: Icons.menuSubtleBlue('content_cut'),
         shortDescription: 'Cut'
 )
 
@@ -145,7 +148,7 @@ copyAction = action(
         closure: controller.&copy,
         mnemonic: 'C',
         accelerator: shortcut('C'),
-        smallIcon: imageIcon(resource: 'icons/page_copy.png', class: this),
+        smallIcon: Icons.menuSubtleBlue('content_copy'),
         shortDescription: 'Copy'
 )
 
@@ -154,7 +157,7 @@ pasteAction = action(
         closure: controller.&paste,
         mnemonic: 'P',
         accelerator: shortcut('V'),
-        smallIcon: imageIcon(resource: 'icons/page_paste.png', class: this),
+        smallIcon: Icons.menuSubtleBlue('content_paste'),
         shortDescription: 'Paste'
 )
 
@@ -162,6 +165,7 @@ selectAllAction = action(
         name: 'Select All',
         closure: controller.&selectAll,
         mnemonic: 'A',
+        smallIcon: Icons.menuSubtleBlue('select_all'),
         accelerator: shortcut('A')
 )
 
@@ -170,7 +174,7 @@ historyPrevAction = action(
         closure: controller.&historyPrev,
         mnemonic: 'P',
         accelerator: shortcut(KeyEvent.VK_COMMA),
-        smallIcon: imageIcon(resource: 'icons/book_previous.png', class: this),
+        smallIcon: Icons.menu('chevron_left'),
         shortDescription: 'Previous Groovy Script',
         enabled: false // controller will enable as needed
 )
@@ -180,7 +184,7 @@ historyNextAction = action(
         closure: controller.&historyNext,
         mnemonic: 'N',
         accelerator: shortcut(KeyEvent.VK_PERIOD),
-        smallIcon: imageIcon(resource: 'icons/book_next.png', class: this),
+        smallIcon: Icons.menu('chevron_right'),
         shortDescription: 'Next Groovy Script',
         enabled: false // controller will enable as needed
 )
@@ -190,7 +194,7 @@ clearOutputAction = action(
         closure: controller.&clearOutput,
         mnemonic: 'C',
         accelerator: shortcut('W'),
-        smallIcon: imageIcon(resource: 'icons/clear.png', class: this),
+        smallIcon: Icons.menu('delete_sweep'),
         shortDescription: 'Clear Output Area'
 )
 
@@ -200,7 +204,7 @@ runAction = action(
         mnemonic: 'R',
         keyStroke: shortcut('ENTER'),
         accelerator: shortcut('R'),
-        smallIcon: imageIcon(resource: 'icons/script_go.png', class: this),
+        smallIcon: Icons.menuGreen('play_arrow'),
         shortDescription: 'Execute Groovy Script'
 )
 
@@ -209,6 +213,7 @@ runJavaAction = action(
         closure: controller.&runJava,
         mnemonic: 'J',
         accelerator: shortcut('alt R'),
+        smallIcon: Icons.menuJavaBlue('coffee'),
         shortDescription: 'Execute Java Code'
 )
 
@@ -216,7 +221,7 @@ loopModeAction = action(
         name: 'Loop Mode',
         closure: controller.&loopMode,
         mnemonic: 'p',
-        shortDescription: 'Run script continuously in a loop when run is envoked. Uncheck to stop loop'
+        shortDescription: 'Run script continuously in a loop when run is invoked. Uncheck to stop loop'
 )
 
 runSelectionAction = action(
@@ -232,15 +237,23 @@ runJavaSelectionAction = action(
         closure: controller.&runSelectedJava
 )
 
+setScriptArgsAction = action(
+        name: 'Set Script Arguments',
+        closure: controller.&setScriptArgs,
+        mnemonic: 'G',
+)
+
 addClasspathJar = action(
         name: 'Add Jar(s) to ClassPath',
         closure: controller.&addClasspathJar,
+        smallIcon: Icons.menu('library_add'),
         mnemonic: 'J',
 )
 
 addClasspathDir = action(
         name: 'Add Directory to ClassPath',
         closure: controller.&addClasspathDir,
+        smallIcon: Icons.menu('create_new_folder'),
         mnemonic: 'D',
 )
 
@@ -252,6 +265,7 @@ listClasspath = action(
 clearClassloader = action(
         name: 'Clear Script Context',
         closure: controller.&clearContext,
+        smallIcon: Icons.menuAmber('bolt'),
         mnemonic: 'C',
 )
 
@@ -379,6 +393,7 @@ largerFontAction = action(
         name: 'Larger Font',
         closure: controller.&largerFont,
         mnemonic: 'L',
+        smallIcon: Icons.menu('text_increase'),
         accelerator: shortcut('shift L')
 )
 
@@ -386,6 +401,7 @@ smallerFontAction = action(
         name: 'Smaller Font',
         closure: controller.&smallerFont,
         mnemonic: 'S',
+        smallIcon: Icons.menu('text_decrease'),
         accelerator: shortcut('shift S')
 )
 
@@ -394,9 +410,20 @@ smartHighlighterAction = action(
         closure: controller.&smartHighlighter
 )
 
+compilerAssistanceAction = action(
+        name: 'Compiler Assistance',
+        closure: controller.&compilerAssistance
+)
+
+completionShortcutAction = action(
+        name: 'Completion Shortcut...',
+        closure: controller.&completionShortcut
+)
+
 aboutAction = action(
         name: 'About',
         closure: controller.&showAbout,
+        smallIcon: Icons.menuBlue('info'),
         mnemonic: 'A'
 )
 
@@ -410,7 +437,7 @@ interruptAction = action(
         name: 'Interrupt',
         closure: controller.&doInterrupt,
         mnemonic: 'T',
-        smallIcon: imageIcon(resource: 'icons/cross.png', class: this),
+        smallIcon: Icons.menuRed('stop_circle'),
         shortDescription: 'Interrupt Running Script',
         enabled: false // controller will enable as needed
 )
@@ -451,4 +478,54 @@ preferencesAction = action(
         closure: controller.&preferences,
         mnemonic: 'S',
         shortDescription: 'Preference Settings'
+)
+
+lightThemeAction = action(
+        name: 'Light',
+        closure: controller.&lightTheme,
+        shortDescription: 'Light theme'
+)
+
+darkThemeAction = action(
+        name: 'Dark',
+        closure: controller.&darkTheme,
+        shortDescription: 'Dark theme'
+)
+
+systemThemeAction = action(
+        name: 'System',
+        closure: controller.&systemTheme,
+        shortDescription: 'Follow system theme'
+)
+
+cycleThemeAction = action(
+        name: 'Theme',
+        closure: controller.&cycleTheme,
+        smallIcon: Icons.menu('refresh'),
+        shortDescription: 'Cycle theme (' + ThemeManager.themeLabel + ')'
+)
+
+smallIconsAction = action(
+        name: 'Small',
+        closure: controller.&smallIcons,
+        shortDescription: 'Small toolbar icons'
+)
+
+normalIconsAction = action(
+        name: 'Normal',
+        closure: controller.&normalIcons,
+        shortDescription: 'Normal toolbar icons'
+)
+
+largeIconsAction = action(
+        name: 'Large',
+        closure: controller.&largeIcons,
+        shortDescription: 'Large toolbar icons'
+)
+
+scaleIconsWithFontAction = action(
+        name: 'Scale Icons with Font',
+        closure: controller.&scaleIconsWithFont,
+        mnemonic: 'I',
+        shortDescription: 'Toolbar icons grow/shrink with font size'
 )

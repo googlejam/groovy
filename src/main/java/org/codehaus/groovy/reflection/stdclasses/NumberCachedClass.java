@@ -21,14 +21,33 @@ package org.codehaus.groovy.reflection.stdclasses;
 import org.codehaus.groovy.reflection.CachedClass;
 import org.codehaus.groovy.reflection.ClassInfo;
 
+import java.math.BigDecimal;
 import java.math.BigInteger;
 
+/**
+ * Base class for optimized reflection caching of numeric types.
+ * Provides common type coercion logic for primitive and boxed numeric types,
+ * as well as {@link BigInteger} and {@link BigDecimal}.
+ */
 public class NumberCachedClass extends CachedClass {
 
+    /**
+     * Constructs a cached class representation for a numeric class.
+     *
+     * @param klazz the numeric class to cache
+     * @param classInfo the class information associated with this cached class
+     */
     public NumberCachedClass(Class klazz, ClassInfo classInfo) {
         super(klazz, classInfo);
     }
 
+    /**
+     * Coerces the given argument if it is a {@link Number}.
+     * Delegates to {@link #coerceNumber} for specialized conversion logic.
+     *
+     * @param argument the argument to coerce
+     * @return the coerced number or the original argument if not a {@link Number}
+     */
     @Override
     public Object coerceArgument(Object argument) {
         if (argument instanceof Number) {
@@ -38,6 +57,13 @@ public class NumberCachedClass extends CachedClass {
 
     }
 
+    /**
+     * Determines if the given class can be transformed to this numeric type.
+     * Accepts {@code null}, {@link Number} subclasses, and primitive numeric types.
+     *
+     * @param classToTransformFrom the source class to check
+     * @return {@code true} if the class can be transformed to this numeric type, {@code false} otherwise
+     */
     @Override
     public boolean isAssignableFrom(Class classToTransformFrom) {
         return classToTransformFrom == null
@@ -51,6 +77,13 @@ public class NumberCachedClass extends CachedClass {
                 ;
     }
 
+    /**
+     * Performs specialized numeric coercion for the target type.
+     * Subclasses override this to provide type-specific conversion logic.
+     *
+     * @param argument the numeric argument to coerce
+     * @return the coerced value
+     */
     private Object coerceNumber(Object argument) {
         Class param = getTheClass();
         if (param == Byte.class /*|| param == Byte.TYPE*/) {

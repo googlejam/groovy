@@ -18,40 +18,64 @@
  */
 package org.codehaus.groovy.antlr;
 
-import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.expr.ConstantExpression;
 import org.codehaus.groovy.ast.expr.Expression;
 
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveBoolean;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveByte;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveChar;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveDouble;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveFloat;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveInt;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveLong;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveShort;
+
+/**
+ * Default constants for primitive {@link ClassNode}s.
+ */
 public class PrimitiveHelper {
+
     private PrimitiveHelper() {
     }
 
-    public static Expression getDefaultValueForPrimitive(ClassNode type) {
-        if (type == ClassHelper.int_TYPE) {
-            return new ConstantExpression(0);
+    /**
+     * Returns a zero or {@code false} constant for one of the eight primitive types.
+     * {@code int}, {@code long}, {@code double}, {@code float}, {@code char}, and
+     * {@code boolean} keep that primitive type. {@code byte} and {@code short} are stored
+     * as those values, but {@link ConstantExpression} types them as the boxed class.
+     * {@code void} and reference types return {@code null}.
+     *
+     * @param type the type whose default constant is required
+     * @return that constant, or {@code null} when {@code type} is not a numeric or boolean primitive
+     */
+    public static Expression getDefaultValueForPrimitive(final ClassNode type) {
+        if (isPrimitiveInt(type)) {
+            return new ConstantExpression(0, true);
         }
-        if (type == ClassHelper.long_TYPE) {
-            return new ConstantExpression(0L);
+        if (isPrimitiveLong(type)) {
+            return new ConstantExpression(0L, true);
         }
-        if (type == ClassHelper.double_TYPE) {
-            return new ConstantExpression(0.0);
+        if (isPrimitiveDouble(type)) {
+            return new ConstantExpression(0.0, true);
         }
-        if (type == ClassHelper.float_TYPE) {
-            return new ConstantExpression(0.0F);
+        if (isPrimitiveBoolean(type)) {
+            return new ConstantExpression(Boolean.FALSE, true);
         }
-        if (type == ClassHelper.boolean_TYPE) {
-            return ConstantExpression.FALSE;
+
+        if (isPrimitiveByte(type)) {
+            return new ConstantExpression((byte) 0, true);
         }
-        if (type == ClassHelper.short_TYPE) {
-            return new ConstantExpression((short) 0);
+        if (isPrimitiveChar(type)) {
+            return new ConstantExpression((char) 0, true);
         }
-        if (type == ClassHelper.byte_TYPE) {
-            return new ConstantExpression((byte) 0);
+        if (isPrimitiveFloat(type)) {
+            return new ConstantExpression((float) 0, true);
         }
-        if (type == ClassHelper.char_TYPE) {
-            return new ConstantExpression((char) 0);
+        if (isPrimitiveShort(type)) {
+            return new ConstantExpression((short) 0, true);
         }
+
         return null;
     }
 }

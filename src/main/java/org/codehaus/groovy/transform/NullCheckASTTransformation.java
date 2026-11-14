@@ -41,22 +41,28 @@ import java.util.List;
 
 import static org.apache.groovy.ast.tools.AnnotatedNodeUtils.isGenerated;
 import static org.apache.groovy.ast.tools.MethodNodeUtils.getCodeAsBlock;
-import static org.codehaus.groovy.ast.ClassHelper.make;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.constX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.ctorX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.ifS;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.isNullX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.param;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.params;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.throwS;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.varX;
+import static org.codehaus.groovy.transform.stc.StaticTypesMarker.DIRECT_METHOD_CALL_TARGET;
 
 /**
  * Handles generation of code for the @NullCheck annotation.
  */
 @GroovyASTTransformation(phase = CompilePhase.INSTRUCTION_SELECTION)
 public class NullCheckASTTransformation extends AbstractASTTransformation {
-    public static final ClassNode NULL_CHECK_TYPE = make(NullCheck.class);
+    /**
+     * {@link ClassNode} for {@link NullCheck}. {@link #visit} ignores any other annotation.
+     */
+    public static final ClassNode NULL_CHECK_TYPE = ClassHelper.make(NullCheck.class);
     private static final String NULL_CHECK_NAME = "@" + NULL_CHECK_TYPE.getNameWithoutPackage();
     private static final ClassNode EXCEPTION = ClassHelper.make(IllegalArgumentException.class);
+    private static final ConstructorNode EXCEPTION_STRING_CTOR = EXCEPTION.getDeclaredConstructor(params(param(ClassHelper.STRING_TYPE, "s")));
     private static final String NULL_CHECK_IS_PROCESSED = "NullCheck.isProcessed";
 
     @Override
@@ -67,8 +73,7 @@ public class NullCheckASTTransformation extends AbstractASTTransformation {
         if (!NULL_CHECK_TYPE.equals(anno.getClassNode())) return;
         boolean includeGenerated = isIncludeGenerated(anno);
 
-        if (parent instanceof ClassNode) {
-            ClassNode cNode = (ClassNode) parent;
+        if (parent instanceof ClassNode cNode) {
             if (!checkNotInterface(cNode, NULL_CHECK_NAME)) return;
             for (ConstructorNode cn : cNode.getDeclaredConstructors()) {
                 adjustMethod(cn, includeGenerated);
@@ -86,6 +91,14 @@ public class NullCheckASTTransformation extends AbstractASTTransformation {
         return memberHasValue(anno, "includeGenerated", true);
     }
 
+    /**
+     * Reports whether {@code cNode} carries {@link NullCheck} with {@code includeGenerated}
+     * set to the constant {@code true}. No such annotation, or a non-constant member,
+     * returns {@code false}. Only the first {@link NullCheck} on the class is read.
+     *
+     * @param cNode the class whose annotations are inspected
+     * @return {@code true} when generated members should receive null checks
+     */
     public static boolean hasIncludeGenerated(ClassNode cNode) {
         List<AnnotationNode> annotations = cNode.getAnnotations(NULL_CHECK_TYPE);
         if (annotations.isEmpty()) return false;
@@ -124,8 +137,17 @@ public class NullCheckASTTransformation extends AbstractASTTransformation {
         mn.setCode(newCode);
     }
 
-    public static ThrowStatement makeThrowStmt(String name) {
-        return throwS(ctorX(EXCEPTION, constX(name + " cannot be null")));
+    /**
+     * Builds {@code throw new IllegalArgumentException(variableName + " cannot be null")},
+     * and marks the {@code String} constructor as the direct call target.
+     *
+     * @param variableName name inserted into the exception message
+     * @return the throw statement inserted for a null parameter
+     */
+    public static ThrowStatement makeThrowStmt(final String variableName) {
+        ConstructorCallExpression newException = ctorX(EXCEPTION, constX(variableName + " cannot be null"));
+        newException.putNodeMetaData(DIRECT_METHOD_CALL_TARGET, EXCEPTION_STRING_CTOR); // GROOVY-10178
+        return throwS(newException);
     }
 
     /**

@@ -16,13 +16,14 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
 import org.codehaus.groovy.dummy.FooHandler
+import org.junit.jupiter.api.Test
 
-class InterfaceImplBug extends GroovyTestCase implements FooHandler {
+class InterfaceImplBug implements FooHandler {
 
+    @Test
     void testMethodCall() {
         handle(null)
     }

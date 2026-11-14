@@ -116,60 +116,80 @@ NOTE: The `#` character must be the first character of the file. Any indentation
 
 == Keywords
 
-The following list represents all the keywords of the Groovy language:
+Groovy has the following reserved keywords:
 
 [cols="1,1,1,1"]
-.Keywords
+.Reserved Keywords
 |===
-|as
-|assert
-|break
-|case
-
-|catch
-|class
-|const
-|continue
-
-|def
-|default
-|do
-|else
-
-|enum
-|extends
-|false
-|finally
-
-|for
-|goto
-|if
-|implements
-
-|import
-|in
-|instanceof
-|interface
-
-|new
-|null
-|package
-|return
-
-|super
-|switch
-|this
-|throw
-
-|throws
-|trait
-|true
-|try
-
-|var
-|while | |
-
+include::../test/SyntaxTest.groovy[tags=reserved_keywords,indent=0]
 |===
+
+Of these, `const`, `goto`, `strictfp`, and `threadsafe` are not currently in use.
+Using `const`, `goto`, or `threadsafe` is a compilation error: the diagnostic
+names the reserved keyword and, for `const`, points at `val` (locals) or
+`static final` (class constants). A `default:` or
+`default ->` clause outside a `switch` is reported as `'default' outside of switch`.
+Unexpected Unicode spaces (for example a no-break space copied from a word
+processor) are named with a `\u` escape rather than an empty-looking glyph.
+
+The reserved keywords can't in general be used for variable, field and method names.
+
+****
+A trick allows methods to be defined having the same name as a keyword
+by surrounding the name in quotes as shown in the following example:
+
+[source,groovy]
+----
+include::../test/SyntaxTest.groovy[tags=reserved_keywords_example,indent=0]
+----
+
+Using such names might be confusing and is often best to avoid.
+The trick is primarily intended to enable certain Java integration scenarios
+and certain link:core-domain-specific-languages.html[DSL] scenarios where
+having "verbs" and "nouns" with the same name as keywords may be desirable.
+****
+
+In addition, Groovy has the following contextual keywords:
+
+[cols="1,1,1,1"]
+.Contextual Keywords
+|===
+include::../test/SyntaxTest.groovy[tags=contextual_keywords,indent=0]
+|===
+
+These words are only keywords in certain contexts and can be more freely used in some places,
+in particular for variables, fields and method names.
+
+****
+This extra lenience allows using method or variable names that were not keywords in earlier
+versions of Groovy or are not keywords in Java. Examples are shown here:
+
+[source,groovy]
+----
+include::../test/SyntaxTest.groovy[tags=contextual_keywords_examples,indent=0]
+----
+Groovy programmers familiar with these contextual keywords may still wish to avoid
+using those names unless there is a good reason to use such a name.
+****
+
+The restrictions on reserved keywords also apply for the
+primitive types, the boolean literals and the null literal (all of which are discussed later):
+
+[cols="1,1,1,1"]
+.Other reserved words
+|===
+include::../test/SyntaxTest.groovy[tags=reserved_words,indent=0]
+|===
+
+****
+While not recommended, the same trick as for reserved keywords can be used:
+[source,groovy]
+----
+include::../test/SyntaxTest.groovy[tags=reserved_words_example,indent=0]
+----
+Using such words as method names is potentially confusing and is often best to avoid, however,
+it might be useful for certain kinds of link:core-domain-specific-languages.html[DSLs].
+****
 
 == Identifiers
 
@@ -355,11 +375,15 @@ Some special characters also use the backslash as escape character:
 |double quote within a double-quoted string (and optional for triple-double-quoted and single-quoted strings)
 |====
 
+An unknown letter escape such as `\U` in `"C:\Users"` is a compilation error
+(`Illegal escape character`). Write a literal backslash as `\\`, or use a
+slashy / dollar-slashy string for Windows paths and regexes.
+
 We'll see some more escaping details when it comes to other types of strings discussed later.
 
 ==== Unicode escape sequence
 
-For characters that are not present on your keyboard, you can use unicode escape sequences: 
+For characters that are not present on your keyboard, you can use unicode escape sequences:
 a backslash, followed by 'u', then 4 hexadecimal digits.
 
 For example, the Euro currency symbol can be represented with:
@@ -409,7 +433,7 @@ include::../test/SyntaxTest.groovy[tags=gstring_2,indent=0]
 
 [NOTE]
 Not only are expressions allowed in between the `${}` placeholder, but so are statements. However, a statement's value is just `null`.
-So if several statements are inserted in that placeholder, the last one should somehow return a meaningful value to be inserted. 
+So if several statements are inserted in that placeholder, the last one should somehow return a meaningful value to be inserted.
 For instance, +"The sum of 1 and 2 is equal to ${def a = 1; def b = 2; a + b}"+ is supported and works as expected but a good practice is usually to stick to simple expressions inside GString placeholders.
 
 In addition to `${}` placeholders, we can also use a lone `$` sign prefixing a dotted expression:
@@ -486,7 +510,7 @@ resulting in an updated string containing the new number value.
 
 [NOTE]
 An embedded closure expression taking more than one parameter will generate an exception at runtime.
-Only closures with zero or one parameters are allowed.
+Only closures with zero or one parameter are allowed.
 
 ==== Interoperability with Java
 
@@ -499,10 +523,27 @@ the `toString()` method of the GString is automatically and transparently called
 include::../test/SyntaxTest.groovy[tags=java_gstring_interop_1,indent=0]
 ----
 <1> We create a GString variable
-<2> We double check it's an instance of the GString
+<2> We double-check it's an instance of the GString
 <3> We then pass that GString to a method taking a String as parameter
 <4> The signature of the `takeString()` method explicitly says its sole parameter is a String
 <5> We also verify that the parameter is indeed a String and not a GString.
+
+==== GStrings in collections of Strings
+
+Generic types are not checked at runtime, so when dynamic code adds a GString to a collection
+declared to hold Strings, such as a `List<String>`, the element remains a GString.
+Groovy converts it where a String is required when the element is read back,
+with the same results in dynamic and statically compiled code:
+
+[source,groovy]
+----
+include::../test/SyntaxTest.groovy[tags=gstring_in_string_list,indent=0]
+----
+<1> The list is filled by dynamic code, so its element is a GString
+<2> Assigning the element to a `String` variable converts it, as passing it to a `String` parameter would
+<3> Calling a method that only `String` has also works on the GString
+<4> A variable of a wider type, such as `CharSequence` or `Object`, keeps the GString, and that type's methods work as usual
+<5> `==` compares the text, whereas `equals` behaves as in Java, so a GString is never equal to a String
 
 ==== GString and String hashCodes
 
@@ -541,7 +582,7 @@ NOTE: Neither double quotes nor single quotes need be escaped in triple-double-q
 === Slashy string
 
 Beyond the usual quoted strings, Groovy offers slashy strings, which use `/` as the opening and closing delimiter.
-Slashy strings are particularly useful for defining regular expressions and patterns, 
+Slashy strings are particularly useful for defining regular expressions and patterns,
 as there is no need to escape backslashes.
 
 Example of a slashy string:
@@ -574,7 +615,7 @@ include::../test/SyntaxTest.groovy[tags=slashy_4,indent=0]
 
 ==== Special cases
 
-An empty slashy string cannot be represented with a double forward slash, as it's understood by the Groovy parser as a line comment. 
+An empty slashy string cannot be represented with a double forward slash, as it's understood by the Groovy parser as a line comment.
 That's why the following assert would actually not compile as it would look like a non-terminated statement:
 
 [source,groovy]
@@ -590,7 +631,7 @@ that in fact escaping is not supported. The slashy string `/\t/` won't contain a
 a backslash followed by the character 't'. Escaping is only allowed for the slash character, i.e. `/\/folder/`
 will be a slashy string containing `'/folder'`. A consequence of slash escaping is that a slashy string
 can't end with a backslash. Otherwise that will escape the slashy string terminator.
-You can instead use a special trick, `/ends with slash ${'\'}/`. But best just avoid using a slashy string in such a case.
+You can instead use a special trick, `/ends with slash ${'\\'}/`. But best just avoid using a slashy string in such a case.
 
 === Dollar slashy string
 
@@ -718,7 +759,7 @@ include::../test/SyntaxTest.groovy[tags=list_2,indent=0]
 <1> Our list here contains a number, a string and a boolean value
 
 We mentioned that by default, list literals are actually instances of `java.util.ArrayList`,
-but it is possible to use a different backing type for our lists, 
+but it is possible to use a different backing type for our lists,
 thanks to using type coercion with the `as` operator, or with explicit type declaration for your variables:
 
 [source,groovy]
@@ -743,19 +784,19 @@ include::../test/SyntaxTest.groovy[tags=subscript_and_leftshift,indent=0]
 <5> Access two elements at once, returning a new list containing those two elements
 <6> Use a range to access a range of values from the list, from a start to an end element position
 
-As lists can be heterogeneous in nature, lists can also contain other lists to create multi-dimensional lists:
+As lists can be heterogeneous in nature, lists can also contain other lists to create multidimensional lists:
 
 [source,groovy]
 ----
 include::../test/SyntaxTest.groovy[tags=multi_dim_list,indent=0]
 ----
-<1> Define a list of list of numbers
+<1> Define a list of numbers
 <2> Access the second element of the top-most list, and the first element of the inner list
 
 == Arrays
 
-Groovy reuses the list notation for arrays, but to make such literals arrays, 
-you need to explicitely define the type of the array through coercion or type declaration.
+Groovy reuses the list notation for arrays, but to make such literals arrays,
+you need to explicitly define the type of the array through coercion or type declaration.
 
 [source,groovy]
 ----
@@ -813,7 +854,7 @@ assert groovyBooks.every{ it.contains('Groovy') }
 == Maps
 
 Sometimes called dictionaries or associative arrays in other languages, Groovy features maps.
-Maps associate keys to values, separating keys and values with colons, and each key/value pairs with commas, 
+Maps associate keys to values, separating keys and values with colons, and each key/value pairs with commas,
 and the whole keys and values surrounded by square brackets.
 
 [source,groovy]
@@ -862,8 +903,8 @@ include::../test/SyntaxTest.groovy[tags=variable_key_1,indent=0]
 
 [NOTE]
 You can also pass quoted strings as well as keys: +["name": "Guillaume"]+.
-This is mandatory if your key string isn't a valid identifier, 
-for example if you wanted to create a string key containing a hash like in: +["street-name": "Main street"]+.
+This is mandatory if your key string isn't a valid identifier,
+for example if you wanted to create a string key containing a dash like in: +["street-name": "Main street"]+.
 
 When you need to pass variable values as keys in your map definitions, you must surround the variable or expression with parentheses:
 

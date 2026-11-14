@@ -21,17 +21,33 @@ package org.codehaus.groovy.control.io;
 import java.io.Writer;
 
 /**
- *  An Writer than eats its input.
+ *  A Writer that eats its input.
  */
 public class NullWriter extends Writer {
+    /**
+     * Shared no-op writer instance.
+     */
     public static final NullWriter DEFAULT = new NullWriter();
-    
+
+    /**
+     * Closes this writer. No action is performed.
+     */
     @Override
     public void close() {}
-    
+
+    /**
+     * Flushes this writer. No action is performed.
+     */
     @Override
     public void flush() {}
-    
+
+    /**
+     * Discards the supplied character data.
+     *
+     * @param cbuf the source buffer
+     * @param off the start offset
+     * @param len the number of characters to discard
+     */
     @Override
     public void write(char[] cbuf, int off, int len ) {}
 }

@@ -57,7 +57,7 @@ import static org.objectweb.asm.Opcodes.ACC_PUBLIC;
  *
  * You use it by creating and annotating an explicit builder class which will be filled in by during
  * annotation processing with the appropriate build method and setters. An example is shown here:
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * import groovy.transform.builder.*
  *
  * class Person {
@@ -91,14 +91,16 @@ import static org.objectweb.asm.Opcodes.ACC_PUBLIC;
 public class ExternalStrategy extends BuilderASTTransformation.AbstractBuilderStrategy {
     private static final Expression DEFAULT_INITIAL_VALUE = null;
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void build(BuilderASTTransformation transform, AnnotatedNode annotatedNode, AnnotationNode anno) {
-        if (!(annotatedNode instanceof ClassNode)) {
+        if (!(annotatedNode instanceof ClassNode builder)) {
             transform.addError("Error during " + BuilderASTTransformation.MY_TYPE_NAME + " processing: building for " +
                     annotatedNode.getClass().getSimpleName() + " not supported by " + getClass().getSimpleName(), annotatedNode);
             return;
         }
-        ClassNode builder = (ClassNode) annotatedNode;
         String prefix = transform.getMemberStringValue(anno, "prefix", "");
         ClassNode buildee = transform.getMemberClassValue(anno, "forClass");
         if (buildee == null) {
@@ -137,7 +139,7 @@ public class ExternalStrategy extends BuilderASTTransformation.AbstractBuilderSt
     }
 
     private MethodNode createBuilderMethodForField(ClassNode builderClass, PropertyInfo prop, String prefix) {
-        String propName = prop.getName().equals("class") ? "clazz" : prop.getName();
+        String propName = "class".equals(prop.getName()) ? "clazz" : prop.getName();
         String setterName = getSetterName(prefix, prop.getName());
         return new MethodNode(setterName, ACC_PUBLIC, newClass(builderClass), params(param(newClass(prop.getType()), propName)), NO_EXCEPTIONS, block(
                 stmt(assignX(propX(varX("this"), constX(propName)), varX(propName))),
@@ -147,14 +149,14 @@ public class ExternalStrategy extends BuilderASTTransformation.AbstractBuilderSt
 
     private static FieldNode createFieldCopy(ClassNode builderClass, PropertyInfo prop) {
         String propName = prop.getName();
-        return new FieldNode(propName.equals("class") ? "clazz" : propName, ACC_PRIVATE, newClass(prop.getType()), builderClass, DEFAULT_INITIAL_VALUE);
+        return new FieldNode("class".equals(propName) ? "clazz" : propName, ACC_PRIVATE, newClass(prop.getType()), builderClass, DEFAULT_INITIAL_VALUE);
     }
 
     private static Expression initializeInstance(ClassNode sourceClass, List<PropertyInfo> props, BlockStatement body) {
         Expression instance = localVarX("_the" + sourceClass.getNameWithoutPackage(), sourceClass);
         body.addStatement(declS(instance, ctorX(sourceClass)));
         for (PropertyInfo prop : props) {
-            body.addStatement(stmt(assignX(propX(instance, prop.getName()), varX(prop.getName().equals("class") ? "clazz" : prop.getName(), newClass(prop.getType())))));
+            body.addStatement(stmt(assignX(propX(instance, prop.getName()), varX("class".equals(prop.getName()) ? "clazz" : prop.getName(), newClass(prop.getType())))));
         }
         return instance;
     }

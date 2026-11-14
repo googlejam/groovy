@@ -23,7 +23,6 @@ import groovy.lang.GroovyClassLoader;
 import groovy.lang.GroovyCodeSource;
 import groovy.lang.GroovyObject;
 import groovy.lang.Script;
-import groovy.test.GroovyTestCase;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.CompileUnit;
 import org.codehaus.groovy.ast.FieldNode;
@@ -34,8 +33,8 @@ import org.codehaus.groovy.ast.expr.MethodCallExpression;
 import org.codehaus.groovy.ast.stmt.ExpressionStatement;
 import org.codehaus.groovy.control.CompilerConfiguration;
 import org.codehaus.groovy.runtime.InvokerHelper;
-import org.junit.Ignore;
-import org.objectweb.asm.Opcodes;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 
 import java.beans.BeanInfo;
 import java.beans.Introspector;
@@ -44,72 +43,111 @@ import java.io.File;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.security.AccessController;
-import java.security.PrivilegedAction;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
- * Base class for test cases
+ * Base class for test cases.
  */
-@Ignore("base class for tests")
-public class TestSupport extends GroovyTestCase implements Opcodes {
+public abstract class TestSupport {
 
-    protected static boolean DUMP_CLASS = false;
-
-    // ClassLoader parentLoader = Thread.currentThread().getContextClassLoader();
-    final ClassLoader parentLoader = getClass().getClassLoader();
-    protected final GroovyClassLoader loader =
-            AccessController.doPrivileged(
-                    (PrivilegedAction<GroovyClassLoader>) () -> new GroovyClassLoader(parentLoader)
-            );
-    final CompileUnit unit = new CompileUnit(loader, new CompilerConfiguration());
-    final ModuleNode module = new ModuleNode(unit);
-
-    protected Class loadClass(ClassNode classNode) {
-        classNode.setModule(module);
-        Class fooClass = loader.defineClass(classNode, classNode.getName() + ".groovy", "groovy.testSupport");
-        return fooClass;
+    /**
+     * Asserts the script runs without any exceptions.
+     */
+    protected final void assertScript(String scriptText) throws Exception {
+        String id = java.util.UUID.randomUUID().toString();
+        String scriptName = new StringBuilder("TestScript")
+            .append(id,  0,  8)
+            .append(id,  9, 13)
+            .append(id, 14, 18)
+            .append(id, 19, 23)
+            .append(id, 24, 36)
+            .append(".groovy")
+            .toString();
+        Class<?> scriptClass = loader.parseClass(
+            new GroovyCodeSource(scriptText, scriptName, "/groovy/testSupport")
+        );
+        Script script = InvokerHelper.createScript(scriptClass, new Binding());
+        script.run();
     }
 
-    protected void assertSetProperty(Object bean, String property, Object newValue) throws Exception {
+    protected final void assertScriptFile(String fileName) throws Exception {
+        Class<?> scriptClass = loader.parseClass(
+            new GroovyCodeSource(new File(fileName))
+        );
+        Script script = InvokerHelper.createScript(scriptClass, new Binding());
+        script.run();
+    }
+
+    protected final GroovyObject compile (String fileName) throws Exception {
+        Class<?> groovyClass = loader.parseClass(
+            new GroovyCodeSource(new File(fileName))
+        );
+        GroovyObject groovyObject = (GroovyObject) groovyClass.getDeclaredConstructor().newInstance();
+        assertNotNull(groovyObject);
+        return groovyObject;
+    }
+
+    protected final void assertGetProperty(Object bean, String property, Object expected) throws Exception {
+        PropertyDescriptor descriptor = getDescriptor(bean, property);
+        Method method = descriptor.getReadMethod();
+        assertNotNull(method, "has getter method");
+
+        Object[] args = {};
+        Object value = invokeMethod(bean, method, args);
+        assertEquals(expected, value, "property value");
+    }
+
+    protected final void assertSetProperty(Object bean, String property, Object newValue) throws Exception {
         PropertyDescriptor descriptor = getDescriptor(bean, property);
         Method method = descriptor.getWriteMethod();
-        assertTrue("has setter method", method != null);
+        assertNotNull(method, "has setter method");
         Object[] args = {newValue};
         Object value = invokeMethod(bean, method, args);
-        assertEquals("should return null", null, value);
+        assertEquals(null, value, "should return null");
         assertGetProperty(bean, property, newValue);
     }
 
-    protected void assertGetProperty(Object bean, String property, Object expected) throws Exception {
-        PropertyDescriptor descriptor = getDescriptor(bean, property);
-        Method method = descriptor.getReadMethod();
-        assertTrue("has getter method", method != null);
-
-        Object[] args = { };
-        Object value = invokeMethod(bean, method, args);
-
-        /*
-        System.out.println("Expected: " + expected);
-        System.out.println("Value: " + value);
-        
-        if (expected == null) { System.out.println("Expected is null"); }
-        if (value == null) { System.out.println("value is null"); }
-        */
-
-        assertEquals("property value", expected, value);
+    protected final void assertField(Class<?> clazz, String name, int modifiers, ClassNode type) throws Exception {
+        Field field = clazz.getDeclaredField(name);
+        assertNotNull(field, "Found field called: " + name);
+        assertEquals(name, field.getName());
+        assertEquals(type.getName(), field.getType().getName());
+        assertEquals(modifiers, field.getModifiers());
     }
 
-    protected Object invokeMethod(Object bean, Method method, Object[] args) throws Exception {
-        try {
-            return method.invoke(bean, args);
-        }
-        catch (InvocationTargetException e) {
-            fail("InvocationTargetException: " + e.getTargetException());
-            return null;
-        }
+    protected final ExpressionStatement createPrintlnStatement(Expression expression) throws NoSuchFieldException {
+        FieldExpression systemDotOut = new FieldExpression(FieldNode.newStatic(System.class, "out"));
+        return new ExpressionStatement(new MethodCallExpression(systemDotOut, "println", expression));
     }
 
-    protected PropertyDescriptor getDescriptor(Object bean, String property) throws Exception {
+    //--------------------------------------------------------------------------
+
+    private GroovyClassLoader loader;
+
+    @BeforeEach
+    void setUpTestCase() throws Exception {
+        ClassLoader parentLoader = getClass().getClassLoader();
+        loader = new GroovyClassLoader(parentLoader);
+    }
+
+    @AfterEach
+    void tearDownTestCase() throws Exception {
+        loader.close();
+        loader = null;
+    }
+
+    protected final Class<?> loadClass(ClassNode classNode) {
+        var unit = new CompileUnit(loader, new CompilerConfiguration());
+        var module = new ModuleNode(unit);
+        classNode.setModule(module);
+
+        return loader.defineClass(classNode, classNode.getName() + ".groovy", "groovy.testSupport");
+    }
+
+    private PropertyDescriptor getDescriptor(Object bean, String property) throws Exception {
         BeanInfo info = Introspector.getBeanInfo(bean.getClass());
         PropertyDescriptor[] descriptors = info.getPropertyDescriptors();
         for (PropertyDescriptor descriptor : descriptors) {
@@ -121,51 +159,13 @@ public class TestSupport extends GroovyTestCase implements Opcodes {
         return null;
     }
 
-    protected void assertField(Class aClass, String name, int modifiers, ClassNode type) throws Exception {
-        Field field = aClass.getDeclaredField(name);
-        assertTrue("Found field called: " + name, field != null);
-        assertEquals("Name", name, field.getName());
-        assertEquals("Type", type.getName(), field.getType().getName());
-        assertEquals("Modifiers", modifiers, field.getModifiers());
-    }
-
-    protected ExpressionStatement createPrintlnStatement(Expression expression) throws NoSuchFieldException {
-        return new ExpressionStatement(
-                new MethodCallExpression(
-                        new FieldExpression(FieldNode.newStatic(System.class, "out")),
-                        "println",
-                        expression));
-    }
-
-    /**
-     * Asserts that the script runs without any exceptions
-     */
-    protected void assertScript(String text) throws Exception {
-        assertScript(text, getTestClassName());
-    }
-
-    protected void assertScript(final String text, final String scriptName) throws Exception {
-        log.info("About to execute script");
-        log.info(text);
-        GroovyCodeSource gcs = AccessController.doPrivileged(
-                (PrivilegedAction<GroovyCodeSource>) () -> new GroovyCodeSource(text, scriptName, "/groovy/testSupport")
-        );
-        Class groovyClass = loader.parseClass(gcs);
-        Script script = InvokerHelper.createScript(groovyClass, new Binding());
-        script.run();
-    }
-
-    protected void assertScriptFile(String fileName) throws Exception {
-        log.info("About to execute script: " + fileName);
-        Class groovyClass = loader.parseClass(new GroovyCodeSource(new File(fileName)));
-        Script script = InvokerHelper.createScript(groovyClass, new Binding());
-        script.run();
-    }
-
-    protected GroovyObject compile(String fileName) throws Exception {
-        Class groovyClass = loader.parseClass(new GroovyCodeSource(new File(fileName)));
-        GroovyObject object = (GroovyObject) groovyClass.getDeclaredConstructor().newInstance();
-        assertTrue(object != null);
-        return object;
+    private Object invokeMethod(Object bean, Method method, Object[] args) throws Exception {
+        try {
+            return method.invoke(bean, args);
+        }
+        catch (InvocationTargetException e) {
+            fail("InvocationTargetException: " + e.getTargetException());
+            return null;
+        }
     }
 }

@@ -25,7 +25,6 @@ import groovy.lang.GroovySystem;
 import groovy.lang.MetaClass;
 import org.codehaus.groovy.runtime.InvokerHelper;
 import org.codehaus.groovy.runtime.ProxyGeneratorAdapter;
-import org.codehaus.groovy.runtime.memoize.LRUCache;
 import org.codehaus.groovy.runtime.typehandling.GroovyCastException;
 import org.codehaus.groovy.transform.trait.Traits;
 
@@ -37,42 +36,60 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
+import static org.codehaus.groovy.runtime.MetaClassHelper.EMPTY_CLASS_ARRAY;
+
 /**
- * Classes to generate 'Proxy' objects which implement interfaces,
- * maps of closures and/or extend classes/delegates.
+ * Generates 'Proxy' objects which implement interfaces, maps of closures and/or
+ * extend classes/delegates.
  */
+@SuppressWarnings({"rawtypes", "serial"})
 public class ProxyGenerator {
-    private static final Class[] EMPTY_CLASS_ARRAY = new Class[0];
-    private static final Class[] EMPTY_INTERFACE_ARRAY = EMPTY_CLASS_ARRAY;
     private static final Map<Object,Object> EMPTY_CLOSURE_MAP = Collections.emptyMap();
-    private static final Set<String> EMPTY_KEYSET = Collections.emptySet();
 
     static {
         // wrap the standard MetaClass with the delegate
         setMetaClass(GroovySystem.getMetaClassRegistry().getMetaClass(ProxyGenerator.class));
     }
 
-    private ClassLoader override = null;
-    private boolean debug = false;
-    private boolean emptyMethods = false;
-
-    private static final Integer GROOVY_ADAPTER_CACHE_DEFAULT_SIZE = Integer.getInteger("groovy.adapter.cache.default.size", 64);
-
-    public static final ProxyGenerator INSTANCE = new ProxyGenerator(); // TODO should we make ProxyGenerator singleton?
+    /** Shared proxy generator instance used by Groovy's coercion helpers. */
+    public static final ProxyGenerator INSTANCE = new ProxyGenerator();
 
     /**
-     * The adapter cache is used to cache proxy classes. When, for example, a call like:
-     * map as MyClass is found, then a lookup is made into the cache to find if a suitable
-     * adapter already exists. If so, then the class is reused, instead of generating a
-     * new class.
+     * Caches proxy classes. When, for example, a call like: <code>map as MyClass</code>
+     * is found, then a lookup is made into the cache to find if a suitable adapter
+     * exists already. If so, it is reused instead of generating a new one.
      */
-    private final LRUCache adapterCache = new LRUCache(GROOVY_ADAPTER_CACHE_DEFAULT_SIZE);
+    private final Map<CacheKey, ProxyGeneratorAdapter> adapterCache;
+    private static final int CACHE_SIZE = Integer.getInteger("groovy.adapter.cache.default.size", 64);
+    private static final float LOAD_FACTOR = 0.75f;
+    private static final int INIT_CAPACITY = (int) Math.ceil(CACHE_SIZE / LOAD_FACTOR) + 1;
+    {
+        adapterCache = new LinkedHashMap<>(INIT_CAPACITY, LOAD_FACTOR, true) {
+            /** {@inheritDoc} */
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<CacheKey, ProxyGeneratorAdapter> entry) {
+                return size() > CACHE_SIZE;
+            }
+        };
+    }
 
+    private boolean debug;
+    private boolean emptyMethods;
+    private ClassLoader override;
+
+    // private ProxyGenerator() {} // TODO: Should we make ProxyGenerator singleton?
+
+    /**
+     * Reports whether generated source is echoed for debugging.
+     *
+     * @return {@code true} when debug output is enabled
+     */
     public boolean getDebug() {
         return debug;
     }
@@ -88,6 +105,11 @@ public class ProxyGenerator {
         this.debug = debug;
     }
 
+    /**
+     * Reports whether unimplemented generated methods use empty bodies.
+     *
+     * @return {@code true} when empty method bodies are generated
+     */
     public boolean getEmptyMethods() {
         return emptyMethods;
     }
@@ -106,85 +128,210 @@ public class ProxyGenerator {
         this.emptyMethods = emptyMethods;
     }
 
+    /**
+     * Returns the override class loader used for proxy generation.
+     *
+     * @return the override class loader, or {@code null}
+     */
     public ClassLoader getOverride() {
         return override;
     }
 
+    /**
+     * Sets the override class loader used for proxy generation.
+     *
+     * @param override the override class loader
+     */
     public void setOverride(ClassLoader override) {
         this.override = override;
     }
 
+    /**
+     * Creates an aggregate proxy that extends the supplied base class.
+     *
+     * @param clazz the base class to extend
+     * @return the generated proxy
+     */
     public GroovyObject instantiateAggregateFromBaseClass(Class clazz) {
         return instantiateAggregateFromBaseClass((Map) null, clazz);
     }
 
+    /**
+     * Creates an aggregate proxy that extends the supplied base class.
+     *
+     * @param map closures implementing selected methods
+     * @param clazz the base class to extend
+     * @return the generated proxy
+     */
     public GroovyObject instantiateAggregateFromBaseClass(Map map, Class clazz) {
         return instantiateAggregateFromBaseClass(map, clazz, null);
     }
 
+    /**
+     * Creates an aggregate proxy that routes all unresolved methods through one closure.
+     *
+     * @param cl fallback closure for method calls
+     * @param clazz the base class to extend
+     * @return the generated proxy
+     */
     public GroovyObject instantiateAggregateFromBaseClass(Closure cl, Class clazz) {
-        Map<String, Closure> m = new HashMap<String, Closure>();
+        Map<String, Closure> m = new HashMap<>(4);
         m.put("*", cl);
         return instantiateAggregateFromBaseClass(m, clazz, null);
     }
 
+    /**
+     * Creates an aggregate proxy with constructor arguments.
+     *
+     * @param clazz the base class to extend
+     * @param constructorArgs constructor arguments for the proxy instance
+     * @return the generated proxy
+     */
     public GroovyObject instantiateAggregateFromBaseClass(Class clazz, Object[] constructorArgs) {
         return instantiateAggregate(null, null, clazz, constructorArgs);
     }
 
+    /**
+     * Creates an aggregate proxy with closures and constructor arguments.
+     *
+     * @param map closures implementing selected methods
+     * @param clazz the base class to extend
+     * @param constructorArgs constructor arguments for the proxy instance
+     * @return the generated proxy
+     */
     public GroovyObject instantiateAggregateFromBaseClass(Map map, Class clazz, Object[] constructorArgs) {
         return instantiateAggregate(map, null, clazz, constructorArgs);
     }
 
+    /**
+     * Creates an aggregate proxy that implements a single interface.
+     *
+     * @param clazz the interface to implement
+     * @return the generated proxy
+     */
     public GroovyObject instantiateAggregateFromInterface(Class clazz) {
         return instantiateAggregateFromInterface(null, clazz);
     }
 
+    /**
+     * Creates an aggregate proxy that implements a single interface.
+     *
+     * @param map closures implementing selected methods
+     * @param clazz the interface to implement
+     * @return the generated proxy
+     */
     public GroovyObject instantiateAggregateFromInterface(Map map, Class clazz) {
-        List<Class> interfaces = new ArrayList<Class>();
+        List<Class> interfaces = new ArrayList<>(2);
         interfaces.add(clazz);
         return instantiateAggregate(map, interfaces);
     }
 
+    /**
+     * Creates an aggregate proxy implementing the supplied interfaces.
+     *
+     * @param interfaces interfaces to implement
+     * @return the generated proxy
+     */
     public GroovyObject instantiateAggregate(List<Class> interfaces) {
         return instantiateAggregate(null, interfaces);
     }
 
+    /**
+     * Creates an aggregate proxy implementing the supplied interfaces.
+     *
+     * @param closureMap closures implementing selected methods
+     * @param interfaces interfaces to implement
+     * @return the generated proxy
+     */
     public GroovyObject instantiateAggregate(Map closureMap, List<Class> interfaces) {
         return instantiateAggregate(closureMap, interfaces, null);
     }
 
+    /**
+     * Creates an aggregate proxy with optional interfaces and base class.
+     *
+     * @param closureMap closures implementing selected methods
+     * @param interfaces interfaces to implement
+     * @param clazz the base class to extend
+     * @return the generated proxy
+     */
     public GroovyObject instantiateAggregate(Map closureMap, List<Class> interfaces, Class clazz) {
         return instantiateAggregate(closureMap, interfaces, clazz, null);
     }
 
-    @SuppressWarnings("unchecked")
+    /**
+     * Creates an aggregate proxy with optional interfaces, base class and constructor arguments.
+     *
+     * @param closureMap closures implementing selected methods
+     * @param interfaces interfaces to implement
+     * @param clazz the base class to extend
+     * @param constructorArgs constructor arguments for the proxy instance
+     * @return the generated proxy
+     */
     public GroovyObject instantiateAggregate(Map closureMap, List<Class> interfaces, Class clazz, Object[] constructorArgs) {
         if (clazz != null && Modifier.isFinal(clazz.getModifiers())) {
             throw new GroovyCastException("Cannot coerce a map to class " + clazz.getName() + " because it is a final class");
         }
-        Map<Object,Object> map = closureMap != null ? closureMap : EMPTY_CLOSURE_MAP;
+        Map<Object, Object> map = closureMap != null ? closureMap : EMPTY_CLOSURE_MAP;
         ProxyGeneratorAdapter adapter = createAdapter(map, interfaces, null, clazz);
 
         return adapter.proxy(map, constructorArgs);
     }
 
+    /**
+     * Creates a delegating proxy around the supplied object.
+     *
+     * @param delegate the delegate object
+     * @return the generated proxy
+     */
     public GroovyObject instantiateDelegate(Object delegate) {
         return instantiateDelegate(null, delegate);
     }
 
+    /**
+     * Creates a delegating proxy with additional implemented interfaces.
+     *
+     * @param interfaces interfaces to implement
+     * @param delegate the delegate object
+     * @return the generated proxy
+     */
     public GroovyObject instantiateDelegate(List<Class> interfaces, Object delegate) {
         return instantiateDelegate(null, interfaces, delegate);
     }
 
+    /**
+     * Creates a delegating proxy with supplemental closure implementations.
+     *
+     * @param closureMap closures implementing selected methods
+     * @param interfaces interfaces to implement
+     * @param delegate the delegate object
+     * @return the generated proxy
+     */
     public GroovyObject instantiateDelegate(Map closureMap, List<Class> interfaces, Object delegate) {
         return instantiateDelegateWithBaseClass(closureMap, interfaces, delegate, null);
     }
 
+    /**
+     * Creates a delegating proxy whose base class is the delegate type.
+     *
+     * @param closureMap closures implementing selected methods
+     * @param interfaces interfaces to implement
+     * @param delegate the delegate object
+     * @return the generated proxy
+     */
     public GroovyObject instantiateDelegateWithBaseClass(Map closureMap, List<Class> interfaces, Object delegate) {
         return instantiateDelegateWithBaseClass(closureMap, interfaces, delegate, delegate.getClass());
     }
 
+    /**
+     * Creates a delegating proxy with an explicit base class.
+     *
+     * @param closureMap closures implementing selected methods
+     * @param interfaces interfaces to implement
+     * @param delegate the delegate object
+     * @param baseClass the base class to extend
+     * @return the generated proxy
+     */
     public GroovyObject instantiateDelegateWithBaseClass(Map closureMap, List<Class> interfaces, Object delegate, Class baseClass) {
         return instantiateDelegateWithBaseClass(closureMap, interfaces, delegate, baseClass, null);
     }
@@ -199,45 +346,35 @@ public class ProxyGenerator {
      * @param name the name of the proxy, unused, but kept for compatibility with previous versions of Groovy.
      * @return a proxy object implementing the specified interfaces, and delegating to the provided object
      */
-    @SuppressWarnings("unchecked")
     public GroovyObject instantiateDelegateWithBaseClass(Map closureMap, List<Class> interfaces, Object delegate, Class baseClass, String name) {
-        Map<Object,Object> map = closureMap != null ? closureMap : EMPTY_CLOSURE_MAP;
+        Map<Object, Object> map = closureMap != null ? closureMap : EMPTY_CLOSURE_MAP;
         ProxyGeneratorAdapter adapter = createAdapter(map, interfaces, delegate.getClass(), baseClass);
 
-        return adapter.delegatingProxy(delegate, map, (Object[])null);
+        return adapter.delegatingProxy(delegate, map, (Object[]) null);
     }
 
-    private ProxyGeneratorAdapter createAdapter(Map closureMap, List<Class> interfaces, Class delegateClass, Class baseClass) {
-        // According to https://shipilev.net/blog/2016/arrays-wisdom-ancients/#_conclusion
-        // toArray(new T[0]) seems faster, safer, and contractually cleaner, and therefore should be the default choice now.
-        Class[] intfs = interfaces != null ? interfaces.toArray(EMPTY_CLASS_ARRAY) : EMPTY_INTERFACE_ARRAY;
-        Class base = baseClass;
-        if (base == null) {
-            if (intfs.length > 0) {
-                base = intfs[0];
-            } else {
-                base = Object.class;
-            }
+    private ProxyGeneratorAdapter createAdapter(final Map<Object,Object> closureMap, final List<Class> interfaceList, final Class delegateClass, final Class baseClass) {
+        Class[] interfaces = interfaceList != null ? interfaceList.toArray(EMPTY_CLASS_ARRAY) : EMPTY_CLASS_ARRAY;
+        final Class<?> base = baseClass != null ? baseClass : (interfaces.length > 0 ? interfaces[0] : Object.class);
+        final int closureMapSize = closureMap.size();
+        Set<String> methodNames = closureMapSize == 0 ? Collections.emptySet() : new HashSet<>(closureMapSize);
+        for (Object key : closureMap.keySet()) {
+            methodNames.add(key.toString());
         }
-        Set<String> keys = closureMap == EMPTY_CLOSURE_MAP ? EMPTY_KEYSET : new HashSet<String>();
-        for (Object o : closureMap.keySet()) {
-            keys.add(o.toString());
-        }
-        boolean useDelegate = null != delegateClass;
-        CacheKey key = new CacheKey(base, useDelegate ? delegateClass : Object.class, keys, intfs, emptyMethods, useDelegate);
-        final Class b = base;
+        boolean useDelegate = (delegateClass != null);
+        CacheKey key = new CacheKey(base, useDelegate ? delegateClass : Object.class, methodNames, interfaces, emptyMethods, useDelegate);
+        ClassLoader classLoader = useDelegate ? delegateClass.getClassLoader() : base.getClassLoader();
 
-        return (ProxyGeneratorAdapter) adapterCache.getAndPut(
-                key,
-                k -> new ProxyGeneratorAdapter(closureMap, b, intfs, useDelegate
-                        ? delegateClass.getClassLoader()
-                        : b.getClassLoader(), emptyMethods, useDelegate ? delegateClass : null
-                )
-        );
+        synchronized (adapterCache) {
+            return adapterCache.computeIfAbsent(key,
+                        k -> new ProxyGeneratorAdapter(closureMap, base, interfaces, classLoader, emptyMethods,
+                                                                    useDelegate ? delegateClass : null));
+        }
     }
 
     private static void setMetaClass(final MetaClass metaClass) {
         final MetaClass newMetaClass = new DelegatingMetaClass(metaClass) {
+            /** {@inheritDoc} */
             @Override
             public Object invokeStaticMethod(Object object, String methodName, Object[] arguments) {
                 return InvokerHelper.invokeMethod(INSTANCE, methodName, arguments);
@@ -245,7 +382,9 @@ public class ProxyGenerator {
         };
         GroovySystem.getMetaClassRegistry().setMetaClass(ProxyGenerator.class, newMetaClass);
     }
-    
+
+    //--------------------------------------------------------------------------
+
     private static final class CacheKey {
         private static final Comparator<Class> INTERFACE_COMPARATOR = (o1, o2) -> {
             // Traits order *must* be preserved
@@ -254,31 +393,35 @@ public class ProxyGenerator {
             if (Traits.isTrait(o2)) return 1;
             return o1.getName().compareTo(o2.getName());
         };
+        private final ClassReference baseClass;
+        private final ClassReference delegateClass;
+        private final Set<String> methods;
+        private final ClassReference[] interfaces;
         private final boolean emptyMethods;
         private final boolean useDelegate;
-        private final Set<String> methods;
-        private final ClassReference delegateClass;
-        private final ClassReference baseClass;
-        private final ClassReference[] interfaces;
 
         private CacheKey(final Class baseClass, final Class delegateClass, final Set<String> methods, final Class[] interfaces, final boolean emptyMethods, final boolean useDelegate) {
-            this.useDelegate = useDelegate;
             this.baseClass = new ClassReference(baseClass);
             this.delegateClass = new ClassReference(delegateClass);
-            this.emptyMethods = emptyMethods;
-            this.interfaces = interfaces == null ? null : new ClassReference[interfaces.length];
-            if (interfaces != null) {
-                Class[] interfacesCopy = new Class[interfaces.length];
-                System.arraycopy(interfaces, 0, interfacesCopy, 0, interfaces.length);
-                Arrays.sort(interfacesCopy, INTERFACE_COMPARATOR);
-                for (int i = 0; i < interfacesCopy.length; i++) {
-                    Class anInterface = interfacesCopy[i];
-                    this.interfaces[i] = new ClassReference(anInterface);
-                }
-            }
             this.methods = methods;
+            this.emptyMethods = emptyMethods;
+            this.useDelegate = useDelegate;
+            if (interfaces != null) {
+                final int interfaceCount = interfaces.length;
+                Class[] interfacesCopy = new Class[interfaceCount];
+                System.arraycopy(interfaces, 0, interfacesCopy, 0, interfaceCount);
+                Arrays.sort(interfacesCopy, INTERFACE_COMPARATOR);
+                ClassReference[] interfaceReferences = new ClassReference[interfaceCount];
+                for (int i = 0, n = interfacesCopy.length; i < n; i++) {
+                    interfaceReferences[i] = new ClassReference(interfacesCopy[i]);
+                }
+                this.interfaces = interfaceReferences;
+            } else {
+                this.interfaces = null;
+            }
         }
 
+        /** {@inheritDoc} */
         @Override
         public boolean equals(final Object o) {
             if (this == o) return true;
@@ -288,44 +431,45 @@ public class ProxyGenerator {
 
             if (emptyMethods != cacheKey.emptyMethods) return false;
             if (useDelegate != cacheKey.useDelegate) return false;
-            if (!Objects.equals(baseClass, cacheKey.baseClass)) return false;
             if (!Objects.equals(delegateClass, cacheKey.delegateClass)) return false;
+            if (!Objects.equals(baseClass, cacheKey.baseClass)) return false;
             if (!Arrays.equals(interfaces, cacheKey.interfaces)) return false;
             if (!Objects.equals(methods, cacheKey.methods)) return false;
 
             return true;
         }
 
+        /** {@inheritDoc} */
         @Override
         public int hashCode() {
-            int result = (emptyMethods ? 1 : 0);
-            result = 31 * result + (useDelegate ? 1 : 0);
-            result = 31 * result + (methods != null ? methods.hashCode() : 0);
-            result = 31 * result + (baseClass != null ? baseClass.hashCode() : 0);
-            result = 31 * result + (delegateClass != null ? delegateClass.hashCode() : 0);
-            result = 31 * result + (interfaces != null ? Arrays.hashCode(interfaces) : 0);
-            return result;
+            return Objects.hash(emptyMethods, useDelegate, delegateClass, baseClass, Arrays.hashCode(interfaces), methods);
         }
 
         /**
          * A weak reference which delegates equals and hashcode to the referent.
          */
         private static class ClassReference extends WeakReference<Class> {
-
+            /**
+             * Creates a weak reference wrapper for a class.
+             *
+             * @param referent the referenced class
+             */
             public ClassReference(Class referent) {
                 super(referent);
             }
 
+            /** {@inheritDoc} */
             @Override
             public boolean equals(final Object o) {
                 if (this == o) return true;
                 if (o == null || getClass() != o.getClass()) return false;
                 Class thisClass = this.get();
-                ClassReference that = (ClassReference) o;
                 if (thisClass == null) return false;
+                ClassReference that = (ClassReference) o;
                 return thisClass.equals(that.get());
             }
 
+            /** {@inheritDoc} */
             @Override
             public int hashCode() {
                 Class thisClass = this.get();
@@ -334,5 +478,4 @@ public class ProxyGenerator {
             }
         }
     }
-
 }

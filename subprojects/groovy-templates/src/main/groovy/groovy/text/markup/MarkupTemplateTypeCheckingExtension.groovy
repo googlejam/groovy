@@ -57,6 +57,11 @@ import static org.codehaus.groovy.transform.stc.StaticTypeCheckingSupport.isAssi
  */
 class MarkupTemplateTypeCheckingExtension extends GroovyTypeCheckingExtensionSupport.TypeCheckingDSL {
 
+    /**
+     * Registers the type-checking hooks that adapt template DSL calls and optional model typing.
+     *
+     * @return {@code null}; the extension configures callbacks through side effects
+     */
     @Override
     Object run() {
         def modelTypesClassNodes = null
@@ -90,7 +95,7 @@ class MarkupTemplateTypeCheckingExtension extends GroovyTypeCheckingExtensionSup
             }
         }
         methodNotFound { receiver, name, argList, argTypes, call ->
-            if ("getAt" == name && OBJECT_TYPE == receiver) {
+            if ('getAt' == name && OBJECT_TYPE == receiver) {
                 // GROOVY-6940
                 def enclosingBinaryExpression = context.enclosingBinaryExpression
                 if (enclosingBinaryExpression.leftExpression.is(call.objectExpression)) {
@@ -103,15 +108,14 @@ class MarkupTemplateTypeCheckingExtension extends GroovyTypeCheckingExtensionSup
                                 // type checker looks for getAt() but we need to replace the super binary expression with a putAt
                                 // foo[x] = y --> foo.putAt(x,y)
                                 def mce = new MethodCallExpression(
-                                        enclosingBinaryExpression.leftExpression,
-                                        "putAt",
-                                        new ArgumentListExpression(enclosingBinaryExpression.rightExpression, superEnclosing.rightExpression))
+                                    enclosingBinaryExpression.leftExpression,
+                                    'putAt',
+                                    new ArgumentListExpression(enclosingBinaryExpression.rightExpression, superEnclosing.rightExpression))
                                 makeDynamic(mce)
                                 currentScope.binaryExpressions.put(superEnclosing, mce)
                                 return null
-                            } else {
-                                throw new UnsupportedOperationException("Operation not supported in templates: ${superEnclosing.text}. Please declare an explicit type for the variable.")
                             }
+                            throw new UnsupportedOperationException("Operation not supported in templates: ${superEnclosing.text}. Please declare an explicit type for the variable.")
                         }
                     }
                     currentScope.binaryExpressions.put(enclosingBinaryExpression, call)
@@ -171,6 +175,13 @@ class MarkupTemplateTypeCheckingExtension extends GroovyTypeCheckingExtensionSup
         }
     }
 
+    /**
+     * Builds a resolved {@link ClassNode} from a textual type declaration used in template model hints.
+     *
+     * @param option textual type declaration
+     * @param ctx current type-checking context
+     * @return the resolved class node corresponding to the declaration
+     */
     @CompileStatic
     private static ClassNode buildNodeFromString(String option, TypeCheckingContext ctx) {
         ModuleNode moduleNode = ParserPlugin.buildAST("$option dummy;", ctx.compilationUnit.configuration, ctx.compilationUnit.classLoader, ctx.errorCollector)
@@ -189,7 +200,7 @@ class MarkupTemplateTypeCheckingExtension extends GroovyTypeCheckingExtensionSup
             }
         }
         visitor.startResolving(dummyClass, ctx.source)
-        return dummyMethod.returnType
+        dummyMethod.returnType
     }
 
     private static class BuilderMethodReplacer extends ClassCodeExpressionTransformer {
@@ -200,24 +211,30 @@ class MarkupTemplateTypeCheckingExtension extends GroovyTypeCheckingExtensionSup
         private final Set<MethodCallExpression> callsToBeReplaced
         private final Map<BinaryExpression, MethodCallExpression> binaryExpressionsToBeReplaced
 
+        /**
+         * Creates a transformer that replaces dynamic builder calls with direct {@code methodMissing} invocations.
+         *
+         * @param unit source unit being transformed
+         * @param calls method calls that should be rewritten
+         * @param binExpressionsWithReplacements assignment expressions that should be rewritten
+         */
         BuilderMethodReplacer(SourceUnit unit, Collection<MethodCallExpression> calls, Map<BinaryExpression, MethodCallExpression> binExpressionsWithReplacements) {
             this.unit = unit
             this.callsToBeReplaced = calls as Set
             this.binaryExpressionsToBeReplaced = binExpressionsWithReplacements
         }
 
+        /**
+         * {@inheritDoc}
+         */
         @Override
         protected SourceUnit getSourceUnit() {
             unit
         }
 
         @Override
-        void visitClosureExpression(final ClosureExpression expression) {
-            super.visitClosureExpression(expression)
-        }
-
-        @Override
-        public Expression transform(final Expression exp) {
+        @SuppressWarnings('Instanceof')
+        Expression transform(final Expression exp) {
             if (exp instanceof BinaryExpression && binaryExpressionsToBeReplaced.containsKey(exp)) {
                 return binaryExpressionsToBeReplaced.get(exp)
             }
@@ -226,10 +243,10 @@ class MarkupTemplateTypeCheckingExtension extends GroovyTypeCheckingExtensionSup
                 args*.visit(this)
                 // replace with direct call to methodMissing
                 def call = new MethodCallExpression(
-                        new VariableExpression("this"),
-                        "methodMissing",
+                        new VariableExpression('this'),
+                        'methodMissing',
                         new ArgumentListExpression(
-                                new ConstantExpression(exp.getMethodAsString()),
+                                new ConstantExpression(exp.methodAsString),
                                 new ArrayExpression(
                                         OBJECT_TYPE,
                                         [*args]

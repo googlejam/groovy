@@ -18,7 +18,11 @@
  */
 package groovy.xml.streamingmarkupsupport
 
+/**
+ * Base support for streaming XML builders that manage namespaces and special {@code mkp} helper tags.
+ */
 class AbstractStreamingBuilder {
+    /** Closure used when a namespace forbids a requested tag. */
     def badTagClosure = {tag, doc, pendingNamespaces, namespaces, namespaceSpecificTags, prefix, Object[] rest ->
         def uri = pendingNamespaces[prefix]
         if (uri == null) {
@@ -26,10 +30,12 @@ class AbstractStreamingBuilder {
         }
         throw new GroovyRuntimeException("Tag ${tag} is not allowed in namespace ${uri}")
     }
+
+    /** Closure backing {@code mkp.declareNamespace} to queue namespace declarations for the next element. */
     def namespaceSetupClosure = {doc, pendingNamespaces, namespaces, namespaceSpecificTags, prefix, attrs, Object[] rest ->
         attrs.each { key, value ->
-            if ( key == "") {
-                key = ":"    // marker for default namespace
+            if ( key == '') {
+                key = ':'    // marker for default namespace
             }
             value = value.toString()     // in case it's not a string
             if (namespaces[key] != value) {
@@ -41,6 +47,9 @@ class AbstractStreamingBuilder {
             }
         }
     }
+
+    /** Closure backing {@code mkp.declareAlias} to register namespace-specific tag aliases. */
+    @SuppressWarnings('Instanceof')
     def aliasSetupClosure = {doc, pendingNamespaces, namespaces, namespaceSpecificTags, prefix, attrs, Object[] rest ->
         attrs.each { key, value ->
             if (value instanceof Map) {
@@ -60,23 +69,57 @@ class AbstractStreamingBuilder {
             }
         }
     }
+
+    /** Closure backing {@code mkp.getNamespaces} to expose active and pending namespace mappings. */
     def getNamespaceClosure = { doc, pendingNamespaces, namespaces, Object[] rest -> [namespaces, pendingNamespaces] }
 
-    def toMapStringClosure = { Map instruction, checkDoubleQutationMarks={ value -> !value.toString().contains('"') } ->
+    /** Utility closure for rendering map entries as pseudo-attribute text, e.g. in processing instructions. */
+    def toMapStringClosure = { Map instruction, checkDoubleQuotationMarks={ value -> !value.toString().contains('"') } ->
         def buf = new StringBuilder()
         instruction.each { name, value ->
-            if (checkDoubleQutationMarks(value)) {
+            if (name.toString().contains('?>') || value.toString().contains('?>')) {
+                throw new GroovyRuntimeException("Processing instruction data must not contain '?>': ${name}=${value}")
+            }
+            if (checkDoubleQuotationMarks(value)) {
                 buf.append(" $name=\"$value\"")
             } else {
                 buf.append(" $name='$value'")
             }
         }
-        return buf.toString()
+        buf.toString()
     }
 
+    /**
+     * Rejects a processing-instruction target or data fragment that would prematurely
+     * close the PI. The {@code ?>} sequence ends a PI and cannot be entity-escaped, so
+     * content holding it would inject sibling markup; such content is rejected instead.
+     */
+    def checkProcessingInstruction = { part ->
+        if (part?.toString()?.contains('?>')) {
+            throw new GroovyRuntimeException("Processing instruction target/data must not contain '?>': ${part}")
+        }
+        part
+    }
+
+    /**
+     * Rejects comment text that would prematurely close the comment. Comment content
+     * cannot contain {@code --} or end with {@code -} (which would form {@code --} against
+     * the closing delimiter), and no escaping is legal inside a comment, so such text is
+     * rejected instead.
+     */
+    def checkCommentText = { text ->
+        def value = text?.toString()
+        if (value != null && (value.contains('--') || value.endsWith('-'))) {
+            throw new GroovyRuntimeException("XML comment text must not contain '--' or end with '-': ${text}")
+        }
+        text
+    }
+
+    /** Registry of built-in {@code mkp} helper tags shared by concrete streaming builders. */
     def specialTags = ['declareNamespace':namespaceSetupClosure,
                            'declareAlias':aliasSetupClosure,
-                          'getNamespaces':getNamespaceClosure]
+                           'getNamespaces':getNamespaceClosure]
 
+    /** Backing builder assigned by concrete subclasses when they install their element closures. */
     def builder = null
 }

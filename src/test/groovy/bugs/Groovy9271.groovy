@@ -16,13 +16,11 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.transform.CompileStatic
 import org.codehaus.groovy.control.CompilerConfiguration
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
-@CompileStatic
 final class Groovy9271 {
 
     @Test

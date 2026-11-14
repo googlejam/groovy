@@ -53,7 +53,7 @@ public class ClosureUtils {
     public static boolean hasSingleCharacterArg(final Closure c) {
         if (c.getMaximumNumberOfParameters() != 1) return false;
         String typeName = c.getParameterTypes()[0].getName();
-        return typeName.equals("char") || typeName.equals("java.lang.Character");
+        return "char".equals(typeName) || "java.lang.Character".equals(typeName);
     }
 
     /**
@@ -64,7 +64,7 @@ public class ClosureUtils {
     public static boolean hasSingleStringArg(final Closure c) {
         if (c.getMaximumNumberOfParameters() != 1) return false;
         String typeName = c.getParameterTypes()[0].getName();
-        return typeName.equals("java.lang.String");
+        return "java.lang.String".equals(typeName);
     }
 
     /**
@@ -89,16 +89,12 @@ public class ClosureUtils {
      * @since 3.0.5
      */
     public static String getResolveStrategyName(final int resolveStrategy) {
-        switch (resolveStrategy) {
-            case Closure.DELEGATE_FIRST:
-                return "DELEGATE_FIRST";
-            case Closure.DELEGATE_ONLY:
-                return "DELEGATE_ONLY";
-            case Closure.OWNER_ONLY:
-                return "OWNER_ONLY";
-            case Closure.TO_SELF:
-                return "TO_SELF";
-        }
-        return "OWNER_FIRST";
+        return switch (resolveStrategy) {
+            case Closure.DELEGATE_FIRST -> "DELEGATE_FIRST";
+            case Closure.DELEGATE_ONLY -> "DELEGATE_ONLY";
+            case Closure.OWNER_ONLY -> "OWNER_ONLY";
+            case Closure.TO_SELF -> "TO_SELF";
+            default -> "OWNER_FIRST";
+        };
     }
 }

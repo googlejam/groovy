@@ -32,32 +32,65 @@ public class LocatedMessage extends SimpleMessage {
     /** The CSTNode that indicates the location to which the message applies. */
     private CSTNode context;
 
+    /**
+     * Creates a located message with the supplied text.
+     *
+     * @param message the message text
+     * @param context the source location
+     * @param source the owning source unit
+     */
     public LocatedMessage(String message, CSTNode context, SourceUnit source) {
         super(message, source);
         this.context = context;
     }
 
+    /**
+     * Creates a located message with supplemental data.
+     *
+     * @param message the message text
+     * @param data supplemental message data
+     * @param context the source location
+     * @param source the owning source unit
+     */
     public LocatedMessage(String message, Object data, CSTNode context, SourceUnit source) {
         super(message, data, source);
         this.context = context;
     }
 
+    /**
+     * Returns the CST node that identifies the message location.
+     *
+     * @return the source location node
+     */
     public CSTNode getContext() {
         return context;
     }
 
     @Override
+    public Diagnostic toDiagnostic() {
+        if (context == null) {
+            return new Diagnostic(sourceName(owner), -1, -1, message);
+        }
+        return new Diagnostic(sourceName(owner), context.getStartLine(), context.getStartColumn(), message);
+    }
+
+    /**
+     * Writes the message together with source-location information.
+     *
+     * @param writer the destination writer
+     * @param janitor the cleanup helper for temporary source access
+     */
+    @Override
     public void write(PrintWriter writer, Janitor janitor) {
-        if (owner instanceof SourceUnit) {
-            SourceUnit source = (SourceUnit) owner;
+        if (owner instanceof SourceUnit source) {
 
             String name = source.getName();
-            int line = context.getStartLine();
-            int column = context.getStartColumn();
-            String sample = source.getSample(line, column, janitor);
+            int line = context == null ? -1 : context.getStartLine();
+            int column = context == null ? -1 : context.getStartColumn();
+            String sample = line > 0 ? source.getSample(line, column, janitor) : null;
 
             if (sample != null) {
-                writer.println(source.getSample(line, column, janitor));
+                writer.println(sample);
             }
 
             writer.println(name + ": " + line + ": " + this.message);

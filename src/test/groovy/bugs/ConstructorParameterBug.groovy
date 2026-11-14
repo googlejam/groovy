@@ -16,9 +16,9 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 import static groovy.test.GroovyAssert.assertScript
 import static groovy.test.GroovyAssert.shouldFail
@@ -54,6 +54,6 @@ final class ConstructorParameterBug {
                 }
             }
         '''
-        assert err =~ / Cannot reference 'baz' before supertype constructor has been called. /
+        assert err.message =~ / Cannot reference 'baz' before supertype constructor has been called. /
     }
 }

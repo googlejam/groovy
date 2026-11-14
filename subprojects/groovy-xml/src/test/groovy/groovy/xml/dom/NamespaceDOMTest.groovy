@@ -23,10 +23,11 @@ import groovy.xml.DOMBuilder
 import groovy.xml.NamespaceBuilder
 import groovy.xml.TestXmlSupport
 import groovy.xml.XmlUtil
+import org.junit.jupiter.api.Test
 
 import static groovy.util.XmlAssert.assertXmlEquals
 
-class NamespaceDOMTest extends TestXmlSupport {
+final class NamespaceDOMTest extends TestXmlSupport {
 
     def expected1 = '''
         <xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema">
@@ -60,7 +61,8 @@ class NamespaceDOMTest extends TestXmlSupport {
         </envelope>
     '''
 
-    void testXsdSchemaWithBuilderHavingAutoPrefix() {
+    @Test
+    void xsdSchemaWithBuilderHavingAutoPrefix() {
         def builder = DOMBuilder.newInstance()
         def xsd = NamespaceBuilder.newInstance(builder, 'http://www.w3.org/2001/XMLSchema', 'xsd')
         def root = xsd.schema {
@@ -79,7 +81,8 @@ class NamespaceDOMTest extends TestXmlSupport {
         assertXmlEquals(expected1, XmlUtil.serialize(root))
     }
 
-    void testXsdSchemaWithBuilderHavingMultipleNamespaces() {
+    @Test
+    void xsdSchemaWithBuilderHavingMultipleNamespaces() {
         def builder = DOMBuilder.newInstance()
         def multi = NamespaceBuilder.newInstance(builder)
         multi.namespace('http://example.org/ord')
@@ -87,7 +90,8 @@ class NamespaceDOMTest extends TestXmlSupport {
         checkXml(multi)
     }
 
-    void testXsdSchemaWithBuilderHavingDeclareNamespace() {
+    @Test
+    void xsdSchemaWithBuilderHavingDeclareNamespace() {
         def builder = DOMBuilder.newInstance()
         def multi = NamespaceBuilder.newInstance(builder)
         multi.declareNamespace(

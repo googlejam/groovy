@@ -16,11 +16,12 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 final class Groovy9922 {
+
     @Test
     void getPidConfirmedByJpsOutputOnEnvironmentsWithThatExecutable() {
         def result = executeJpsSafe()

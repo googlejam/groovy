@@ -18,6 +18,8 @@
  */
 package org.codehaus.groovy.runtime.powerassert;
 
+import org.apache.groovy.lang.annotation.GroovyABI;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -28,15 +30,33 @@ import java.util.List;
 public class ValueRecorder {
     private final List<Value> values = new ArrayList<Value>();
 
+    /**
+     * Removes all values recorded for the current assertion evaluation.
+     */
+    @GroovyABI(since = "1.7.0")
     public void clear() {
         values.clear();
     }
 
+    /**
+     * Records a value at the supplied anchor column and returns it unchanged.
+     *
+     * @param value the value produced while evaluating the assertion
+     * @param anchor the 1-based column in the normalized assertion text, or a
+     * non-positive value if the position is unknown
+     * @return {@code value}
+     */
+    @GroovyABI(since = "1.7.0")
     public Object record(Object value, int anchor) {
         values.add(new Value(value, anchor));
         return value;
     }
 
+    /**
+     * Returns the recorded values in recording order.
+     *
+     * @return the live list of recorded values
+     */
     public List<Value> getValues() {
         return values;
     }

@@ -23,19 +23,38 @@ import org.apache.groovy.contracts.common.spi.ProcessingContextInformation;
 import org.apache.groovy.contracts.domain.ClassInvariant;
 import org.apache.groovy.contracts.domain.Contract;
 import org.codehaus.groovy.ast.ClassNode;
+import org.codehaus.groovy.ast.expr.BinaryExpression;
 import org.codehaus.groovy.ast.expr.BooleanExpression;
+import org.codehaus.groovy.ast.expr.Expression;
+import org.codehaus.groovy.ast.expr.MethodCallExpression;
 import org.codehaus.groovy.ast.stmt.BlockStatement;
+
+import static org.codehaus.groovy.ast.tools.GeneralUtils.andX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.boolX;
 
 /**
  * Internal {@link AnnotationProcessor} implementation for class-invariants.
  */
 public class ClassInvariantAnnotationProcessor extends AnnotationProcessor {
 
+    /**
+     * Merges the supplied class-invariant expression into the current contract model.
+     *
+     * @param processingContextInformation the current processing context
+     * @param contract the mutable contract model
+     * @param classNode the annotated class
+     * @param blockStatement the original invariant block
+     * @param booleanExpression the normalized invariant expression
+     */
     @Override
     public void process(ProcessingContextInformation processingContextInformation, Contract contract, ClassNode classNode, BlockStatement blockStatement, BooleanExpression booleanExpression) {
         if (!processingContextInformation.isClassInvariantsEnabled()) return;
         if (booleanExpression == null) return;
 
+        Expression currentInvariant = contract.classInvariant().booleanExpression().getExpression();
+        if (currentInvariant instanceof MethodCallExpression || currentInvariant instanceof BinaryExpression) {
+            booleanExpression = boolX(andX(booleanExpression, currentInvariant));
+        }
         contract.setClassInvariant(new ClassInvariant(blockStatement, booleanExpression));
     }
 }

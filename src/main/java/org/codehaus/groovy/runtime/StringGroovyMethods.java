@@ -21,13 +21,15 @@ package org.codehaus.groovy.runtime;
 import groovy.lang.Closure;
 import groovy.lang.EmptyRange;
 import groovy.lang.GString;
-import groovy.lang.GroovyRuntimeException;
 import groovy.lang.IntRange;
 import groovy.lang.Range;
 import groovy.transform.stc.ClosureParams;
 import groovy.transform.stc.FromString;
 import groovy.transform.stc.PickFirstResolver;
+import groovy.util.regex.BalancedGroup;
+import groovy.util.regex.RegexGuard;
 import org.apache.groovy.io.StringBuilderWriter;
+import org.apache.groovy.lang.annotation.GroovyABI;
 import org.apache.groovy.lang.annotation.Incubating;
 import org.codehaus.groovy.runtime.typehandling.DefaultTypeTransformation;
 import org.codehaus.groovy.util.CharSequenceReader;
@@ -36,19 +38,22 @@ import java.io.BufferedWriter;
 import java.io.File;
 import java.io.IOException;
 import java.io.Writer;
-import java.lang.invoke.MethodHandle;
-import java.lang.invoke.MethodHandles;
-import java.lang.invoke.MethodType;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.text.DecimalFormat;
+import java.text.NumberFormat;
+import java.text.ParsePosition;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.ListIterator;
+import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.StringTokenizer;
@@ -130,7 +135,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
 
     /**
      * Converts the GString to a File, or delegates to the default
-     * {@link org.codehaus.groovy.runtime.DefaultGroovyMethods#asType(Object,Class)}.
+     * {@link DefaultGroovyMethods#asType(Object,Class)}.
      *
      * @param self a GString
      * @param c    the desired class
@@ -170,7 +175,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * <li>Subclasses of Enum</li>
      * </ul>
      * If any other type is given, the call is delegated to
-     * {@link org.codehaus.groovy.runtime.DefaultGroovyMethods#asType(Object,Class)}.
+     * {@link DefaultGroovyMethods#asType(Object,Class)}.
      *
      * @param self a String
      * @param c    the desired class
@@ -237,7 +242,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
     /**
      * Convenience method to uncapitalize the first letter of a CharSequence
      * (typically the first letter of a word). Example usage:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert 'H'.uncapitalize() == 'h'
      * assert 'Hello'.uncapitalize() == 'hello'
      * assert 'Hello world'.uncapitalize() == 'hello world'
@@ -258,7 +263,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
     /**
      * Convenience method to capitalize the first letter of a CharSequence
      * (typically the first letter of a word). Example usage:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert 'h'.capitalize() == 'H'
      * assert 'hello'.capitalize() == 'Hello'
      * assert 'hello world'.capitalize() == 'Hello world'
@@ -340,7 +345,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
     }
 
     /**
-     * Provides an implementation of contains() like {@link java.util.Collection#contains(Object)} to make CharSequences more polymorphic.
+     * Provides an implementation of contains() like {@link Collection#contains(Object)} to make CharSequences more polymorphic.
      *
      * @param self a CharSequence
      * @param text the CharSequence to look for
@@ -389,7 +394,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
             final Writer sw = new StringBuilderWriter(2);
             // use BufferedWriter rather than System.getProperty because it has
             // the security manager rigamarole to deal with the possible exception
-            try (final BufferedWriter bw = new BufferedWriter(sw)) {
+            try (BufferedWriter bw = new BufferedWriter(sw)) {
                 bw.newLine();
                 bw.flush();
                 lineSeparator = sw.toString();
@@ -443,7 +448,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
     /**
      * Drops the given number of chars from the head of this CharSequence
      * if they are available.
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      *     def text = "Groovy"
      *     assert text.drop( 0 ) == 'Groovy'
      *     assert text.drop( 2 ) == 'oovy'
@@ -504,7 +509,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * front of the original CharSequence such that calling the given closure condition evaluates to
      * true when passed each of the dropped characters.
      * <p>
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * def text = "Groovy"
      * assert text.dropWhile{ false } == 'Groovy'
      * assert text.dropWhile{ true } == ''
@@ -526,6 +531,15 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
         return join(DefaultGroovyMethods.dropWhile(selfIter, condition), "");
     }
 
+    /**
+     * Binary-compatibility bridge for {@link #dropWhile(CharSequence, Closure)}.
+     * Calls that method and returns its result.
+     *
+     * @param self the character sequence whose leading characters may be dropped
+     * @param condition while this returns true for the next character, that character is dropped
+     * @return the suffix that remains
+     * @deprecated exists so callers compiled against the previous return type still link
+     */
     @Deprecated // for binary compatibility only
     public static CharSequence dropWhile$$bridge(final CharSequence self, @ClosureParams(value=FromString.class, conflictResolutionStrategy=PickFirstResolver.class, options={"String", "Character"}) final Closure condition) {
         return dropWhile(self, condition);
@@ -553,6 +567,11 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
         private final int length;
         private int index;
 
+        /**
+         * Iterates {@code delegate} one {@link Character} at a time, from index 0.
+         *
+         * @param delegate the sequence whose {@link CharSequence#charAt(int)} is read
+         */
         public CharacterIterator(final CharSequence delegate) {
             this.delegate = delegate;
             length = delegate.length();
@@ -579,6 +598,12 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
         private final int length;
         private int index;
 
+        /**
+         * Iterates {@code delegate} one character at a time, each as a one-character
+         * {@link String}, from index 0.
+         *
+         * @param delegate the sequence whose {@link CharSequence#charAt(int)} is read
+         */
         public StringIterator(final CharSequence delegate) {
             this.delegate = delegate;
             length = delegate.length();
@@ -603,6 +628,12 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
     private static final class LineIterable implements Iterable<String> {
         private final CharSequence delegate;
 
+        /**
+         * Stores {@code cs}, converting a {@link GString} with {@link GString#toString()}
+         * so later line reads do not rebuild it on every character.
+         *
+         * @param cs the sequence whose lines will be iterated
+         */
         public LineIterable(final CharSequence cs) {
             // GROOVY-7873: GString calls toString() on each invocation of CharSequence methods such
             // as charAt which is very expensive for large GStrings.
@@ -660,7 +691,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * Closure should return {@code null} to indicate that no transformation is
      * required for the given character.
      * <p>
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert "Groovy".collectReplacements{ it == 'o' ? '_O_' : null } == 'Gr_O__O_vy'
      * assert "Groovy".collectReplacements{ it.equalsIgnoreCase('O') ? '_O_' : null } == 'Gr_O__O_vy'
      * assert "Groovy".collectReplacements{ char c {@code ->} c == 'o' ? '_O_' : null } == 'Gr_O__O_vy'
@@ -705,7 +736,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * The return value is an {@code Optional} either having a value equal to the transformed replacement String
      * or {@code empty()} to indicate that no transformation is required.
      * <p>
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * import java.util.function.Function
      * import static java.util.Optional.*
      *
@@ -760,7 +791,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      *
      * @param self    the source CharSequence
      * @param regex   a Regex CharSequence
-     * @param closure a closure with one parameter or as much parameters as groups
+     * @param closure a closure with one parameter or as many parameters as groups
      * @return the source CharSequence
      *
      * @since 1.8.2
@@ -768,8 +799,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * @see #eachMatch(String,String,Closure)
      */
     public static <T extends CharSequence> T eachMatch(final T self, final CharSequence regex, @ClosureParams(value=FromString.class, options={"List<String>","String[]"}) final Closure closure) {
-        eachMatch(self.toString(), regex.toString(), closure);
-        return self;
+        return eachMatch(self, Pattern.compile(regex.toString()), closure);
     }
 
     /**
@@ -780,7 +810,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      *
      * @param self    the source CharSequence
      * @param pattern a regex Pattern
-     * @param closure a closure with one parameter or as much parameters as groups
+     * @param closure a closure with one parameter or as many parameters as groups
      * @return the source CharSequence
      *
      * @since 1.8.2
@@ -788,7 +818,8 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * @see #eachMatch(String,Pattern,Closure)
      */
     public static <T extends CharSequence> T eachMatch(final T self, final Pattern pattern, @ClosureParams(value=FromString.class, options={"List<String>","String[]"}) final Closure closure) {
-        eachMatch(self.toString(), pattern, closure);
+        Matcher m = pattern.matcher(RegexGuard.prepare(self));
+        each(m, closure);
         return self;
     }
 
@@ -800,13 +831,13 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      *
      * @param self    the source string
      * @param pattern a regex Pattern
-     * @param closure a closure with one parameter or as much parameters as groups
+     * @param closure a closure with one parameter or as many parameters as groups
      * @return the source string
      *
      * @since 1.6.1
      */
     public static String eachMatch(final String self, final Pattern pattern, @ClosureParams(value=FromString.class, options={"List<String>","String[]"}) final Closure closure) {
-        Matcher m = pattern.matcher(self);
+        Matcher m = pattern.matcher(RegexGuard.prepare(self));
         each(m, closure);
         return self;
     }
@@ -819,7 +850,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      *
      * @param self    the source string
      * @param regex   a Regex string
-     * @param closure a closure with one parameter or as much parameters as groups
+     * @param closure a closure with one parameter or as many parameters as groups
      * @return the source string
      *
      * @since 1.6.0
@@ -892,17 +923,17 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * If the regex doesn't match, null will be returned.
      * <p>
      * For example, if the regex doesn't match the result is null:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      *     assert "New York, NY".find(/\d{5}/) == null
      * </pre>
      *
      * If it does match, we get the matching string back:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      *      assert "New York, NY 10292-0098".find(/\d{5}/) == "10292"
      * </pre>
      *
      * If we have capture groups in our expression, we still get back the full match
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      *      assert "New York, NY 10292-0098".find(/(\d{5})-?(\d{4})/) == "10292-0098"
      * </pre>
      *
@@ -940,18 +971,18 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * If the pattern doesn't match, null will be returned.
      * <p>
      * For example, if the pattern doesn't match the result is null:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      *     assert "New York, NY".find(~/\d{5}/) == null
      * </pre>
      *
      * If it does match, we get the matching string back:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      *      assert "New York, NY 10292-0098".find(~/\d{5}/) == "10292"
      * </pre>
      *
      * If we have capture groups in our expression, the groups are ignored and
      * we get back the full match:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      *      assert "New York, NY 10292-0098".find(~/(\d{5})-?(\d{4})/) == "10292-0098"
      * </pre>
      * If you need to work with capture groups, then use the closure version
@@ -964,7 +995,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * @since 1.8.2
      */
     public static String find(final CharSequence self, final Pattern pattern) {
-        Matcher matcher = pattern.matcher(self.toString());
+        Matcher matcher = pattern.matcher(RegexGuard.prepare(self));
         if (matcher.find()) {
             return matcher.group(0);
         }
@@ -976,19 +1007,19 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * If the regex doesn't match, the closure will not be called and find will return null.
      * <p>
      * For example, if the pattern doesn't match, the result is null:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      *     assert "New York, NY".find(~/\d{5}/) { match {@code ->} return "-$match-"} == null
      * </pre>
      *
      * If it does match and we don't have any capture groups in our regex, there is a single parameter
      * on the closure that the match gets passed to:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      *      assert "New York, NY 10292-0098".find(~/\d{5}/) { match {@code ->} return "-$match-"} == "-10292-"
      * </pre>
      *
      * If we have capture groups in our expression, our closure has one parameter for the match, followed by
      * one for each of the capture groups:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      *      assert "New York, NY 10292-0098".find(~/(\d{5})-?(\d{4})/) { match, zip, plusFour {@code ->}
      *          assert match == "10292-0098"
      *          assert zip == "10292"
@@ -999,7 +1030,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * If we have capture groups in our expression, and our closure has one parameter,
      * the closure will be passed an array with the first element corresponding to the whole match,
      * followed by an element for each of the capture groups:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      *      assert "New York, NY 10292-0098".find(~/(\d{5})-?(\d{4})/) { array {@code ->}
      *          assert array[0] == "10292-0098"
      *          assert array[1] == "10292"
@@ -1009,7 +1040,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * </pre>
      * If a capture group is optional, and doesn't match, then the corresponding value
      * for that capture group passed to the closure will be null as illustrated here:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      *      assert "adsf 233-9999 adsf".find(~/(\d{3})?-?(\d{3})-(\d{4})/) { match, areaCode, exchange, stationNumber {@code ->}
      *          assert "233-9999" == match
      *          assert null == areaCode
@@ -1027,31 +1058,78 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * @since 1.8.2
      */
     public static String find(final CharSequence self, final Pattern pattern, @ClosureParams(value=FromString.class, options={"java.util.List<java.lang.String>","java.lang.String[]"}) final Closure closure) {
-        Matcher matcher = pattern.matcher(self.toString());
+        Matcher matcher = pattern.matcher(RegexGuard.prepare(self));
         if (matcher.find()) {
-            if (hasGroup(matcher)) {
-                int count = matcher.groupCount();
-                List<String> groups = new ArrayList<>(count);
-                for (int i = 0; i <= count; i += 1) {
-                    groups.add(matcher.group(i));
-                }
-                return InvokerHelper.toString(closure.call(groups));
-            } else {
-                return InvokerHelper.toString(closure.call(matcher.group(0)));
-            }
+            return getReplacement(matcher, closure);
         }
         return null;
+    }
+
+    /**
+     * Finds the first occurrence of a regular expression within a CharSequence and returns the
+     * full match followed by each capture group as a List. If the regex doesn't match, an empty
+     * List is returned. Because multi-assignment pads missing elements with null, the same
+     * destructuring expression works whether or not the regex matches:
+     * <pre class="language-groovy groovyTestCase">
+     * def (all, zip, plus4) = "New York, NY 10292-0098".findGroups(/(\d{5})-(\d{4})/)
+     * assert all == "10292-0098"
+     * assert zip == "10292"
+     * assert plus4 == "0098"
+     *
+     * def (a2, z2, p2) = "New York, NY".findGroups(/(\d{5})-(\d{4})/)
+     * assert [a2, z2, p2] == [null, null, null]
+     * </pre>
+     *
+     * @param self  a CharSequence
+     * @param regex the capturing regex CharSequence
+     * @return a List containing the full match followed by each capture group, or an empty List if there is no match
+     *
+     * @since 6.0.0
+     *
+     * @see #findGroups(CharSequence,Pattern)
+     */
+    public static List<String> findGroups(final CharSequence self, final CharSequence regex) {
+        return findGroups(self, Pattern.compile(regex.toString()));
+    }
+
+    /**
+     * Finds the first occurrence of a compiled regular expression Pattern within a CharSequence
+     * and returns the full match followed by each capture group as a List. If the pattern doesn't
+     * match, an empty List is returned.
+     * <pre class="language-groovy groovyTestCase">
+     * def (all, zip, plus4) = "New York, NY 10292-0098".findGroups(~/(\d{5})-(\d{4})/)
+     * assert all == "10292-0098"
+     * assert zip == "10292"
+     * assert plus4 == "0098"
+     *
+     * assert "New York, NY".findGroups(~/(\d{5})-(\d{4})/) == []
+     * def (a2, z2, p2) = "New York, NY".findGroups(~/(\d{5})-(\d{4})/)
+     * assert [a2, z2, p2] == [null, null, null]
+     * </pre>
+     *
+     * @param self    a CharSequence
+     * @param pattern the compiled regex Pattern
+     * @return a List containing the full match followed by each capture group, or an empty List if there is no match
+     *
+     * @since 6.0.0
+     */
+    public static List<String> findGroups(final CharSequence self, final Pattern pattern) {
+        Matcher matcher = pattern.matcher(RegexGuard.prepare(self));
+        if (matcher.find()) {
+            return getGroups(matcher);
+        }
+        return new ArrayList<>();
     }
 
     /**
      * Returns a (possibly empty) list of all occurrences of a regular expression (provided as a CharSequence) found within a CharSequence.
      * <p>
      * For example, if the regex doesn't match, it returns an empty list:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert "foo".findAll(/(\w*) Fish/) == []
      * </pre>
      * Any regular expression matches are returned in a list, and all regex capture groupings are ignored, only the full match is returned:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * def expected = ["One Fish", "Two Fish", "Red Fish", "Blue Fish"]
      * assert "One Fish, Two Fish, Red Fish, Blue Fish".findAll(/(\w*) Fish/) == expected
      * </pre>
@@ -1077,15 +1155,15 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * If there are no matches, the closure will not be called, and an empty List will be returned.
      * <p>
      * For example, if the regex doesn't match, it returns an empty list:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert "foo".findAll(/(\w*) Fish/) { match, firstWord {@code ->} return firstWord } == []
      * </pre>
      * Any regular expression matches are passed to the closure, if there are no capture groups, there will be one parameter for the match:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert "I could not, would not, with a fox.".findAll(/.ould/) { match {@code ->} "${match}n't"} == ["couldn't", "wouldn't"]
      * </pre>
      * If there are capture groups, the first parameter will be the match followed by one parameter for each capture group:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * def orig = "There's a Wocket in my Pocket"
      * assert orig.findAll(/(.)ocket/) { match, firstLetter {@code ->} "$firstLetter {@code >} $match" } == ["W {@code >} Wocket", "P {@code >} Pocket"]
      * </pre>
@@ -1107,11 +1185,11 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * Returns a (possibly empty) list of all occurrences of a regular expression (in Pattern format) found within a CharSequence.
      * <p>
      * For example, if the pattern doesn't match, it returns an empty list:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert "foo".findAll(~/(\w*) Fish/) == []
      * </pre>
      * Any regular expression matches are returned in a list, and all regex capture groupings are ignored, only the full match is returned:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * def expected = ["One Fish", "Two Fish", "Red Fish", "Blue Fish"]
      * assert "One Fish, Two Fish, Red Fish, Blue Fish".findAll(~/(\w*) Fish/) == expected
      * </pre>
@@ -1123,7 +1201,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * @since 1.8.2
      */
     public static List<String> findAll(final CharSequence self, final Pattern pattern) {
-        Matcher matcher = pattern.matcher(self.toString());
+        Matcher matcher = pattern.matcher(RegexGuard.prepare(self));
         boolean hasGroup = hasGroup(matcher);
         List<String> list = new ArrayList<>();
         for (Iterator iter = iterator(matcher); iter.hasNext();) {
@@ -1133,7 +1211,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
                 list.add((String) iter.next());
             }
         }
-        return new ArrayList<String>(list);
+        return list;
     }
 
     /**
@@ -1144,16 +1222,16 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * If there are no matches, the closure will not be called, and an empty List will be returned.
      * <p>
      * For example, if the pattern doesn't match, it returns an empty list:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert "foo".findAll(~/(\w*) Fish/) { match, firstWord {@code ->} return firstWord } == []
      * </pre>
      * Any regular expression matches are passed to the closure, if there are no capture groups, there will be one
      * parameter for the match:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert "I could not, would not, with a fox.".findAll(~/.ould/) { match {@code ->} "${match}n't"} == ["couldn't", "wouldn't"]
      * </pre>
      * If there are capture groups, the first parameter will be the match followed by one parameter for each capture group:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * def orig = "There's a Wocket in my Pocket"
      * assert orig.findAll(~/(.)ocket/) { match, firstLetter {@code ->} "$firstLetter {@code >} $match" } == ["W {@code >} Wocket", "P {@code >} Pocket"]
      * </pre>
@@ -1166,8 +1244,59 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * @since 1.8.2
      */
     public static <T> List<T> findAll(final CharSequence self, final Pattern pattern, @ClosureParams(value=FromString.class, options={"java.util.List<java.lang.String>","java.lang.String[]"}) final Closure<T> closure) {
-        Matcher matcher = pattern.matcher(self.toString());
+        Matcher matcher = pattern.matcher(RegexGuard.prepare(self));
         return DefaultGroovyMethods.collect(matcher, closure);
+    }
+
+    /**
+     * Returns a (possibly empty) list of all occurrences of a regular expression within a
+     * CharSequence, with each occurrence represented by a List containing the full match
+     * followed by each capture group.
+     * <pre class="language-groovy groovyTestCase">
+     * def input = "Type=apple Price=2.34; Type=pear Price=3.56"
+     * def pairs = input.findAllGroups(/Type=(\w+) Price=([\d.]+)/).collect { all, t, p {@code ->} "$t:$p" }
+     * assert pairs == ["apple:2.34", "pear:3.56"]
+     *
+     * assert "none here".findAllGroups(/Type=(\w+) Price=([\d.]+)/) == []
+     * </pre>
+     *
+     * @param self  a CharSequence
+     * @param regex the capturing regex CharSequence
+     * @return a List of Lists, one per match, each containing the full match followed by each capture group; an empty List if there are no matches
+     *
+     * @since 6.0.0
+     *
+     * @see #findAllGroups(CharSequence,Pattern)
+     */
+    public static List<List<String>> findAllGroups(final CharSequence self, final CharSequence regex) {
+        return findAllGroups(self, Pattern.compile(regex.toString()));
+    }
+
+    /**
+     * Returns a (possibly empty) list of all occurrences of a compiled regular expression Pattern
+     * within a CharSequence, with each occurrence represented by a List containing the full match
+     * followed by each capture group.
+     * <pre class="language-groovy groovyTestCase">
+     * def input = "Type=apple Price=2.34; Type=pear Price=3.56"
+     * def pairs = input.findAllGroups(~/Type=(\w+) Price=([\d.]+)/).collect { all, t, p {@code ->} "$t:$p" }
+     * assert pairs == ["apple:2.34", "pear:3.56"]
+     *
+     * assert "none here".findAllGroups(~/Type=(\w+) Price=([\d.]+)/) == []
+     * </pre>
+     *
+     * @param self    a CharSequence
+     * @param pattern the compiled regex Pattern
+     * @return a List of Lists, one per match, each containing the full match followed by each capture group; an empty List if there are no matches
+     *
+     * @since 6.0.0
+     */
+    public static List<List<String>> findAllGroups(final CharSequence self, final Pattern pattern) {
+        Matcher matcher = pattern.matcher(RegexGuard.prepare(self));
+        List<List<String>> list = new ArrayList<>();
+        while (matcher.find()) {
+            list.add(getGroups(matcher));
+        }
+        return list;
     }
 
     // TODO: Expose this for stream based scenarios?
@@ -1193,7 +1322,9 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
     public static String getAt(final CharSequence self, final Collection indices) {
         StringBuilder answer = new StringBuilder();
         for (Object value : indices) {
-            if (value instanceof Range) {
+            if (value instanceof EmptyRange) {
+                // an empty range contributes no characters
+            } else if (value instanceof Range) {
                 answer.append(getAt(self, (Range) value));
             } else if (value instanceof Collection) {
                 answer.append(getAt(self, (Collection) value));
@@ -1300,8 +1431,19 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
     }
 
     /**
-     * Selects a List of values from a Matcher using a Collection
-     * to identify the indices to be selected.
+     * Selects a List of values from a Matcher using a (potentially nested)
+     * Collection to identify the indices to be selected.
+     * A range among the indices has its bounds resolved against the number of
+     * matches, so a negative bound counts back from the last match and an empty
+     * range contributes no elements.
+     * <pre class="language-groovy groovyTestCase">
+     * def matcher = 'a1b2c3d4' =~ /[a-z]\d/
+     * assert matcher[1, 3] == ['b2', 'd4']
+     * assert matcher[1..-1] == ['b2', 'c3', 'd4']
+     * assert matcher[0, 2..&lt;-1] == ['a1', 'c3']
+     * assert matcher[0, [1, 3]] == ['a1', 'b2', 'd4']
+     * assert matcher[0..1, 2..&lt;2] == ['a1', 'b2']
+     * </pre>
      *
      * @param self    a Matcher
      * @param indices a Collection of indices
@@ -1309,16 +1451,21 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      *
      * @since 1.6.0
      */
-    public static List getAt(final Matcher self, Collection indices) {
-        List result = new ArrayList();
-        if (indices instanceof IntRange) {
-            int size = (int) size(self);
-            RangeInfo info = subListBorders(size, (Range) indices);
-            indices = new IntRange(((IntRange)indices).getInclusive(), info.from, info.to - 1);
+    public static List getAt(final Matcher self, final Collection indices) {
+        if (indices instanceof EmptyRange) {
+            return new ArrayList();
         }
+        if (indices instanceof Range) {
+            return matcherSubList(self, (Range) indices);
+        }
+        List result = new ArrayList();
         for (Object value : indices) {
-            if (value instanceof Range) {
-                result.addAll(getAt(self, (Range) value));
+            if (value instanceof EmptyRange) {
+                // an empty range contributes no elements
+            } else if (value instanceof Range) {
+                result.addAll(matcherSubList(self, (Range) value));
+            } else if (value instanceof Collection) {
+                result.addAll(getAt(self, (Collection) value));
             } else {
                 int idx = DefaultTypeTransformation.intUnbox(value);
                 result.add(getAt(self, idx));
@@ -1328,10 +1475,29 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
     }
 
     /**
+     * Reads the window of matches a range selects. The range is resolved against
+     * the number of matches, then the window is read directly; rebuilding a range
+     * from the resolved borders would lose the reversal and could not tell an empty
+     * window apart from a one element reversed one.
+     *
+     * @param self  a Matcher
+     * @param range the range of indices of interest
+     * @return the matches corresponding to the resolved range
+     */
+    private static List matcherSubList(final Matcher self, final Range range) {
+        RangeInfo info = subListBorders((int) size(self), range);
+        List answer = new ArrayList(info.to - info.from);
+        for (int i = info.from; i < info.to; i += 1) {
+            answer.add(getAt(self, i));
+        }
+        return info.reverse ? DefaultGroovyMethods.reverse(answer) : answer;
+    }
+
+    /**
      * Supports the subscript operator, e.g. {@code matcher[index]}, for a {@code Matcher}.
      * <p>
      * For an example using no group match,
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      *    def p = /ab[d|f]/
      *    def m = "abcabdabeabf" =~ p
      *    assert 2 == m.count
@@ -1345,7 +1511,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * </pre>
      * <p>
      * For an example using group matches,
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      *    def p = /(?:ab([c|d|e|f]))/
      *    def m = "abcabdabeabf" =~ p
      *    assert 4 == m.count
@@ -1358,7 +1524,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * </pre>
      * <p>
      * For another example using group matches,
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      *    def m = "abcabdabeabfabxyzabx" =~ /(?:ab([d|x-z]+))/
      *    assert 3 == m.count
      *    assert m.hasGroup()
@@ -1400,7 +1566,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * the string matches the pattern or if a longer string, could match the pattern.
      *
      * For example:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      *     def emailPattern = /\w+@\w+\.\w{2,}/
      *
      *     def matcher = "john@doe" =~ emailPattern
@@ -1480,6 +1646,19 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
     }
 
     /**
+     * Converts the given CharSequence into an array of code point values including any surrogate pairs
+     * as per {@link String#codePoints()}.
+     *
+     * @param self a CharSequence
+     * @return an array of ints
+     *
+     * @since 5.0.0
+     */
+    public static int[] getCodePoints(final CharSequence self) {
+        return self.codePoints().toArray();
+    }
+
+    /**
      * Finds the number of Strings matched to the given Matcher.
      *
      * @param self a Matcher
@@ -1505,37 +1684,208 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
     }
 
     /**
-     * Gets a replacement corresponding to the matched pattern for {@link org.codehaus.groovy.runtime.StringGroovyMethods#replaceAll(CharSequence,Pattern,Closure)}.
+     * Gets a replacement corresponding to the matched pattern for {@link StringGroovyMethods#replaceAll(CharSequence,Pattern,Closure)}.
      * <p>
-     * The closure take parameter:
+     * The closure is called with a parameter determined as follows:
      * <ul>
-     * <li>Whole of match if the pattern include no capturing group</li>
-     * <li>Object[] of capturing groups if the closure takes Object[] as parameter</li>
-     * <li>List of capturing groups</li>
+     * <li>The whole of the match if the pattern includes no capturing group</li>
+     * <li>An Object[] of capturing groups if the closure takes Object[] as parameter</li>
+     * <li>A List of capturing groups</li>
      * </ul>
      *
      * @param matcher the matcher object used for matching
      * @param closure specified with replaceAll() to get replacement
      * @return replacement correspond replacement for a match
      */
-    private static String getReplacement(final Matcher matcher, final Closure closure) {
-        if (!hasGroup(matcher)) {
-            return InvokerHelper.toString(closure.call(matcher.group()));
+    private static String getReplacement(final Matcher matcher, final Closure<?> closure) {
+        if (hasGroup(matcher)) {
+            List<String> groups = getGroups(matcher);
+            Class<?>[] paramTypes = closure.getParameterTypes();
+            if (paramTypes.length == 1 && paramTypes[0].isArray()) {
+                Class<?> elementType = paramTypes[0].getComponentType();
+                if (elementType.isAssignableFrom(String.class)) { // GROOVY-11076
+                    return FormatHelper.toString(closure.call(groups.toArray()));
+                }
+            }
+            return FormatHelper.toString(closure.call(groups));
+        } else {
+            return FormatHelper.toString(closure.call(matcher.group(0)));
         }
-
-        int count = matcher.groupCount();
-        List<String> groups = new ArrayList<String>();
-        for (int i = 0; i <= count; i++) {
-            groups.add(matcher.group(i));
-        }
-
-        if (closure.getParameterTypes().length == 1
-                && closure.getParameterTypes()[0] == Object[].class) {
-            return InvokerHelper.toString(closure.call(groups.toArray()));
-        }
-        return InvokerHelper.toString(closure.call(groups));
     }
 
+    private static List<String> getGroups(final Matcher matcher) {
+        final int n = matcher.groupCount() + 1;
+        List<String> list = new ArrayList<>(n);
+        for (int i = 0; i < n; i += 1) {
+            list.add(matcher.group(i));
+        }
+        return list;
+    }
+
+    // stateful matcher API is not very extensible; care should be taken if using the matcher directly as it will potentially be mutated
+    // this mostly provides an efficient list delegate but will less efficiently recalculates matches for named groups
+    static class GroupList implements List<String> {
+        private final Matcher matcher;
+        private final int count;
+        private final List<String> delegate;
+
+        /**
+         * Copies every group of the matcher's current match, including group 0, and
+         * remembers {@code count} so a later named lookup can re-find that match.
+         *
+         * @param matcher the matcher positioned on the match this list represents
+         * @param count zero-based index of that match in the matcher's find sequence
+         */
+        public GroupList(Matcher matcher, int count) {
+            this.matcher = matcher;
+            this.count = count;
+            this.delegate = getGroups(matcher);
+        }
+
+        @Override
+        public int size() {
+            return delegate.size();
+        }
+
+        @Override
+        public boolean isEmpty() {
+            return delegate.isEmpty();
+        }
+
+        @Override
+        public boolean contains(Object o) {
+            return delegate.contains(o);
+        }
+
+        @Override
+        public Iterator<String> iterator() {
+            return delegate.iterator();
+        }
+
+        @Override
+        public Object[] toArray() {
+            return delegate.toArray();
+        }
+
+        @Override
+        public boolean add(String s) {
+            throw new UnsupportedOperationException("Can't add to a Matcher result");
+        }
+
+        @Override
+        public boolean remove(Object o) {
+            throw new UnsupportedOperationException("Can't remove a Matcher result");
+        }
+
+        @Override
+        public boolean addAll(Collection c) {
+            throw new UnsupportedOperationException("Can't addAll to a Matcher result");
+        }
+
+        @Override
+        public boolean addAll(int index, Collection c) {
+            throw new UnsupportedOperationException("Can't addAll to a Matcher result");
+        }
+
+        @Override
+        public void clear() {
+            throw new UnsupportedOperationException("Can't clear a Matcher result");
+        }
+
+        @Override
+        public String get(int index) {
+            return delegate.get(index);
+        }
+
+        /**
+         * Re-finds the match this list was built for, then returns its named group.
+         * {@link Matcher#reset()} runs first, then {@link Matcher#find()} once more
+         * than {@code count}, so the matcher is left on that match.
+         * <p>The re-find fails when it does not land on a match, and an unknown
+         * group name is rejected.
+         *
+         * @param name the capturing-group name
+         * @return the text captured by that group
+         */
+        public String get(String name) {
+            matcher.reset();
+            for (int i = 0; i <= count; i++) {
+                matcher.find();
+            }
+            return matcher.group(name);
+        }
+
+        /**
+         * Returns the named group of the matcher's current match, without resetting it.
+         * <p>A matcher with no current match fails, and an unknown group name is rejected.
+         *
+         * @param name the capturing-group name
+         * @return the text captured by that group
+         */
+        public String getAt(String name) {
+            return matcher.group(name);
+        }
+
+        @Override
+        public String set(int index, String element) {
+            throw new UnsupportedOperationException("Can't set a Matcher result");
+        }
+
+        @Override
+        public void add(int index, String element) {
+            throw new UnsupportedOperationException("Can't add to a Matcher result");
+        }
+
+        @Override
+        public String remove(int index) {
+            throw new UnsupportedOperationException("Can't remove a Matcher result");
+        }
+
+        @Override
+        public int indexOf(Object o) {
+            return delegate.indexOf(o);
+        }
+
+        @Override
+        public int lastIndexOf(Object o) {
+            return delegate.lastIndexOf(o);
+        }
+
+        @Override
+        public ListIterator<String> listIterator() {
+            return delegate.listIterator();
+        }
+
+        @Override
+        public ListIterator<String> listIterator(int index) {
+            return delegate.listIterator(index);
+        }
+
+        @Override
+        public List<String> subList(int fromIndex, int toIndex) {
+            return delegate.subList(fromIndex, toIndex);
+        }
+
+        @Override
+        public boolean retainAll(Collection<?> c) {
+            return delegate.retainAll(c);
+        }
+
+        @Override
+        public boolean removeAll(Collection<?> c) {
+            throw new UnsupportedOperationException("Can't remove from a Matcher result");
+        }
+
+        @Override
+        public boolean containsAll(Collection<?> c) {
+            return delegate.containsAll(c);
+        }
+
+        @Override
+        public Object[] toArray(Object[] a) {
+            return delegate.toArray(a);
+        }
+    }
     /**
      * Checks whether a Matcher contains a group or not.
      *
@@ -1626,7 +1976,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
     }
 
     /**
-     * 'Case' implementation for the {@link java.util.regex.Pattern} class, which allows
+     * 'Case' implementation for the {@link Pattern} class, which allows
      * testing a String against a number of regular expressions.
      * <p>
      * For example:
@@ -1648,7 +1998,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
         if (switchValue == null) {
             return caseValue == null;
         }
-        final Matcher matcher = caseValue.matcher(switchValue.toString());
+        final Matcher matcher = caseValue.matcher(RegexGuard.prepare(switchValue instanceof CharSequence cs ? cs : switchValue.toString()));
         if (matcher.matches()) {
             RegexSupport.setLastMatcher(matcher);
             return true;
@@ -1726,6 +2076,20 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
     }
 
     /**
+     * @since 4.0.0
+     */
+    public static boolean isNotCase(final CharSequence caseValue, final Object switchValue) {
+        return !isCase(caseValue, switchValue);
+    }
+
+    /**
+     * @since 4.0.0
+     */
+    public static boolean isNotCase(final Pattern caseValue, final Object switchValue) {
+        return !isCase(caseValue, switchValue);
+    }
+
+    /**
      * Determines if a CharSequence can be parsed as a Number.
      *
      * @param self a CharSequence
@@ -1740,19 +2104,20 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
     }
 
     /**
-     * Returns an {@link java.util.Iterator} which traverses each match.
+     * Returns an {@link Iterator} which traverses each match.
      *
      * @param self a Matcher object
      * @return an Iterator for a Matcher
      *
      * @since 1.0
      *
-     * @see java.util.regex.Matcher#group()
+     * @see Matcher#group()
      */
     public static Iterator iterator(final Matcher self) {
         self.reset();
         return new Iterator() {
             private boolean done, found;
+            private int count;
 
             @Override
             public boolean hasNext() {
@@ -1778,13 +2143,8 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
                 found = false;
 
                 if (hasGroup(self)) {
-                    // are we using groups?
-                    // yes, so return the specified group as list
-                    List<String> list = new ArrayList<String>(self.groupCount());
-                    for (int i = 0; i <= self.groupCount(); i += 1) {
-                        list.add(self.group(i));
-                    }
-                    return list;
+                    // yes, so return the specified group list
+                    return new GroupList(self, count++);
                 } else {
                     // not using groups, so return the nth
                     // occurrence of the pattern
@@ -1813,17 +2173,16 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
         return new StringBuilder(self).append(value);
     }
 
+    // TODO: Deprecate in favor of leftShift(CharSequence,Object): StringBuilder?
     /**
-     * Overloads the left shift operator to provide an easy way to append multiple
-     * objects as string representations to a String.
+     * Appends {@code value} to a new {@link StringBuffer} copied from {@code self}.
+     * {@code self} itself is left unchanged.
      *
-     * @param self  a String
-     * @param value an Object
-     * @return a StringBuffer built from this string
-     *
+     * @param self the characters copied into the buffer
+     * @param value the object appended with {@link StringBuffer#append(Object)}
+     * @return the new buffer
      * @since 1.0
      */
-    // TODO: Deprecate in favor of leftShift(CharSequence,Object): StringBuilder?
     public static StringBuffer leftShift(final String self, final Object value) {
         return new StringBuffer(self).append(value);
     }
@@ -1869,7 +2228,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * @see String#matches(String)
      */
     public static boolean matches(final CharSequence self, final Pattern pattern) {
-        return pattern.matcher(self).matches();
+        return pattern.matcher(RegexGuard.ambientGuard(self)).matches();
     }
 
     /**
@@ -1884,7 +2243,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      */
     public static String minus(final CharSequence self, final Object target) {
         String s = self.toString();
-        String text = DefaultGroovyMethods.toString(target);
+        String text = FormatHelper.toString(target);
         int index = s.indexOf(text);
         if (index == -1) return s;
         int end = index + text.length();
@@ -1905,7 +2264,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * @since 2.2.0
      */
     public static String minus(final CharSequence self, final Pattern pattern) {
-        return pattern.matcher(self).replaceFirst("");
+        return pattern.matcher(RegexGuard.ambientGuard(self)).replaceFirst("");
     }
 
     /**
@@ -1920,16 +2279,9 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      */
     public static String multiply(final CharSequence self, final Number factor) {
         int size = factor.intValue();
-        if (size == 0)
-            return "";
-        else if (size < 0) {
-            throw new IllegalArgumentException("multiply() should be called with a number of 0 or greater not: " + size);
-        }
-        StringBuilder answer = new StringBuilder(self);
-        for (int i = 1; i < size; i++) {
-            answer.append(self);
-        }
-        return answer.toString();
+        if (size == 0) return "";
+        if (size < 0) throw new IllegalArgumentException("multiply() should be called with a number of 0 or greater not: " + size);
+        return String.valueOf(self).repeat(size);
     }
 
     /**
@@ -1957,6 +2309,50 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
                 next++;
                 buffer.setCharAt(buffer.length() - 1, next);
             }
+        }
+        return buffer.toString();
+    }
+
+    /**
+     * A variant of next with an integer count parameter; equivalent to calling next() count times.
+     * <pre class="language-groovy groovyTestCase">
+     * assert 'a'.next(1) == 'a'.next()
+     * assert 'a'.next(4) == 'e'
+     * assert 'a'.next(0) == 'a'
+     * assert 'a'.next(25) == 'z'
+     * assert 'A'.next(32) == 'a'
+     * assert (0..4).collect('a'::next) == 'a'..'e'
+     * assert 'car'.next(2) == 'cat'
+     * </pre>
+     *
+     * @param self a CharSequence
+     * @param n how many times to increment
+     * @see #next(CharSequence)
+     * @return a value obtained by incrementing the toString() of the CharSequence n times
+     *
+     * @since 5.0.0
+     */
+    public static String next(final CharSequence self, int n) {
+        if (n < 0) {
+            throw new IllegalArgumentException("A negative value for n is not supported");
+        }
+        if (n == 0) {
+            return self.toString();
+        }
+        StringBuilder buffer = new StringBuilder(self);
+        if (buffer.length() == 0) {
+            buffer.append(Character.MIN_VALUE);
+        } else {
+            char last = buffer.charAt(buffer.length() - 1);
+            for (; n > 0; n--) {
+                if (last == Character.MAX_VALUE) {
+                    buffer.append(Character.MIN_VALUE);
+                    last = Character.MIN_VALUE;
+                } else {
+                    last++;
+                }
+            }
+            buffer.setCharAt(buffer.length() - 1, last);
         }
         return buffer.toString();
     }
@@ -2140,8 +2536,9 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      *
      * @since 1.8.2
      */
+    @GroovyABI(since = "3.0.0")
     public static String plus(final CharSequence left, final Object right) {
-        return left + DefaultGroovyMethods.toString(right);
+        return left + FormatHelper.toString(right);
     }
 
     /**
@@ -2154,7 +2551,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * @since 1.0
      */
     public static String plus(final Number left, final String right) {
-        return DefaultGroovyMethods.toString(left) + right;
+        return FormatHelper.toString(left) + right;
     }
 
     /**
@@ -2209,6 +2606,54 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
     }
 
     /**
+     * A variant of previous with an integer count parameter; equivalent to calling previous() count times.
+     * <pre class="language-groovy groovyTestCase">
+     * assert 'b'.previous(1) == 'b'.previous()
+     * assert 'e'.previous(4) == 'a'
+     * assert 'a'.previous(0) == 'a'
+     * assert 'z'.previous(25) == 'a'
+     * assert 'a'.previous(32) == 'A'
+     * assert (0..4).collect('z'::previous) == 'z'..'v'
+     * assert 'cat'.previous(2) == 'car'
+     * </pre>
+     *
+     * @param self a CharSequence
+     * @param n how many times to decrement
+     * @see #previous(CharSequence)
+     * @return a value obtained by decrementing the toString() of the CharSequence n times
+     *
+     * @since 5.0.0
+     */
+    public static String previous(final CharSequence self, int n) {
+        if (n < 0) {
+            throw new IllegalArgumentException("A negative value for n is not supported");
+        }
+        if (n == 0) {
+            return self.toString();
+        }
+        StringBuilder buffer = new StringBuilder(self);
+        if (buffer.length() == 0) throw new IllegalArgumentException("the string is empty");
+        char last = buffer.charAt(buffer.length() - 1);
+        boolean empty = false;
+        for (; n > 0; n--) {
+            if (empty) throw new IllegalArgumentException("the string became empty while decrementing");
+            if (last == Character.MIN_VALUE) {
+                buffer.deleteCharAt(buffer.length() - 1);
+                empty = buffer.length() == 0;
+                if (!empty) {
+                    last = buffer.charAt(buffer.length() - 1);
+                }
+            } else {
+                last--;
+            }
+        }
+        if (!empty) {
+            buffer.setCharAt(buffer.length() - 1, last);
+        }
+        return buffer.toString();
+    }
+
+    /**
      * Supports the range subscript operator for StringBuffer.
      *
      * @param self  a StringBuffer
@@ -2252,6 +2697,10 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
     /**
      * Replaces each substring of this CharSequence that matches the given
      * regular expression with the given replacement.
+     * <p>
+     * <pre class="language-groovy groovyTestCase">
+     * assert "foo".replaceAll('o', 'X') == 'fXX'
+     * </pre>
      *
      * @param self        a CharSequence
      * @param regex       the capturing regex
@@ -2264,14 +2713,14 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * @see String#replaceAll(String,String)
      */
     public static String replaceAll(final CharSequence self, final CharSequence regex, final CharSequence replacement) {
-        return self.toString().replaceAll(regex.toString(), replacement.toString());
+        return Pattern.compile(regex.toString()).matcher(RegexGuard.prepare(self)).replaceAll(replacement.toString());
     }
 
     /**
      * Replaces all occurrences of a captured group by the result of calling a closure on that text.
      * <p>
      * Examples:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      *     assert "hello world".replaceAll("(o)") { it[0].toUpperCase() } == "hellO wOrld"
      *
      *     assert "foobar-FooBar-".replaceAll("(([fF][oO]{2})[bB]ar)", { Object[] it {@code ->} it[0].toUpperCase() }) == "FOOBAR-FOOBAR-"
@@ -2311,14 +2760,14 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * compiled regular expression with the given replacement.
      * <p>
      * Note that backslashes ({@code \}) and dollar signs ({@code $}) in the
-     * replacement string may cause the results to be different than if it were
+     * replacement string may cause the results to be different from if it were
      * being treated as a literal replacement string; see
-     * {@link java.util.regex.Matcher#replaceAll}.
-     * Use {@link java.util.regex.Matcher#quoteReplacement} to suppress the special
+     * {@link Matcher#replaceAll}.
+     * Use {@link Matcher#quoteReplacement} to suppress the special
      * meaning of these characters, if desired.
      * <p>
-     * <pre class="groovyTestCase">
-     * assert "foo".replaceAll('o', 'X') == 'fXX'
+     * <pre class="language-groovy groovyTestCase">
+     * assert "foo".replaceAll(~'o', 'X') == 'fXX'
      * </pre>
      *
      * @param   self the CharSequence that is to be matched
@@ -2329,14 +2778,14 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * @since 1.8.2
      */
     public static String replaceAll(final CharSequence self, final Pattern pattern, final CharSequence replacement) {
-        return pattern.matcher(self).replaceAll(replacement.toString());
+        return pattern.matcher(RegexGuard.ambientGuard(self)).replaceAll(replacement.toString());
     }
 
     /**
      * Replaces all occurrences of a captured group by the result of a closure call on that text.
      * <p>
      * For examples,
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      *     assert "hello world".replaceAll(~"(o)") { it[0].toUpperCase() } == "hellO wOrld"
      *
      *     assert "foobar-FooBar-".replaceAll(~"(([fF][oO]{2})[bB]ar)", { it[0].toUpperCase() }) == "FOOBAR-FOOBAR-"
@@ -2371,13 +2820,13 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      *
      * @since 1.8.2
      *
-     * @see java.util.regex.Matcher#quoteReplacement(String)
+     * @see Matcher#quoteReplacement(String)
      */
     public static String replaceAll(final CharSequence self, final Pattern pattern, @ClosureParams(value=FromString.class, options={"List<String>","String[]"}) final Closure closure) {
-        final String s = self.toString();
-        final Matcher matcher = pattern.matcher(s);
+        final CharSequence cs = Objects.requireNonNull(RegexGuard.prepare(self), "self");
+        final Matcher matcher = pattern.matcher(cs);
         if (matcher.find()) {
-            final StringBuffer sb = new StringBuffer(s.length() + 16);
+            final StringBuilder sb = new StringBuilder(cs.length() + 16);
             do {
                 String replacement = getReplacement(matcher, closure);
                 matcher.appendReplacement(sb, Matcher.quoteReplacement(replacement));
@@ -2385,7 +2834,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
             matcher.appendTail(sb);
             return sb.toString();
         } else {
-            return s;
+            return cs.toString();
         }
     }
 
@@ -2403,14 +2852,14 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * @see String#replaceFirst(String,String)
      */
     public static String replaceFirst(final CharSequence self, final CharSequence regex, final CharSequence replacement) {
-        return self.toString().replaceFirst(regex.toString(), replacement.toString());
+        return Pattern.compile(regex.toString()).matcher(RegexGuard.prepare(self)).replaceFirst(replacement.toString());
     }
 
     /**
      * Replaces the first occurrence of a captured group by the result of a closure call on that text.
      * <p>
      * For example (with some replaceAll variants thrown in for comparison purposes),
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert "hello world".replaceFirst("(o)") { it[0].toUpperCase() } == "hellO world" // first match
      * assert "hello world".replaceAll("(o)") { it[0].toUpperCase() } == "hellO wOrld" // all matches
      *
@@ -2434,13 +2883,13 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * compiled regular expression with the given replacement.
      * <p>
      * Note that backslashes ({@code \}) and dollar signs ({@code $}) in the
-     * replacement string may cause the results to be different than if it were
+     * replacement string may cause the results to be different from if it were
      * being treated as a literal replacement string; see
-     * {@link java.util.regex.Matcher#replaceFirst}.
-     * Use {@link java.util.regex.Matcher#quoteReplacement} to suppress the special
+     * {@link Matcher#replaceFirst}.
+     * Use {@link Matcher#quoteReplacement} to suppress the special
      * meaning of these characters, if desired.
      * <p>
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert "foo".replaceFirst('o', 'X') == 'fXo'
      * </pre>
      *
@@ -2451,14 +2900,14 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * @since 1.8.2
      */
     public static String replaceFirst(final CharSequence self, final Pattern pattern, final CharSequence replacement) {
-        return pattern.matcher(self).replaceFirst(replacement.toString());
+        return pattern.matcher(RegexGuard.ambientGuard(self)).replaceFirst(replacement.toString());
     }
 
     /**
      * Replaces the first occurrence of a captured group by the result of a closure call on that text.
      * <p>
      * For example (with some replaceAll variants thrown in for comparison purposes),
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert "hellO world" == "hello world".replaceFirst(~"(o)") { it[0].toUpperCase() } // first match
      * assert "hellO wOrld" == "hello world".replaceAll(~"(o)") { it[0].toUpperCase() }   // all matches
      *
@@ -2473,16 +2922,16 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * @since 1.8.2
      */
     public static String replaceFirst(final CharSequence self, final Pattern pattern, @ClosureParams(value=FromString.class, options={"List<String>","String[]"}) final Closure closure) {
-        final String s = self.toString();
-        final Matcher matcher = pattern.matcher(s);
+        final CharSequence cs = Objects.requireNonNull(RegexGuard.prepare(self), "self");
+        final Matcher matcher = pattern.matcher(cs);
         if (matcher.find()) {
-            final StringBuffer sb = new StringBuffer(s.length() + 16);
+            final StringBuilder sb = new StringBuilder(cs.length() + 16);
             String replacement = getReplacement(matcher, closure);
             matcher.appendReplacement(sb, Matcher.quoteReplacement(replacement));
             matcher.appendTail(sb);
             return sb.toString();
         } else {
-            return s;
+            return cs.toString();
         }
     }
 
@@ -2490,6 +2939,12 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * Helper class used by {@link #replace(CharSequence,Map)}.
      */
     private static class ReplaceState {
+        /**
+         * Snapshots {@code replacements} in entry-set order and allocates a
+         * {@code noMoreMatches} flag for each entry, initially {@code false}.
+         *
+         * @param replacements the search text and its replacement, in map iteration order
+         */
         public ReplaceState(Map<CharSequence, CharSequence> replacements) {
             this.noMoreMatches = new boolean[replacements.size()];
             this.replacementsList = DefaultGroovyMethods.toList((Iterable<Map.Entry<CharSequence,CharSequence>>) replacements.entrySet());
@@ -2518,7 +2973,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
     /**
      * Replaces all occurrences of replacement CharSequences (supplied via a map) within a provided CharSequence.
      *
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert 'foobar'.replace(f:'b', foo:'bar') == 'boobar'
      * assert 'foobar'.replace(foo:'bar', f:'b') == 'barbar'
      * def replacements = [foo:'bar', f:'b', b: 'f', bar:'boo']
@@ -2543,7 +2998,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * application and found this to be a significant bottleneck, use this variant to have complete control over
      * the internally created StringBuilder's capacity.
      *
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert 'foobar'.replace(9, [r:'rbaz']) == 'foobarbaz'
      * assert 'foobar'.replace(1, [fooba:'']) == 'r'
      * </pre>
@@ -2680,6 +3135,48 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
     }
 
     /**
+     * Provides a {@code getLength} alias for {@code length} for {@link StringBuilder},
+     * supporting assignment arithmetic operator expressions involving
+     * the otherwise write-only length property.
+     *
+     * <pre class="language-groovy groovyTestCase">
+     * def sb = new StringBuilder()
+     * {@code sb << 'foobar'}
+     * sb.length -= 3
+     * assert sb.toString() == 'foo'
+     * </pre>
+     *
+     * @param self a StringBuilder
+     * @return the length of the StringBuilder
+     *
+     * @since 5.0.0
+     */
+    public static int getLength(final StringBuilder self) {
+        return self.length();
+    }
+
+    /**
+     * Provides a {@code getLength} alias for {@code length} for {@link StringBuffer},
+     * supporting assignment arithmetic operator expressions involving
+     * the otherwise write-only length property.
+     *
+     * <pre class="language-groovy groovyTestCase">
+     * def sb = new StringBuffer()
+     * {@code sb << 'foobar'}
+     * sb.length -= 3
+     * assert sb.toString() == 'foo'
+     * </pre>
+     *
+     * @param self a StringBuffer
+     * @return the length of the StringBuffer
+     *
+     * @since 5.0.0
+     */
+    public static int getLength(final StringBuffer self) {
+        return self.length();
+    }
+
+    /**
      * Provides the standard Groovy {@code size()} method for {@code Matcher}.
      *
      * @param self a matcher object
@@ -2786,7 +3283,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
     public static <T> T splitEachLine(final CharSequence self, final Pattern pattern, @ClosureParams(value=FromString.class,options={"List<String>","String[]"},conflictResolutionStrategy=PickFirstResolver.class) final Closure<T> closure) {
         T result = null;
         for (String line : new LineIterable(self)) {
-            List vals = Arrays.asList(pattern.split(line));
+            List vals = Arrays.asList(pattern.split(RegexGuard.ambientGuard(line)));
             result = closure.call(vals);
         }
         return result;
@@ -2797,7 +3294,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * line with the least number of leading spaces determines
      * the number to remove. Lines only containing whitespace are
      * ignored when calculating the number of leading spaces to strip.
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert '  A\n B\nC' == '   A\n  B\n C'.stripIndent()
      * </pre>
      *
@@ -2821,23 +3318,17 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
 
     /**
      * Same logic as {@link #stripIndent(CharSequence)} if {@code forceGroovyBehavior} is {@code true},
-     * otherwise Java 13's {@code stripIndent} will be invoked.
+     * otherwise {@code stripIndent} from JDK 13+ will be invoked.
      *
      * @param self The CharSequence to strip the leading spaces from
-     * @param forceGroovyBehavior force groovy behavior to avoid conflicts with Java13's stripIndent
+     * @param forceGroovyBehavior force groovy behavior to avoid conflicts with Java stripIndent
      *
      * @since 3.0.0
      */
     @Incubating
     public static String stripIndent(final CharSequence self, final boolean forceGroovyBehavior) {
         if (!forceGroovyBehavior) {
-            try {
-                MethodHandle mh = MethodHandles.lookup().findVirtual(self.getClass(), "stripIndent", MethodType.methodType(String.class));
-                return (String) mh.bindTo(self).invokeWithArguments();
-            } catch (NoSuchMethodException | IllegalAccessException ignored) {
-            } catch (Throwable t) {
-                throw new GroovyRuntimeException(t);
-            }
+            return self.toString().stripIndent();
         }
 
         return stripIndent(self);
@@ -2845,7 +3336,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
 
     /**
      * Strips {@code numChars} leading characters from every line in a CharSequence.
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert 'DEF\n456' == '''ABCDEF\n123456'''.stripIndent(3)
      * </pre>
      *
@@ -2882,7 +3373,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
     /**
      * Strips leading whitespace/control characters followed by '|' from
      * every line in a CharSequence.
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert 'ABC\n123\n456' == '''ABC
      *                             |123
      *                             |456'''.stripMargin()
@@ -2902,7 +3393,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
     /**
      * Strips leading whitespace/control characters followed by {@code marginChar} from
      * every line in a CharSequence.
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert 'ABC\n123\n456' == '''ABC
      *                             *123
      *                             *456'''.stripMargin('*')
@@ -2940,7 +3431,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      */
     public static String stripMargin(final CharSequence self, final CharSequence marginChar) {
         String mc = marginChar.toString();
-        if (mc.length() == 0) return stripMargin(self, '|');
+        if (mc.isEmpty()) return stripMargin(self, '|');
         // TODO IllegalArgumentException for marginChar.length() > 1 ? Or support String as marker?
         return stripMargin(self, mc.charAt(0));
     }
@@ -2955,7 +3446,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
 
     /**
      * Returns the first {@code num} elements from this CharSequence.
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * def text = "Groovy"
      * assert text.take( 0 ) == ''
      * assert text.take( 2 ) == 'Gr'
@@ -2965,7 +3456,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * @param self the original CharSequence
      * @param num  the number of chars to take from this CharSequence
      * @return a CharSequence consisting of the first {@code num} chars,
-     *         or else the whole CharSequence if it has less then {@code num} elements.
+     *         or else the whole CharSequence if it has less than {@code num} elements.
      *
      * @since 1.8.1
      */
@@ -2985,7 +3476,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * @param self the original GString
      * @param num  the number of chars to take from this GString
      * @return a String consisting of the first {@code num} chars,
-     *         or else the whole GString if it has less then {@code num} elements.
+     *         or else the whole GString if it has less than {@code num} elements.
      *
      * @since 2.3.7
      */
@@ -2999,7 +3490,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * @param self the original String
      * @param num  the number of chars to take from this String
      * @return a String consisting of the first {@code num} chars,
-     *         or else the whole String if it has less then {@code num} elements.
+     *         or else the whole String if it has less than {@code num} elements.
      *
      * @since 2.5.5
      */
@@ -3011,7 +3502,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * Returns the longest prefix of this CharSequence where each
      * element passed to the given closure evaluates to true.
      * <p>
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * def text = "Groovy"
      * assert text.takeWhile{ it {@code <} 'A' } == ''
      * assert text.takeWhile{ it {@code <} 'Z' } == 'G'
@@ -3032,6 +3523,15 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
         return join(DefaultGroovyMethods.takeWhile(selfIter, condition), "");
     }
 
+    /**
+     * Binary-compatibility bridge for {@link #takeWhile(CharSequence, Closure)}.
+     * Calls that method and returns its result.
+     *
+     * @param self the character sequence whose leading characters may be kept
+     * @param condition taking stops at the first character for which this returns false
+     * @return the prefix that was kept
+     * @deprecated exists so callers compiled against the previous return type still link
+     */
     @Deprecated // for binary compatibility only
     public static CharSequence takeWhile$$bridge(final CharSequence self, @ClosureParams(value=FromString.class, conflictResolutionStrategy=PickFirstResolver.class, options={"String", "Character"}) final Closure condition) {
         return takeWhile(self, condition);
@@ -3073,6 +3573,102 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      */
     public static BigInteger toBigInteger(final CharSequence self) {
         return new BigInteger(self.toString().trim());
+    }
+
+    /**
+     * Parses a CharSequence into a Number using the given locale, honouring
+     * locale-specific grouping and decimal symbols. Like {@link #toBigDecimal(CharSequence)},
+     * parsing is strict: the entire (trimmed) CharSequence must be a valid number,
+     * and the result is an exact {@link BigDecimal}.
+     * <pre class="groovyTestCase">
+     * assert '1.234,5'.toNumber(Locale.GERMANY) == 1234.5
+     * </pre>
+     * There is no locale-aware formatting counterpart: use
+     * {@link String#format(Locale, String, Object...)}, e.g. {@code String.format(Locale.GERMANY, '%,.3f', n)}.
+     * Note that unlike this method, such formatting rounds to the given number of
+     * fraction digits; {@link Object#toString()} gives the exact, locale-free form.
+     *
+     * @param self   a CharSequence
+     * @param locale the locale defining the number symbols
+     * @return the parsed Number (a BigDecimal)
+     * @throws NumberFormatException if the CharSequence cannot be parsed in full
+     *
+     * @see #toBigDecimal(CharSequence)
+     * @see java.lang.String#format(Locale, String, Object...)
+     * @see java.text.NumberFormat#getNumberInstance(Locale)
+     * @since 6.0.0
+     */
+    public static Number toNumber(final CharSequence self, final Locale locale) {
+        return parseFully(NumberFormat.getNumberInstance(locale), self, "number");
+    }
+
+    /**
+     * Parses a CharSequence in full using the given format, throwing a
+     * {@link NumberFormatException} if the trimmed text is not entirely consumed.
+     * The value is parsed as an exact {@link BigDecimal}, matching the decimal
+     * semantics of Groovy's own literals.
+     */
+    private static BigDecimal parseFully(final NumberFormat format, final CharSequence self, final String kind) {
+        if (format instanceof DecimalFormat) ((DecimalFormat) format).setParseBigDecimal(true);
+        String text = self.toString().trim();
+        ParsePosition pos = new ParsePosition(0);
+        Number result = format.parse(text, pos);
+        if (result == null || pos.getIndex() != text.length()) {
+            int at = result == null ? pos.getErrorIndex() : pos.getIndex();
+            throw new NumberFormatException("Unparseable " + kind + ": \"" + self + "\" (at index " + at + ")");
+        }
+        // guarantee the documented BigDecimal type even for non-DecimalFormat providers
+        return (result instanceof BigDecimal) ? (BigDecimal) result : new BigDecimal(result.toString());
+    }
+
+    /**
+     * Parses a CharSequence into a Number using the currency format of the given locale.
+     * The result is an exact {@link BigDecimal}.
+     * <pre class="groovyTestCase">
+     * assert '$1,234.50'.toCurrencyNumber(Locale.US) == 1234.50g
+     * </pre>
+     * No default-locale variant is provided. Input carries the locale of wherever it
+     * came from (a file, a request, a database), which is less often the JVM default
+     * than is the case for human-facing output. Where the default locale is a fair
+     * assumption, such as a console application reading what the user typed, pass
+     * {@link Locale#getDefault()} explicitly.
+     *
+     * @param self   a CharSequence
+     * @param locale the locale defining the currency format
+     * @return the parsed Number (a BigDecimal)
+     * @throws NumberFormatException if the CharSequence cannot be parsed
+     *
+     * @see DefaultGroovyMethods#toCurrencyString(Number, Locale)
+     * @see java.text.NumberFormat#getCurrencyInstance(Locale)
+     * @since 6.0.0
+     */
+    public static Number toCurrencyNumber(final CharSequence self, final Locale locale) {
+        return parseFully(NumberFormat.getCurrencyInstance(locale), self, "currency");
+    }
+
+    /**
+     * Parses a CharSequence into a Number using the percent format of the given locale.
+     * The percent value is unscaled (divided by 100). The result is an exact {@link BigDecimal}.
+     * <pre class="groovyTestCase">
+     * assert '50%'.toPercentNumber(Locale.US) == 0.5
+     * </pre>
+     * No default-locale variant is provided. Input carries the locale of wherever it
+     * came from (a file, a request, a database), which is less often the JVM default
+     * than is the case for human-facing output. Where the default locale is a fair
+     * assumption, such as a console application reading what the user typed, pass
+     * {@link Locale#getDefault()} explicitly.
+     *
+     * @param self   a CharSequence
+     * @param locale the locale defining the percent format
+     * @return the parsed Number (a BigDecimal)
+     * @throws NumberFormatException if the CharSequence cannot be parsed
+     *
+     * @see DefaultGroovyMethods#toPercentString(Number, Locale)
+     * @see java.text.NumberFormat#getPercentInstance(Locale)
+     * @since 6.0.0
+     */
+    public static Number toPercentNumber(final CharSequence self, final Locale locale) {
+        return parseFully(NumberFormat.getPercentInstance(locale), self, "percent");
     }
 
     /**
@@ -3162,7 +3758,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * Tokenizes a CharSequence based on the given character delimiter.
      * <p>
      * For example:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * char pathSep = ':'
      * assert "/tmp:/usr".tokenize(pathSep) == ["/tmp", "/usr"]
      * </pre>
@@ -3257,11 +3853,11 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * and so on for all provided replacement characters.
      * <p>
      * Here is an example which converts the vowels in a word from lower to uppercase:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert 'hello'.tr('aeiou', 'AEIOU') == 'hEllO'
      * </pre>
      * A character range using regex-style syntax can also be used, e.g. here is an example which converts a word from lower to uppercase:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert 'hello'.tr('a-z', 'A-Z') == 'HELLO'
      * </pre>
      * Hyphens at the start or end of sourceSet or replacementSet are treated as normal hyphens and are not
@@ -3270,15 +3866,15 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * the '-' character plus the 'e' character.
      * <p>
      * Unlike the unix tr command, Groovy's tr command supports reverse ranges, e.g.:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert 'hello'.tr('z-a', 'Z-A') == 'HELLO'
      * </pre>
      * If replacementSet is smaller than sourceSet, then the last character from replacementSet is used as the replacement for all remaining source characters as shown here:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert 'Hello World!'.tr('a-z', 'A') == 'HAAAA WAAAA!'
      * </pre>
      * If sourceSet contains repeated characters, the last specified replacement is used as shown here:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * assert 'Hello World!'.tr('lloo', '1234') == 'He224 W4r2d!'
      * </pre>
      * The functionality provided by tr can be achieved using regular expressions but tr provides a much more compact
@@ -3412,16 +4008,13 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * @see #isAllWhitespace(CharSequence)
      */
     public static boolean isBlank(final CharSequence self) {
-        if (self == null) {
-            return true;
-        }
-        return self.toString().matches("\\s*");
+        return self == null || self.length() == 0 || self.toString().isBlank();
     }
 
     /**
      * Returns the last {@code num} elements from this CharSequence.
      *
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * def text = "Groovy"
      * assert text.takeRight( 0 ) == ''
      * assert text.takeRight( 2 ) == 'vy'
@@ -3475,7 +4068,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * Returns the {@code CharSequence} that exists after the first occurrence of the given
      * {@code searchString} in this CharSequence.
      *
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * def text = "Groovy development. Groovy team"
      * assert text.takeAfter( 'Groovy' )           == ' development. Groovy team'
      * assert text.takeAfter( 'team' )             == ''
@@ -3531,7 +4124,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * Returns the {@code CharSequence} that exists before the first occurrence of the given
      * {@code searchString} in this CharSequence.
      *
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * def text = "Groovy development. Groovy team"
      *
      * assert text.takeBefore( ' Groovy ' )         == 'Groovy development.'
@@ -3587,7 +4180,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * Returns new CharSequence after removing the right {@code num} chars.
      * Returns empty String if the {@code num} is greater than the length of the CharSequence.
      *
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * def text = "groovy"
      *
      * assert text.dropRight(  3 ) == 'gro'
@@ -3647,7 +4240,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * Returns the CharSequence that is in between the first occurrence of the given {@code from} and {@code to}
      * CharSequences and empty if the unavailable inputs are given.
      *
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * def text = "Groovy"
      *
      * assert text.takeBetween( 'r', 'v' ) == 'oo'
@@ -3717,7 +4310,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
     /**
      * Takes the characters between the first occurrence of the two subsequent {@code enclosure} strings.
      *
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * def text = "name = 'some name'"
      *
      * assert text.takeBetween( "'" ) == 'some name'
@@ -3766,7 +4359,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
      * Returns the CharSequence that is in between the given the nth (specified by occurrence) pair of
      * {@code from} and {@code to} CharSequences and empty if the unavailable inputs are given.
      *
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * def text = "t1=10 ms, t2=100 ms"
      *
      * assert text.takeBetween( '=', ' ', 0 ) == '10'
@@ -3851,7 +4444,7 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
     /**
      * Takes the characters between nth (specified by occurrence) pair of {@code enclosure} strings.
      *
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * def text = "t1='10' ms, t2='100' ms"
      *
      * assert text.takeBetween( "'", 0 ) == '10'
@@ -3952,6 +4545,96 @@ public class StringGroovyMethods extends DefaultGroovyMethodsSupport {
         if (searchString == null || searchString.length() == 0 || self.length() < searchString.length())
             return false;
 
-        return self.toString().toLowerCase().contains(searchString.toString().toLowerCase());
+        return self.toString().toLowerCase(Locale.ROOT).contains(searchString.toString().toLowerCase(Locale.ROOT));
+    }
+
+    /**
+     * Finds balanced (nested) groups in this CharSequence using default options
+     * (no ignore pattern; opening and closing delimiters are kept in the match text).
+     * <p>
+     * This is Groovy's structured alternative to .NET regex balancing groups
+     * ({@code (?&lt;Open&gt;…)} / {@code (?&lt;Close-Open&gt;…)} / {@code (?(Open)(?!))}).
+     * Delegates to {@link BalancedGroup#find(CharSequence, String, String)}.
+     * Java {@link Pattern} cannot express capture-stack push/pop, so
+     * nesting is resolved with an explicit stack and the result is a tree of
+     * {@link BalancedGroup} nodes (with {@link BalancedGroup#getStart()}/{@link BalancedGroup#getEnd()}
+     * offsets comparable to .NET {@code Capture.Index}/{@code Length}).
+     * </p>
+     * <pre class="groovyTestCase">
+     * def text = 'Root: (A + (B * C) + (D(E)))'
+     * def roots = text.findBalancedGroups(/\(/, /\)/)
+     * assert roots.size() == 1
+     * assert roots[0].matchedString == '(A + (B * C) + (D(E)))'
+     * assert roots[0].children*.matchedString == ['(B * C)', '(D(E))']
+     * assert roots[0].children[1].children[0].matchedString == '(E)'
+     * assert text.substring(roots[0].start, roots[0].end) == roots[0].matchedString
+     * assert roots[0].children[0].depth == 1
+     * </pre>
+     * <p>
+     * Unmatched closers are ignored; unclosed openers are dropped but completed
+     * groups nested inside them are still returned (more tolerant than a strict
+     * .NET {@code (?(Open)(?!))} whole-string match).
+     * </p>
+     *
+     * @param self       a CharSequence
+     * @param openRegex  regular expression for the opening delimiter (must not be empty)
+     * @param closeRegex regular expression for the closing delimiter (must not be empty)
+     * @return an unmodifiable list of outermost {@link BalancedGroup} nodes (empty if none)
+     * @throws NullPointerException     if {@code self}, {@code openRegex}, or {@code closeRegex} is {@code null}
+     * @throws IllegalArgumentException if {@code openRegex} or {@code closeRegex} is empty
+     * @throws java.util.regex.PatternSyntaxException if a pattern is not a valid Java regex
+     *
+     * @see BalancedGroup#find(CharSequence, String, String)
+     * @see #findBalancedGroups(CharSequence, String, String, BalancedGroup.MatchOptions)
+     * @since 6.0.0
+     */
+    public static List<BalancedGroup> findBalancedGroups(final CharSequence self, final String openRegex, final String closeRegex) {
+        return BalancedGroup.find(self, openRegex, closeRegex);
+    }
+
+    /**
+     * Finds balanced (nested) groups in this CharSequence with the given options.
+     * Delegates to {@link BalancedGroup#find(CharSequence, String, String, BalancedGroup.MatchOptions)}.
+     * <pre class="groovyTestCase">
+     * import groovy.util.regex.BalancedGroup
+     * def opts = BalancedGroup.MatchOptions.defaults().withIncludeEdges(false)
+     * def g = 'func(arg1, arg2)'.findBalancedGroups(/\(/, /\)/, opts)[0]
+     * assert g.matchedString == 'arg1, arg2'
+     * assert g.start == 5 &amp;&amp; g.end == 15
+     * assert g.fullStart == 4 &amp;&amp; g.fullEnd == 16
+     *
+     * def code = 'if (true) { String s = "}"; }'
+     * def ignoreStrings = BalancedGroup.MatchOptions.defaults()
+     *     .withIgnoreRegex(/"(?:\\.|[^"\\])*"/)
+     * assert code.findBalancedGroups(/\{/, /\}/, ignoreStrings)[0].matchedString == '{ String s = "}"; }'
+     * </pre>
+     * <p>
+     * {@link BalancedGroup.MatchOptions#includeEdges()}{@code false} keeps only the
+     * interior text (like .NET's balancing capture of the interval between the
+     * open capture and the close). {@link BalancedGroup.MatchOptions#ignoreRegex()}
+     * skips spans such as string literals—the usual substitute for a hand-built
+     * “neither delimiter” class in a .NET balancing pattern.
+     * </p>
+     * <p>
+     * If {@code options} is {@code null}, {@link BalancedGroup.MatchOptions#defaults()} is used.
+     * Named groups {@code OPEN}, {@code CLOSE}, and {@code IGNORE} are reserved by the scanner.
+     * </p>
+     *
+     * @param self       a CharSequence
+     * @param openRegex  regular expression for the opening delimiter (must not be empty)
+     * @param closeRegex regular expression for the closing delimiter (must not be empty)
+     * @param options    match options, or {@code null} for defaults
+     * @return an unmodifiable list of outermost {@link BalancedGroup} nodes (empty if none)
+     * @throws NullPointerException     if {@code self}, {@code openRegex}, or {@code closeRegex} is {@code null}
+     * @throws IllegalArgumentException if {@code openRegex} or {@code closeRegex} is empty
+     * @throws java.util.regex.PatternSyntaxException if a pattern is not a valid Java regex
+     *
+     * @see BalancedGroup#find(CharSequence, String, String, BalancedGroup.MatchOptions)
+     * @see #findBalancedGroups(CharSequence, String, String)
+     * @since 6.0.0
+     */
+    public static List<BalancedGroup> findBalancedGroups(final CharSequence self, final String openRegex, final String closeRegex,
+                                                   final BalancedGroup.MatchOptions options) {
+        return BalancedGroup.find(self, openRegex, closeRegex, options);
     }
 }

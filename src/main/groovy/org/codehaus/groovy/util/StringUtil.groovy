@@ -25,6 +25,7 @@ import groovy.transform.CompileStatic
  */
 @CompileStatic
 class StringUtil {
+
     /**
      * Provides Groovy with functionality similar to the unix tr command
      * which translates a string replacing characters from a source set
@@ -33,25 +34,61 @@ class StringUtil {
      * @since 1.7.3
      */
     static String tr(String text, String source, String replacement) {
-        if (!text || !source) { return text }
+        if (text == null   || source == null   || replacement == null  ) return text
+        if (text.isEmpty() || source.isEmpty() || replacement.isEmpty()) return text
+
         source = expandHyphen(source)
         replacement = expandHyphen(replacement)
 
         // padding replacement with a last character, if necessary
         replacement = replacement.padRight(source.size(), replacement[-1])
 
-        text.collect { String original ->
-            if (source.contains(original)) {
-                replacement[source.lastIndexOf(original)]
+        text.collect { String character ->
+            if (source.contains(character)) {
+                replacement[source.lastIndexOf(character)]
             } else {
-                original
+                character
             }
         }.join('')
     }
 
     // no expansion for hyphen at start or end of Strings
     private static String expandHyphen(String text) {
-        if (!text.contains('-')) { return text }
-        text.replaceAll(/(.)-(.)/, { all, begin, end -> (begin..end).join('') })
+        if (text.contains('-')) {
+            text.replaceAll(/(.)-(.)/) { _, start, until -> (start..until).join('') }
+        } else {
+            text
+        }
+    }
+
+    private static String BLOCK = '\u2588'
+    private static char FRACTIONAL_OFFSET = BLOCK.codePointAt(0) + 7
+
+    /**
+     * Draw a band whose width is proportional to (x - min) and equal to width
+     * when x equals max. Unicode block element characters are used to draw
+     * fractional blocks. A 1/8 block is always added at the start of the bar.
+     *
+     * If using Windows command-line, make sure you are using the Unicode
+     * codepage (65001) and a font that supports block elements (like Cascadia).
+     * The proportion is calculated in double precision whatever the
+     * argument types.
+     *
+     * @param x the value for the bar to be drawn
+     * @param min the minimum value
+     * @param max the maximum value
+     * @param width how many characters should the maximum value be rendered as (default 40)
+     * @return the rendered ascii barchart string
+     * @since 5.0.0
+     */
+    static String bar(Number x, Number min, Number max, int width = 40) {
+        int fracWidth = width * 8
+        assert min < max && x >= min && x <= max
+        double interval = max.doubleValue() - min.doubleValue()
+        int barWidth = (int) ((x.doubleValue() - min.doubleValue()) / interval * fracWidth)
+        int fullChunks = barWidth.intdiv(8)
+        int remainder = barWidth % 8
+        // unicode for fractional blocks (7/8, 6/8, etc.) are adjacent
+        BLOCK * fullChunks + Character.valueOf(FRACTIONAL_OFFSET - remainder as char)
     }
 }

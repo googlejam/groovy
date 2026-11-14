@@ -50,7 +50,7 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.varX;
  * tried to be compatible with both expected tuple behavior and expected named-argument behavior
  * by peeking into the supplied map and guessing as to which approach might be applicable.
  * Recent versions of Groovy now allow both {@code @TupleConstructor} and {@code @MapConstructor}
- * annotations to co-exist which provide's a more flexible solution to this problem. While more
+ * annotations to co-exist which provides a more flexible solution to this problem. While more
  * flexible, the new approach isn't fully compatible with the previous approach. If for some
  * reason you need the old behavior, you can try this property handler. Some features of the
  * new approach won't be available to you.
@@ -86,11 +86,17 @@ public class LegacyHashMapPropertyHandler extends ImmutablePropertyHandler {
         return ifElseS(equalsNullX(baseArgs), assignInit, assignStmt);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public boolean validateAttributes(final AbstractASTTransformation xform, final AnnotationNode anno) {
         return !(xform instanceof TupleConstructorASTTransformation) && super.validateAttributes(xform, anno);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public boolean validateProperties(final AbstractASTTransformation xform, final BlockStatement body, final ClassNode cNode, final List<PropertyNode> props) {
         if (!(props.size() == 1 && props.get(0).getType().equals(HMAP_TYPE))) {
@@ -100,6 +106,9 @@ public class LegacyHashMapPropertyHandler extends ImmutablePropertyHandler {
         return true;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public Statement createPropInit(final AbstractASTTransformation xform, final AnnotationNode anno, final ClassNode cNode, final PropertyNode pNode, final Parameter namedArgsMap) {
         FieldNode fNode = pNode.getField();

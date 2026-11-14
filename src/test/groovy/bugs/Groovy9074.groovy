@@ -16,95 +16,27 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
-import groovy.transform.CompileStatic
 import org.codehaus.groovy.control.CompilationUnit
+import org.junit.jupiter.api.Test
 
+import static groovy.test.GroovyAssert.shouldFail
 import static org.codehaus.groovy.control.Phases.CLASS_GENERATION
 
-@CompileStatic
-final class Groovy9074 extends GroovyTestCase {
+final class Groovy9074 {
 
-    void _FIXME_testWildcardCapture() {
-        def err = shouldFail '''
-            @groovy.transform.CompileStatic
-            class Main {
-                private static Collection<?> c = new ArrayList<String>()
-                static main(args) {
-                    c.add(new Object())
-                }
-            }
-        '''
-
-        // TODO: This is just a sample message; Java produces this for the equivalent code.
-        assert err =~ / The method add\(capture#1-of \?\) in the type Collection<capture#1-of \?> is not applicable for the arguments \(Object\)/
-    }
-
-    void _FIXME_testWildcardExtends() {
-        def err = shouldFail '''
-            import java.awt.Canvas
-            abstract class Shape {
-              abstract void draw(Canvas c)
-            }
-            class Circle extends Shape {
-              private int x, y, radius
-              @Override void draw(Canvas c) {}
-            }
-            class Rectangle extends Shape {
-              private int x, y, width, height
-              @Override void draw(Canvas c) {}
-            }
-
-            @groovy.transform.CompileStatic
-            void addRectangle(List<? extends Shape> shapes) {
-              shapes.add(0, new Rectangle()) // TODO: compile-time error!
-            }
-        '''
-
-        // TODO: This is just a sample message; Java produces this for the equivalent code.
-        assert err =~ / The method add(capture#1-of \?) in the type List<capture#1-of \?> is not applicable for the arguments \(Rectangle\)/
-    }
-
-    void testWildcardSuper() {
-        assertScript '''
-            import java.awt.Canvas
-            abstract class Shape {
-              abstract void draw(Canvas c)
-            }
-            class Circle extends Shape {
-              private int x, y, radius
-              @Override void draw(Canvas c) {}
-            }
-            class Rectangle extends Shape {
-              private int x, y, width, height
-              @Override void draw(Canvas c) {}
-            }
-
-            @groovy.transform.CompileStatic
-            void addRectangle(List<? super Shape> shapes) {
-              shapes.add(0, new Rectangle())
-            }
-
-            List<Shape> list = []
-            addRectangle(list)
-
-            assert list.size() == 1
-            assert list.get(0) instanceof Rectangle
-        '''
-    }
-
-    void testWildcardExtends2() {
+    @Test
+    void testWildcardExtends() {
         new CompilationUnit().with {
             addSource 'Main.groovy', '''
                 class Factory {
-                  def <T> T make(Class<T> type, ... args) {}
+                    def <T> T make(Class<T> type, ... args) {}
                 }
 
-                @groovy.transform.CompileStatic
+                @groovy.transform.TypeChecked
                 void test(Factory fact, Rule rule) {
-                  Type bean = fact.make(rule.type)
+                    Type bean = fact.make(rule.type)
                 }
             '''
 
@@ -124,16 +56,17 @@ final class Groovy9074 extends GroovyTestCase {
         }
     }
 
-    void _FIXME_testWildcardSuper2() {
+    @Test
+    void testWildcardSuper() {
         new CompilationUnit().with {
             addSource 'Main.groovy', '''
                 class Factory {
-                  def <T> T make(Class<T> type, ... args) {}
+                    def <T> T make(Class<T> type, ... args) {}
                 }
 
-                @groovy.transform.CompileStatic
+                @groovy.transform.TypeChecked
                 void test(Factory fact, Rule rule) {
-                  Type bean = fact.make(rule.type) // can't assign "? super Type" to "Type"
+                    Type bean = fact.make(rule.type) // can't assign "? super Type" to "Type"
                 }
             '''
 
@@ -152,7 +85,7 @@ final class Groovy9074 extends GroovyTestCase {
             def err = shouldFail {
                 compile CLASS_GENERATION
             }
-            assert err =~ "cannot convert from capture#1-of ? super Type to Type"
+            assert err.message =~ 'Cannot assign value of type java.lang.Object to variable of type Type'
         }
     }
 }

@@ -16,12 +16,16 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
+
 import org.codehaus.groovy.runtime.InvokerHelper
 
-class Groovy4414Bug extends GroovyTestCase {
+import static org.junit.jupiter.api.Assertions.assertEquals
+
+class Groovy4414Bug {
+    @Test
     public void testUnaryMinus() {
         assertEquals(-1,    InvokerHelper.unaryMinus(1)); // relying here on boxing for Integer
         assertEquals(-1l,   InvokerHelper.unaryMinus(1l));
@@ -29,19 +33,19 @@ class Groovy4414Bug extends GroovyTestCase {
         assertEquals(-1.0,  InvokerHelper.unaryMinus(1.0));
         assertEquals(BigInteger.valueOf(-1l),  InvokerHelper.unaryMinus(BigInteger.valueOf(1l)));
         assertEquals(BigDecimal.valueOf(-1l),  InvokerHelper.unaryMinus(BigDecimal.valueOf(1l)));
-        
+
         List<Object> expected = new ArrayList<Object>() {{
             add(-1);
             add(-1.0);
             add(-1l);
         }};
-        
+
         List<Object> actual = new ArrayList<Object>() {{
             add(1);
             add(1.0);
             add(1l);
         }};
-        
+
         assertEquals(expected, InvokerHelper.unaryMinus(actual));
 
         def negativeShortOne = InvokerHelper.unaryMinus((short) 1)
@@ -53,6 +57,7 @@ class Groovy4414Bug extends GroovyTestCase {
         assertEquals((byte)-1, negativeByteOne);
     }
 
+    @Test
     public void testUnaryPlus() {
         assertEquals(1,    InvokerHelper.unaryPlus(1)); // relying here on boxing for Integer
         assertEquals(1l,   InvokerHelper.unaryPlus(1l));
@@ -60,15 +65,15 @@ class Groovy4414Bug extends GroovyTestCase {
         assertEquals(1.0,  InvokerHelper.unaryPlus(1.0));
         assertEquals(BigInteger.valueOf(1l),  InvokerHelper.unaryPlus(BigInteger.valueOf(1l)));
         assertEquals(BigDecimal.valueOf(1l),  InvokerHelper.unaryPlus(BigDecimal.valueOf(1l)));
-        
+
         List<Object> actual = new ArrayList<Object>() {{
             add(1);
             add(1.0);
             add(1l);
         }};
-        
+
         assertEquals(actual, InvokerHelper.unaryPlus(actual));
-        
+
         assertEquals((short)1, InvokerHelper.unaryPlus((short)1));
         assertEquals((byte)1, InvokerHelper.unaryPlus((byte)1));
     }

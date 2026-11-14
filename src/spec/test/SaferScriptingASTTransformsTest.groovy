@@ -1,5 +1,3 @@
-import groovy.test.GroovyTestCase
-
 /*
  *  Licensed to the Apache Software Foundation (ASF) under one
  *  or more contributor license agreements.  See the NOTICE file
@@ -18,7 +16,14 @@ import groovy.test.GroovyTestCase
  *  specific language governing permissions and limitations
  *  under the License.
  */
-class SaferScriptingASTTransformsTest extends GroovyTestCase {
+
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.assertScript
+
+final class SaferScriptingASTTransformsTest {
+
+    @Test
     void testThreadInterrupt() {
         assertScript '''import groovy.transform.ThreadInterrupt
 import org.codehaus.groovy.control.CompilerConfiguration
@@ -63,6 +68,7 @@ if (t.alive) {
 assert binding.i > 0'''
     }
 
+    @Test
     void testThreadInterruptThrown() {
 
         assertScript '''import groovy.transform.ThreadInterrupt
@@ -106,6 +112,7 @@ assert binding.i == -1'''
 // end::threadinterrupt_thrown[]
    }
 
+    @Test
     void testTimedInterrupt() {
         assertScript '''import groovy.transform.TimedInterrupt
 import org.codehaus.groovy.control.CompilerConfiguration
@@ -148,6 +155,7 @@ assert !t.alive
 assert binding.result == 0'''
     }
 
+    @Test
     void testTimedInterruptDuration() {
         assertScript '''import groovy.transform.TimedInterrupt
 
@@ -169,6 +177,7 @@ assert !t.alive
 '''
     }
 
+    @Test
     void testTimedInterruptThrown() {
         assertScript '''import groovy.transform.InheritConstructors
 import groovy.transform.TimedInterrupt
@@ -196,6 +205,7 @@ assert result == -1
 '''
     }
 
+    @Test
     void testConditionalInterrupt() {
         assertScript '''import groovy.transform.ConditionalInterrupt
 // tag::conditionalinterrupt_quotaclass[]
@@ -232,6 +242,7 @@ assert Quotas.quotas['user'] < 0
 '''
     }
 
+    @Test
     void testConditionalInterruptInjected() {
         assertScript '''import groovy.transform.ConditionalInterrupt
 import org.codehaus.groovy.ast.ClassHelper
@@ -283,6 +294,8 @@ assert Quotas.quotas['user'] < 0
 // end::conditionalinterrupt_injected[]
 '''
     }
+
+    @Test
     void testConditionalInterruptThrown() {
         assertScript '''import groovy.transform.ConditionalInterrupt
 import groovy.transform.InheritConstructors
@@ -341,4 +354,37 @@ assert Quotas.quotas['user'] == 'Quota exceeded'
 '''
     }
 
+    @Test
+    void testSafeRegex() {
+        assertScript '''import groovy.transform.SafeRegex
+import groovy.util.regex.RegexTimeoutException
+
+// tag::saferegex_handler[]
+@SafeRegex(millis = 200)
+class Handler {
+    boolean check(String input) {
+        input ==~ /(.*,){16}X/
+    }
+}
+// end::saferegex_handler[]
+/*
+// tag::saferegex_handler_equiv[]
+class Handler {
+    boolean check(String input) {
+        groovy.util.regex.RegexGuard.matchRegex(input, /(.*,){16}X/, 200)
+    }
+}
+// end::saferegex_handler_equiv[]
+*/
+// tag::saferegex_control[]
+def handler = new Handler()
+assert !handler.check('1,2,3')          // well-behaved input: unchanged semantics
+try {
+    handler.check('1,' * 40)            // adversarial input: catastrophic backtracking
+    assert false, 'should have timed out'
+} catch (RegexTimeoutException expected) {
+}
+// end::saferegex_control[]
+'''
+    }
 }

@@ -32,10 +32,10 @@ public class Phases {
     public static final int SEMANTIC_ANALYSIS = 4;
     /** AST completion */
     public static final int CANONICALIZATION = 5;
-    /** Class generation (pt.1) */
+    /** Prepare for class generation */
     public static final int INSTRUCTION_SELECTION = 6;
-    /** Class generation (pt.2) */
-    public static final int CLASS_GENERATION = 7;   //
+    /** Bytecode generation */
+    public static final int CLASS_GENERATION = 7;
     /** Output of class to disk */
     public static final int OUTPUT = 8;
     /** Cleanup */
@@ -45,6 +45,12 @@ public class Phases {
     public static final int ALL = FINALIZATION;
 
     // TODO: If no reference is made to array, convert to switch in getDescription(int).
+    /**
+     * Text for each phase index. Index {@code 0} is {@code startup} and is
+     * not one of the phase constants. Indexes {@link #INITIALIZATION}
+     * through {@link #FINALIZATION} are what {@link #getDescription}
+     * returns.
+     */
     public static final String[] descriptions = {
         "startup",
         "initialization",

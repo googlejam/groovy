@@ -16,28 +16,28 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-/**
- */
-class Bytecode6Bug extends GroovyTestCase {
+final class Bytecode6Bug {
 
+    @Test
     void testPostFixReturn() {
         def i = 1
         def closure = { i++ }
         def value = closure()
-        
+
         assert value == 1
         assert i == 2
     }
-    
+
+    @Test
     void testPreFixReturn() {
         def i = 1
         def closure = { return ++i }
         def value = closure()
-        
+
         assert value == 2
         assert i == 2
     }

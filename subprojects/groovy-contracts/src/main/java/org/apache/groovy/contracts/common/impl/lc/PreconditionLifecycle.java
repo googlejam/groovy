@@ -19,6 +19,7 @@
 package org.apache.groovy.contracts.common.impl.lc;
 
 import org.apache.groovy.contracts.common.base.BaseLifecycle;
+import org.apache.groovy.contracts.common.spi.Lifecycle;
 import org.apache.groovy.contracts.common.spi.ProcessingContextInformation;
 import org.apache.groovy.contracts.generation.CandidateChecks;
 import org.apache.groovy.contracts.generation.PreconditionGenerator;
@@ -26,15 +27,29 @@ import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.MethodNode;
 
 /**
- * Internal {@link org.apache.groovy.contracts.common.spi.Lifecycle} implementation for pre-conditions.
+ * Internal {@link Lifecycle} implementation for pre-conditions.
  */
 public class PreconditionLifecycle extends BaseLifecycle {
 
+    /**
+     * Adds inherited default preconditions to the supplied constructor when needed.
+     *
+     * @param processingContextInformation the current processing context
+     * @param classNode the declaring class
+     * @param constructorNode the constructor to update
+     */
     @Override
     public void beforeProcessingConstructorNode(ProcessingContextInformation processingContextInformation, ClassNode classNode, MethodNode constructorNode) {
         generatePrecondition(processingContextInformation, classNode, constructorNode);
     }
 
+    /**
+     * Adds inherited default preconditions to the supplied method when needed.
+     *
+     * @param processingContextInformation the current processing context
+     * @param classNode the declaring class
+     * @param methodNode the method to update
+     */
     @Override
     public void afterProcessingMethodNode(ProcessingContextInformation processingContextInformation, ClassNode classNode, MethodNode methodNode) {
         generatePrecondition(processingContextInformation, classNode, methodNode);

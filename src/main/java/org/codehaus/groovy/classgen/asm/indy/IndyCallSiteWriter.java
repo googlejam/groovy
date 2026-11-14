@@ -18,8 +18,12 @@
  */
 package org.codehaus.groovy.classgen.asm.indy;
 
+import org.apache.groovy.util.SystemUtil;
+import org.codehaus.groovy.GroovyBugError;
 import org.codehaus.groovy.ast.expr.Expression;
+import org.codehaus.groovy.ast.expr.PropertyExpression;
 import org.codehaus.groovy.classgen.asm.CallSiteWriter;
+import org.codehaus.groovy.classgen.asm.MethodCallerMultiAdapter;
 import org.codehaus.groovy.classgen.asm.WriterController;
 
 /**
@@ -29,36 +33,75 @@ import org.codehaus.groovy.classgen.asm.WriterController;
  * call site caching is done by the jvm.
  */
 public class IndyCallSiteWriter extends CallSiteWriter {
-    private final WriterController controller;
-    public IndyCallSiteWriter(WriterController controller) {
-        super(controller);
-        this.controller = controller;
+
+    /**
+     * Creates a call-site writer that delegates property access to indy bytecode.
+     */
+    public IndyCallSiteWriter(final WriterController controller) {
+        super(controller); this.controller = controller;
     }
-    
+    private final WriterController controller;
+
+    /** {@inheritDoc} */
     @Override
     public void generateCallSiteArray() {}
+
+    /** {@inheritDoc} */
     @Override
-    public void makeCallSite(Expression receiver, String message,
-            Expression arguments, boolean safe, boolean implicitThis,
-            boolean callCurrent, boolean callStatic) {}
+    public void makeCallSite(Expression receiver, String message, Expression arguments, boolean safe, boolean implicitThis, boolean callCurrent, boolean callStatic) {}
+
+    /** {@inheritDoc} */
     @Override
-    public void makeSingleArgumentCall(Expression receiver, String message, Expression arguments, boolean safe) {}
+    public void makeSingleArgumentCall(Expression receiver, String message, Expression arguments, boolean safe) {
+        throw new GroovyBugError("At line " + receiver.getLineNumber() + " column " + receiver.getColumnNumber() + "\n" +
+                "On receiver: " + receiver.getText() + " with message: " + message + " and arguments: " + arguments.getText() + "\n" +
+                "This method should not have been called. Please try to create a simple example reproducing this error and file a bug report at https://issues.apache.org/jira/browse/GROOVY");
+    }
+
+    /** {@inheritDoc} */
     @Override
-    public void prepareCallSite(String message) {}    
+    public void prepareCallSite(String message) {}
+
+    /** {@inheritDoc} */
     @Override
     public void makeSiteEntry() {}
+
+    /** {@inheritDoc} */
     @Override
     public void makeCallSiteArrayInitializer() {}
-    
+
+    /** {@inheritDoc} */
     @Override
     public void makeGetPropertySite(Expression receiver, String name, boolean safe, boolean implicitThis) {
         InvokeDynamicWriter idw = (InvokeDynamicWriter)controller.getInvocationWriter();
         idw.writeGetProperty(receiver, name, safe, implicitThis, false);
     }
+
+    /** {@inheritDoc} */
     @Override
     public void makeGroovyObjectGetPropertySite(Expression receiver, String name, boolean safe, boolean implicitThis) {
         InvokeDynamicWriter idw = (InvokeDynamicWriter)controller.getInvocationWriter();
         idw.writeGetProperty(receiver, name, safe, implicitThis, true);
     }
-    
+
+    /**
+     * GROOVY-12138: emit an {@code invokedynamic} call site for property
+     * writes instead of the static {@code ScriptBytecodeAdapter.setProperty}
+     * call, giving writes the same call-site caching, guarding, and JIT
+     * inlining that reads have had via {@code getProperty} sites. Compile-time
+     * flag, on by default; set {@code -Dgroovy.indy.setproperty=false} to
+     * disable (opt-out).
+     */
+    private static final boolean INDY_SET_PROPERTY = SystemUtil.getBooleanSafe("groovy.indy.setproperty", true);
+
+    /** {@inheritDoc} */
+    @Override
+    public void makeSetPropertySite(PropertyExpression expression, Expression objectExpression, String name, MethodCallerMultiAdapter adapter, boolean groovyObject) {
+        if (INDY_SET_PROPERTY && !expression.isSafe() && !expression.isSpreadSafe()) {
+            InvokeDynamicWriter idw = (InvokeDynamicWriter) controller.getInvocationWriter();
+            idw.writeSetProperty(objectExpression, name, expression.isImplicitThis(), groovyObject);
+        } else {
+            super.makeSetPropertySite(expression, objectExpression, name, adapter, groovyObject);
+        }
+    }
 }

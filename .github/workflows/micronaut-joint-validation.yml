@@ -14,27 +14,57 @@
 # limitations under the License.
 
 name: "Micronaut Joint Validation Build"
+
 on:
   push:
     branches:
-      - GROOVY_3_0_X
+      - disableForNowDueToFreakyDependency
   pull_request:
     branches:
-      - GROOVY_3_0_X
+      - disableForNowDueToFreakyDependency
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     strategy:
       fail-fast: true
-      matrix:
-        os: [ubuntu-18.04]
-        java: [11.0.9]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
+    env:
+      DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
     steps:
-      - uses: actions/checkout@v1
-      - name: Set up JDK
-        uses: actions/setup-java@v1
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-java@v6.1.0
         with:
-          java-version: ${{ matrix.java }}
+          distribution: 'zulu'
+          java-version: 17
+          check-latest: true
+      # Cache downloaded dependency jars/poms + wrapper dists, keyed per
+      # branch; see groovy-build-test.yml (lts job) for the full rationale.
+      # The `micronaut-joint` key segment keeps a dedicated cache lineage:
+      # this workflow also resolves the (large, distinct) Micronaut
+      # dependency set.
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        # The action's own caching is disabled: dependency jars and wrapper
+        # dists are cached by the explicit branch-keyed cache step below instead.
+        with:
+          cache-disabled: true
+      # On Windows setup-gradle may set GRADLE_USER_HOME=D:\a\.gradle, so
+      # caching ~/.gradle never hits and the save fails path validation.
+      - name: "🗄 Cache Gradle dependencies (GRADLE_USER_HOME modules-2 + wrapper)"
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ env.GRADLE_USER_HOME }}/caches/modules-2
+            ${{ env.GRADLE_USER_HOME }}/wrapper
+          key: gradle-deps-${{ runner.os }}-micronaut-joint-${{ github.base_ref || github.ref_name }}-${{ hashFiles('versions.properties', 'gradle/wrapper/gradle-wrapper.properties', 'settings.gradle', 'build-logic/build.gradle') }}
+          restore-keys: |
+            gradle-deps-${{ runner.os }}-micronaut-joint-${{ github.base_ref || github.ref_name }}-
       - name: env
         run: env
 
@@ -44,13 +74,13 @@ jobs:
 
       # Clone Micronaut Repos
       - name: Checkout Micronaut Core
-        run: cd .. && git clone --depth 1 https://github.com/micronaut-projects/micronaut-core -b 2.3.x
+        run: cd .. && git clone --depth 1 https://github.com/micronaut-projects/micronaut-core -b 4.4.x
 
       - name: Checkout Micronaut Groovy
-        run: cd .. && git clone --depth 1 https://github.com/micronaut-projects/micronaut-groovy -b master
+        run: cd .. && git clone --depth 1 https://github.com/micronaut-projects/micronaut-groovy -b 4.3.x
 
       - name: Build and install groovy (no docs)
-        run: ./gradlew clean install -x groovydoc -x javadoc -x javadocAll -x groovydocAll -x asciidoc -x docGDK --no-build-cache --no-scan --no-daemon
+        run: ./gradlew --no-build-cache --no-daemon --no-scan clean install -x asciidoc -x docGDK -x groovydoc -x javadoc -x javadocAll -x groovydocAll
         timeout-minutes: 60
 
       - name: Set CI_GROOVY_VERSION
@@ -58,10 +88,31 @@ jobs:
       - name: echo CI_GROOVY_VERSION
         run: echo $CI_GROOVY_VERSION
 
-      - name: Check Micronaut Core
-        run: cd ../micronaut-core && ./gradlew clean check --no-build-cache --no-scan --no-daemon -PgroovyVersion=$CI_GROOVY_VERSION --init-script ../maven-local-init.gradle
+      - name: Test Micronaut Core
+        run: cd ../micronaut-core && ./gradlew --init-script ../maven-local-init.gradle --no-build-cache --no-daemon --no-scan clean test -x :test-suite-kotlin-ksp:test -x :discovery-core:test -x :test-suite-netty-ssl-graalvm:test -x :test-suite-kotlin:test -x :inject-kotlin:test -x :inject-kotlin-test:test -PgroovyVersion=$CI_GROOVY_VERSION
         timeout-minutes: 60
 
       - name: Check Micronaut Groovy
-        run: cd ../micronaut-groovy && ./gradlew clean check --no-build-cache --no-scan --no-daemon -PgroovyVersion=$CI_GROOVY_VERSION --init-script ../maven-local-init.gradle
+        run: cd ../micronaut-groovy && ./gradlew --init-script ../maven-local-init.gradle --no-build-cache --no-daemon --no-scan clean check -PgroovyVersion=$CI_GROOVY_VERSION
         timeout-minutes: 60
+      - name: "🛑 Stop Gradle daemon before cache save"
+        if: always()
+        continue-on-error: true
+        run: ./gradlew --stop
+      - name: "🧹 Scrub Gradle cache lock files before save"
+        if: always()
+        shell: bash
+        run: |
+          dir="${GRADLE_USER_HOME:-$HOME/.gradle}/caches"
+          [ -d "$dir" ] || { echo "No $dir — nothing to scrub."; exit 0; }
+          deleted=0
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            echo "lock: $f"
+            if rm -f "$f"; then
+              deleted=$((deleted + 1))
+            else
+              echo "skipped busy lock: $f"
+            fi
+          done < <(find "$dir" -name '*.lock' 2>/dev/null)
+          echo "Scrubbed $deleted Gradle cache lock file(s) before cache save."

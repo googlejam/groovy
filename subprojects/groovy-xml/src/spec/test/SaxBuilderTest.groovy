@@ -17,35 +17,36 @@
  *  under the License.
  */
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class SaxBuilderTest extends GroovyTestCase {
+class SaxBuilderTest {
 
     // tag::sax_builder_handler[]
     class LogHandler extends org.xml.sax.helpers.DefaultHandler {
-        
+
         String log = ''
-        
+
         void startElement(String uri, String localName, String qName, org.xml.sax.Attributes attributes) {
             log += "Start Element: $localName, "
         }
-        
+
         void endElement(String uri, String localName, String qName) {
             log += "End Element: $localName, "
         }
     }
     // end::sax_builder_handler[]
 
+    @Test
     void testSaxBuilder() {
         // tag::sax_builder[]
         def handler = new LogHandler()
         def builder = new groovy.xml.SAXBuilder(handler)
-        
+
         builder.root() {
             helloWorld()
         }
         // end::sax_builder[]
-        
+
         // tag::sax_builder_assert[]
         assert handler.log == 'Start Element: root, Start Element: helloWorld, End Element: helloWorld, End Element: root, '
         // end::sax_builder_assert[]

@@ -21,6 +21,7 @@ package org.codehaus.groovy.control;
 import org.codehaus.groovy.ast.AnnotatedNode;
 import org.codehaus.groovy.ast.AnnotationNode;
 import org.codehaus.groovy.ast.ClassCodeExpressionTransformer;
+import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.DynamicVariable;
 import org.codehaus.groovy.ast.FieldNode;
@@ -43,6 +44,7 @@ import org.codehaus.groovy.ast.expr.MethodCallExpression;
 import org.codehaus.groovy.ast.expr.NamedArgumentListExpression;
 import org.codehaus.groovy.ast.expr.PropertyExpression;
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression;
+import org.codehaus.groovy.ast.expr.SwitchExpression;
 import org.codehaus.groovy.ast.expr.TupleExpression;
 import org.codehaus.groovy.ast.expr.VariableExpression;
 import org.codehaus.groovy.ast.stmt.Statement;
@@ -52,6 +54,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Predicate;
 
+import static java.lang.reflect.Modifier.isPrivate;
+import static java.lang.reflect.Modifier.isProtected;
+import static java.lang.reflect.Modifier.isPublic;
 import static org.apache.groovy.ast.tools.ClassNodeUtils.getField;
 import static org.apache.groovy.ast.tools.ClassNodeUtils.getPropNameForAccessor;
 import static org.apache.groovy.ast.tools.ClassNodeUtils.hasPossibleStaticMethod;
@@ -59,27 +64,39 @@ import static org.apache.groovy.ast.tools.ClassNodeUtils.hasPossibleStaticProper
 import static org.apache.groovy.ast.tools.ClassNodeUtils.hasStaticProperty;
 import static org.apache.groovy.ast.tools.ClassNodeUtils.isInnerClass;
 import static org.apache.groovy.ast.tools.ClassNodeUtils.isValidAccessorName;
+import static org.apache.groovy.ast.tools.ClassNodeUtils.samePackageName;
+import static org.apache.groovy.ast.tools.ExpressionUtils.isSuperExpression;
 import static org.apache.groovy.ast.tools.ExpressionUtils.transformInlineConstants;
 import static org.apache.groovy.util.BeanUtils.capitalize;
 import static org.codehaus.groovy.ast.tools.ClosureUtils.getParametersSafe;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.getGetterName;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.getSetterName;
+import static org.codehaus.groovy.transform.trait.Traits.isTrait;
 
 /**
  * Visitor to resolve constants and method calls from static imports.
  */
 public class StaticImportVisitor extends ClassCodeExpressionTransformer {
-    private ClassNode currentClass;
-    private MethodNode currentMethod;
+
     private SourceUnit sourceUnit;
-    private boolean inSpecialConstructorCall;
-    private boolean inClosure;
-    private boolean inPropertyExpression;
-    private Expression foundConstant;
+    private ClassNode  currentClass;
+    private MethodNode currentMethod;
+
     private Expression foundArgs;
+    private Expression foundConstant;
+
+    private boolean inClosure;
     private boolean inAnnotation;
     private boolean inLeftExpression;
+    private boolean inPropertyExpression;
+    private boolean inSpecialConstructorCall;
 
+    /**
+     * Creates a visitor that rewrites references resolved through static imports.
+     *
+     * @param classNode the class currently being transformed
+     * @param sourceUnit the source unit containing the class
+     */
     public StaticImportVisitor(final ClassNode classNode, final SourceUnit sourceUnit) {
         this.currentClass = classNode;
         this.sourceUnit = sourceUnit;
@@ -95,6 +112,12 @@ public class StaticImportVisitor extends ClassCodeExpressionTransformer {
         visitClass(classNode);
     }
 
+    /**
+     * Tracks the current method while transforming static-import references.
+     *
+     * @param node the method or constructor being visited
+     * @param isConstructor whether {@code node} is a constructor
+     */
     @Override
     protected void visitConstructorOrMethod(MethodNode node, boolean isConstructor) {
         this.currentMethod = node;
@@ -102,6 +125,11 @@ public class StaticImportVisitor extends ClassCodeExpressionTransformer {
         this.currentMethod = null;
     }
 
+    /**
+     * Marks annotation traversal so imported constants can be inlined safely.
+     *
+     * @param node the annotated node whose annotations are being visited
+     */
     @Override
     public void visitAnnotations(AnnotatedNode node) {
         boolean oldInAnnotation = inAnnotation;
@@ -110,6 +138,12 @@ public class StaticImportVisitor extends ClassCodeExpressionTransformer {
         inAnnotation = oldInAnnotation;
     }
 
+    /**
+     * Rewrites expressions that may target statically imported members.
+     *
+     * @param exp the expression to transform
+     * @return the transformed expression
+     */
     @Override
     public Expression transform(Expression exp) {
         if (exp == null) return null;
@@ -129,6 +163,10 @@ public class StaticImportVisitor extends ClassCodeExpressionTransformer {
         if (exp instanceof ClosureExpression) {
             return transformClosureExpression((ClosureExpression) exp);
         }
+        if (exp instanceof SwitchExpression se) {
+            visitSwitchExpression(se);
+            return se;
+        }
         if (clazz == ConstructorCallExpression.class) {
             return transformConstructorCallExpression((ConstructorCallExpression) exp);
         }
@@ -146,10 +184,9 @@ public class StaticImportVisitor extends ClassCodeExpressionTransformer {
             }
             if (inAnnotation && exp instanceof AnnotationConstantExpression) {
                 ConstantExpression ce = (ConstantExpression) result;
-                if (ce.getValue() instanceof AnnotationNode) {
+                if (ce.getValue() instanceof AnnotationNode an) {
                     // replicate a little bit of AnnotationVisitor here
                     // because we can't wait until later to do this
-                    AnnotationNode an = (AnnotationNode) ce.getValue();
                     Map<String, Expression> attributes = an.getMembers();
                     for (Map.Entry<String, Expression> entry : attributes.entrySet()) {
                         Expression attrExpr = transform(entry.getValue());
@@ -176,8 +213,8 @@ public class StaticImportVisitor extends ClassCodeExpressionTransformer {
         ModuleNode module = currentClass.getModule();
         if (module != null && key instanceof ConstantExpression) {
             Map<String, ImportNode> importNodes = module.getStaticImports();
-            if (importNodes.containsKey(key.getText())) {
-                ImportNode importNode = importNodes.get(key.getText());
+            ImportNode importNode = importNodes.get(key.getText());
+            if (importNode != null) {
                 if (importNode.getType().equals(constructorCallType)) {
                     String newKey = importNode.getFieldName();
                     return new MapEntryExpression(new ConstantExpression(newKey), value.transformExpression(this));
@@ -187,6 +224,12 @@ public class StaticImportVisitor extends ClassCodeExpressionTransformer {
         return me;
     }
 
+    /**
+     * Rewrites binary expressions that may reference statically imported members.
+     *
+     * @param be the binary expression to transform
+     * @return the transformed expression
+     */
     protected Expression transformBinaryExpression(BinaryExpression be) {
         int type = be.getOperation().getType();
         boolean oldInLeftExpression;
@@ -198,9 +241,9 @@ public class StaticImportVisitor extends ClassCodeExpressionTransformer {
             inLeftExpression = true;
             left = transform(be.getLeftExpression());
             inLeftExpression = oldInLeftExpression;
-            if (left instanceof StaticMethodCallExpression) {
-                StaticMethodCallExpression smce = (StaticMethodCallExpression) left;
+            if (left instanceof StaticMethodCallExpression smce) {
                 StaticMethodCallExpression result = new StaticMethodCallExpression(smce.getOwnerType(), smce.getMethod(), right);
+                result.copyNodeMetaData(smce);
                 setSourcePosition(result, be);
                 return result;
             }
@@ -211,10 +254,16 @@ public class StaticImportVisitor extends ClassCodeExpressionTransformer {
         return be;
     }
 
+    /**
+     * Rewrites variable expressions that resolve to statically imported fields or accessors.
+     *
+     * @param ve the variable expression to transform
+     * @return the transformed expression
+     */
     protected Expression transformVariableExpression(VariableExpression ve) {
         Variable v = ve.getAccessedVariable();
         if (v instanceof DynamicVariable) {
-            Expression result = findStaticFieldOrPropAccessorImportFromModule(v.getName());
+            Expression result = findStaticFieldOrPropertyAccessorImportFromModule(v.getName());
             if (result != null) {
                 setSourcePosition(result, ve);
                 if (inAnnotation) {
@@ -222,9 +271,8 @@ public class StaticImportVisitor extends ClassCodeExpressionTransformer {
                 }
                 return result;
             }
-        } else if (v instanceof FieldNode) {
+        } else if (v instanceof FieldNode fn) {
             if (inSpecialConstructorCall) { // GROOVY-8819
-                FieldNode fn = (FieldNode) v;
                 ClassNode declaringClass = fn.getDeclaringClass();
                 if (fn.isStatic() && currentClass.isDerivedFrom(declaringClass)) {
                     Expression result = new PropertyExpression(new ClassExpression(declaringClass), v.getName());
@@ -236,78 +284,77 @@ public class StaticImportVisitor extends ClassCodeExpressionTransformer {
         return ve;
     }
 
+    /**
+     * Rewrites implicit-this calls that resolve to statically imported methods or properties.
+     *
+     * @param mce the method call to transform
+     * @return the transformed expression
+     */
     protected Expression transformMethodCallExpression(MethodCallExpression mce) {
         Expression object = transform(mce.getObjectExpression());
         Expression method = transform(mce.getMethod());
         Expression args = transform(mce.getArguments());
 
+        // GROOVY-10396: skip the instance method checks when the context is static with-respect-to current class
+        boolean staticWrtCurrent = inSpecialConstructorCall || currentMethod != null && currentMethod.isStatic();
+
         if (mce.isImplicitThis()) {
-            if (currentClass.tryFindPossibleMethod(mce.getMethodAsString(), args) == null) {
+            String name = mce.getMethodAsString();
+            boolean thisOrSuperMethod = staticWrtCurrent ? hasPossibleStaticMethod(currentClass, name, args, true) : currentClass.tryFindPossibleMethod(name, args) != null;
+            if (!thisOrSuperMethod && currentClass.getOuterClasses().stream().noneMatch(oc -> oc.tryFindPossibleMethod(name, args) != null)) {
                 Expression result = findStaticMethodImportFromModule(method, args);
                 if (result != null) {
                     setSourcePosition(result, mce);
                     return result;
                 }
-                if (method instanceof ConstantExpression && !inLeftExpression) {
-                    // could be a closure field
-                    String methodName = (String) ((ConstantExpression) method).getValue();
-                    result = findStaticFieldOrPropAccessorImportFromModule(methodName);
-                    if (result != null) {
-                        result = new MethodCallExpression(result, "call", args);
-                        result.setSourcePosition(mce);
-                        return result;
-                    }
-                }
             }
-        } else if (currentMethod != null && currentMethod.isStatic() && (object instanceof VariableExpression && ((VariableExpression) object).isSuperExpression())) {
-            Expression result = new MethodCallExpression(new ClassExpression(currentClass.getSuperClass()), method, args);
+        } else if (staticWrtCurrent && isSuperExpression(object)) {
+            Expression result = new MethodCallExpression(new ClassExpression(currentClass.getSuperClass().getPlainNodeReference()), method, args);
             result.setSourcePosition(mce);
             return result;
         }
 
-        if (method instanceof ConstantExpression && ((ConstantExpression) method).getValue() instanceof String && (mce.isImplicitThis()
-                || (object instanceof VariableExpression && (((VariableExpression) object).isThisExpression() || ((VariableExpression) object).isSuperExpression())))) {
-            String methodName = (String) ((ConstantExpression) method).getValue();
+        if (method instanceof ConstantExpression && ((ConstantExpression) method).getValue() instanceof String
+                && mce.isImplicitThis() && !isTrait(currentClass)) { // GROOVY-7191, GROOVY-8272, GROOVY-10312
+            String name = mce.getMethodAsString();
 
-            boolean foundInstanceMethod = (currentMethod != null && !currentMethod.isStatic() && currentClass.hasPossibleMethod(methodName, args));
+            boolean foundInstanceMethod = !staticWrtCurrent && currentClass.hasPossibleMethod(name, args);
 
             Predicate<ClassNode> hasPossibleStaticMember = cn -> {
-                if (hasPossibleStaticMethod(cn, methodName, args, true)) {
+                if (hasPossibleStaticMethod(cn, name, args, true)) {
                     return true;
                 }
-                // GROOVY-9587: don't check for property for non-empty call args
+                // GROOVY-9587: skip property check for non-empty call arguments
                 if (args instanceof TupleExpression && ((TupleExpression) args).getExpressions().isEmpty()
-                        && hasPossibleStaticProperty(cn, methodName)) {
+                        && hasPossibleStaticProperty(cn, name)) {
                     return true;
                 }
                 return false;
             };
 
-            if (mce.isImplicitThis()) {
-                if (isInnerClass(currentClass)) {
-                    if (inSpecialConstructorCall && !foundInstanceMethod) {
-                        // check for reference to outer class method in this(...) or super(...)
-                        if (currentClass.getOuterClass().hasPossibleMethod(methodName, args)) {
-                            object = new PropertyExpression(new ClassExpression(currentClass.getOuterClass()), new ConstantExpression("this"));
-                        } else if (hasPossibleStaticMember.test(currentClass.getOuterClass())) {
-                            Expression result = new StaticMethodCallExpression(currentClass.getOuterClass(), methodName, args);
-                            result.setSourcePosition(mce);
-                            return result;
-                        }
-                    }
-                } else if (inSpecialConstructorCall || (!inClosure && !foundInstanceMethod && !methodName.equals("call"))) {
-                    // check for reference to static method in this(...) or super(...) or when call not resolved
-                    if (hasPossibleStaticMember.test(currentClass)) {
-                        Expression result = new StaticMethodCallExpression(currentClass, methodName, args);
+            if (isInnerClass(currentClass)) {
+                if (inSpecialConstructorCall && !foundInstanceMethod) {
+                    // check for reference to outer class method in this(...) or super(...)
+                    if (currentClass.getOuterClass().hasPossibleMethod(name, args)) {
+                        object = new PropertyExpression(new ClassExpression(currentClass.getOuterClass()), new ConstantExpression("this"));
+                    } else if (hasPossibleStaticMember.test(currentClass.getOuterClass())) {
+                        Expression result = new StaticMethodCallExpression(currentClass.getOuterClass(), name, args);
                         result.setSourcePosition(mce);
                         return result;
                     }
+                }
+            } else if (inSpecialConstructorCall || (!inClosure && !foundInstanceMethod && !"call".equals(name))) {
+                // check for reference to static method in this(...) or super(...) or when call not resolved
+                if (hasPossibleStaticMember.test(currentClass)) {
+                    Expression result = new StaticMethodCallExpression(currentClass, name, args);
+                    result.setSourcePosition(mce);
+                    return result;
                 }
             }
         }
 
         MethodCallExpression result = new MethodCallExpression(object, method, args);
-        result.setGenericsTypes(mce.getGenericsTypes());
+        result.setGenericsTypes(mce.getGenericsTypes()); // GROOVY-6757
         result.setMethodTarget(mce.getMethodTarget());
         result.setImplicitThis(mce.isImplicitThis());
         result.setSpreadSafe(mce.isSpreadSafe());
@@ -316,19 +363,21 @@ public class StaticImportVisitor extends ClassCodeExpressionTransformer {
         return result;
     }
 
+    /**
+     * Rewrites named-argument constructor calls that use statically imported members.
+     *
+     * @param cce the constructor call to transform
+     * @return the transformed expression
+     */
     protected Expression transformConstructorCallExpression(ConstructorCallExpression cce) {
         inSpecialConstructorCall = cce.isSpecialCall();
         Expression expression = cce.getArguments();
-        if (expression instanceof TupleExpression) {
-            TupleExpression tuple = (TupleExpression) expression;
+        if (expression instanceof TupleExpression tuple) {
             if (tuple.getExpressions().size() == 1) {
                 expression = tuple.getExpression(0);
-                if (expression instanceof NamedArgumentListExpression) {
-                    NamedArgumentListExpression namedArgs = (NamedArgumentListExpression) expression;
+                if (expression instanceof NamedArgumentListExpression namedArgs) {
                     List<MapEntryExpression> entryExpressions = namedArgs.getMapEntryExpressions();
-                    for (int i = 0; i < entryExpressions.size(); i++) {
-                        entryExpressions.set(i, (MapEntryExpression) transformMapEntryExpression(entryExpressions.get(i), cce.getType()));
-                    }
+                    entryExpressions.replaceAll(me -> (MapEntryExpression) transformMapEntryExpression(me, cce.getType()));
                 }
             }
         }
@@ -337,6 +386,12 @@ public class StaticImportVisitor extends ClassCodeExpressionTransformer {
         return ret;
     }
 
+    /**
+     * Rewrites default parameter expressions inside closures.
+     *
+     * @param ce the closure expression to transform
+     * @return the transformed expression
+     */
     protected Expression transformClosureExpression(ClosureExpression ce) {
         boolean oldInClosure = inClosure;
         inClosure = true;
@@ -351,12 +406,17 @@ public class StaticImportVisitor extends ClassCodeExpressionTransformer {
         return ce;
     }
 
+    /**
+     * Rewrites property expressions that may resolve through static imports.
+     *
+     * @param pe the property expression to transform
+     * @return the transformed expression
+     */
     protected Expression transformPropertyExpression(PropertyExpression pe) {
         if (currentMethod != null && currentMethod.isStatic()
-                && pe.getObjectExpression() instanceof VariableExpression
-                && ((VariableExpression) pe.getObjectExpression()).isSuperExpression()) {
+                && isSuperExpression(pe.getObjectExpression())) {
             PropertyExpression pexp = new PropertyExpression(
-                    new ClassExpression(currentClass.getUnresolvedSuperClass()),
+                    new ClassExpression(currentClass.getUnresolvedSuperClass().getPlainNodeReference()),
                     transform(pe.getProperty())
             );
             pexp.setSourcePosition(pe);
@@ -388,166 +448,201 @@ public class StaticImportVisitor extends ClassCodeExpressionTransformer {
         return pe;
     }
 
-    private Expression findStaticFieldOrPropAccessorImportFromModule(String name) {
-        ModuleNode module = currentClass.getModule();
-        if (module == null) return null;
-        Map<String, ImportNode> importNodes = module.getStaticImports();
-        Expression expression;
-        String accessorName = getAccessorName(name);
+    //--------------------------------------------------------------------------
+
+    private Expression findStaticFieldOrPropertyAccessorImportFromModule(String name) {
+        ModuleNode module = currentClass.getModule(); if (module == null) return null;
+        Map<String, ImportNode> staticImports = module.getStaticImports();
+
         // look for one of these:
-        //   import static MyClass.setProp [as setOtherProp]
+        //   import static MyClass.isProp [as isOtherProp]
         //   import static MyClass.getProp [as getOtherProp]
-        // when resolving prop reference
-        if (importNodes.containsKey(accessorName)) {
-            expression = findStaticProperty(importNodes, accessorName);
+        //   import static MyClass.setProp [as setOtherProp]
+        // when resolving property reference
+        Expression expression;
+        if (!inLeftExpression) {
+            expression = findStaticProperty(staticImports, "is" + capitalize(name));
             if (expression != null) return expression;
         }
-        if (accessorName.startsWith("get")) {
-            accessorName = "is" + accessorName.substring(3);
-            if (importNodes.containsKey(accessorName)) {
-                expression = findStaticProperty(importNodes, accessorName);
-                if (expression != null) return expression;
-            }
-        }
+        expression = findStaticProperty(staticImports, getAccessorName(name));
+        if (expression != null) return expression;
 
         // look for one of these:
         //   import static MyClass.prop [as otherProp]
-        // when resolving prop or field reference
-        if (importNodes.containsKey(name)) {
-            ImportNode importNode = importNodes.get(name);
-            expression = findStaticPropertyAccessor(importNode.getType(), importNode.getFieldName());
-            if (expression != null) return expression;
-            expression = findStaticField(importNode.getType(), importNode.getFieldName());
-            if (expression != null) return expression;
+        // when resolving property or field reference
+        {
+            ImportNode importNode = staticImports.get(name);
+            if (importNode != null) {
+                expression = findStaticPropertyOrField(importNode.getType(), importNode.getFieldName());
+                if (expression != null) return expression;
+            }
         }
+
         // look for one of these:
         //   import static MyClass.*
-        // when resolving prop or field reference
+        // when resolving property or field reference
         for (ImportNode importNode : module.getStaticStarImports().values()) {
-            ClassNode node = importNode.getType();
-            expression = findStaticPropertyAccessor(node, name);
-            if (expression != null) return expression;
-            expression = findStaticField(node, name);
+            expression = findStaticPropertyOrField(importNode.getType(), name);
             if (expression != null) return expression;
         }
-        return null;
-    }
 
-    private Expression findStaticProperty(Map<String, ImportNode> importNodes, String accessorName) {
-        Expression result = null;
-        ImportNode importNode = importNodes.get(accessorName);
-        ClassNode importClass = importNode.getType();
-        String importMember = importNode.getFieldName();
-        result = findStaticPropertyAccessorByFullName(importClass, importMember);
-        if (result == null) {
-            result = findStaticPropertyAccessor(importClass, getPropNameForAccessor(importMember));
-        }
-        return result;
+        return null;
     }
 
     private Expression findStaticMethodImportFromModule(Expression method, Expression args) {
-        ModuleNode module = currentClass.getModule();
-        if (module == null || !(method instanceof ConstantExpression)) return null;
-        Map<String, ImportNode> importNodes = module.getStaticImports();
-        ConstantExpression ce = (ConstantExpression) method;
+        if (currentClass.getModule() == null) return null;
+        if (!(method instanceof ConstantExpression)) return null;
+        if (!(((ConstantExpression) method).getValue() instanceof String)) return null;
+
         Expression expression;
-        Object value = ce.getValue();
-        // skip non-Strings, e.g. Integer
-        if (!(value instanceof String)) return null;
-        final String name = (String) value;
+        String name = method.getText();
+        Map<String, ImportNode> staticImports = currentClass.getModule().getStaticImports();
         // look for one of these:
-        //   import static SomeClass.method [as otherName]
-        // when resolving methodCall() or getProp() or setProp()
-        if (importNodes.containsKey(name)) {
-            ImportNode importNode = importNodes.get(name);
-            expression = findStaticMethod(importNode.getType(), importNode.getFieldName(), args);
-            if (expression != null) return expression;
-            expression = findStaticPropertyAccessorGivenArgs(importNode.getType(), getPropNameForAccessor(importNode.getFieldName()), args);
-            if (expression != null) {
-                return newStaticMethodCallX(importNode.getType(), importNode.getFieldName(), args);
-            }
-        }
-        // look for one of these:
-        //   import static SomeClass.someProp [as otherName]
-        // when resolving getProp() or setProp()
-        if (isValidAccessorName(name)) {
-            String propName = getPropNameForAccessor(name);
-            if (importNodes.containsKey(propName)) {
-                ImportNode importNode = importNodes.get(propName);
-                ClassNode importClass = importNode.getType();
-                String importMember = importNode.getFieldName();
-                expression = findStaticMethod(importClass, prefix(name) + capitalize(importMember), args);
+        //   import static MyClass.field [as alias]
+        //   import static MyClass.method [as alias]
+        //   import static MyClass.property [as alias]
+        // when resolving implicit-this call name(args)
+        {
+            ImportNode importNode = staticImports.get(name);
+            if (importNode != null) {
+                expression = findStaticMethod(importNode.getType(), importNode.getFieldName(), args);
                 if (expression != null) return expression;
-                expression = findStaticPropertyAccessorGivenArgs(importClass, importMember, args);
-                if (expression != null) {
-                    return newStaticMethodCallX(importClass, prefix(name) + capitalize(importMember), args);
+                if (!inLeftExpression) { // GROOVY-11056, et al.
+                    expression = findStaticPropertyOrField(importNode.getType(), importNode.getFieldName());
+                    if (expression != null) { // assume name refers to a callable static field/property
+                        MethodCallExpression call = new MethodCallExpression(expression, "call", args);
+                        call.setImplicitThis(false);
+                        return call;
+                    }
                 }
             }
         }
-        Map<String, ImportNode> starImports = module.getStaticStarImports();
-        ClassNode starImportType;
-        if (currentClass.isEnum() && starImports.containsKey(currentClass.getName())) {
-            ImportNode importNode = starImports.get(currentClass.getName());
-            starImportType = importNode == null ? null : importNode.getType();
-            expression = findStaticMethod(starImportType, name, args);
-            return expression;
-        } else {
-            for (ImportNode importNode : starImports.values()) {
-                starImportType = importNode == null ? null : importNode.getType();
-                expression = findStaticMethod(starImportType, name, args);
+        // look for one of these:
+        //   import static MyClass.property [as alias]
+        //   import static MyClass.isProperty [as alias]
+        //   import static MyClass.getProperty [as alias]
+        //   import static MyClass.setProperty [as alias]
+        // when resolving isName(), getName() or setName(args)
+        boolean accessor = isValidAccessorName(name);
+        if (accessor) {
+            ImportNode importNode = staticImports.get(name);
+            if (importNode != null) {
+                String propName = getPropNameForAccessor(importNode.getFieldName());
+                expression = findStaticPropertyAccessorGivenArgs(importNode.getType(), propName, args);
+                if (expression != null) { // expression may refer to getter or setter, so make new call
+                    return newStaticMethodCallX(importNode.getType(), importNode.getFieldName(), args);
+                }
+            }
+            importNode = staticImports.get(getPropNameForAccessor(name));
+            if (importNode != null) {
+                ClassNode importType = importNode.getType();
+                String importMember = importNode.getFieldName();
+                expression = findStaticMethod(importType, prefix(name) + capitalize(importMember), args);
                 if (expression != null) return expression;
-                expression = findStaticPropertyAccessorGivenArgs(starImportType, getPropNameForAccessor(name), args);
+                expression = findStaticPropertyAccessorGivenArgs(importType, importMember, args);
                 if (expression != null) {
-                    return newStaticMethodCallX(starImportType, name, args);
+                    return newStaticMethodCallX(importType, prefix(name) + capitalize(importMember), args);
+                }
+            }
+        }
+
+        Map<String, ImportNode> staticStarImports = currentClass.getModule().getStaticStarImports();
+        if (currentClass.isEnum() && staticStarImports.containsKey(currentClass.getName())) {
+            ImportNode importNode = staticStarImports.get(currentClass.getName());
+            expression = findStaticMethod(importNode.getType(), name, args);
+            return expression;
+        }
+        // look for one of these:
+        //   import static MyClass.*
+        // when resolving name(args), getName(), etc.
+        for (ImportNode importNode : staticStarImports.values()) {
+            ClassNode importType = importNode.getType();
+            expression = findStaticMethod(importType, name, args);
+            if (expression != null) return expression;
+            if (!inLeftExpression) { // GROOVY-10329, et al.
+                expression = findStaticPropertyOrField(importType, name);
+                if (expression != null) { // assume name refers to a callable static field/property
+                    MethodCallExpression call = new MethodCallExpression(expression, "call", args);
+                    call.setImplicitThis(false);
+                    return call;
+                }
+            }
+            if (accessor) {
+                String propName = getPropNameForAccessor(name);
+                expression = findStaticPropertyAccessorGivenArgs(importType, propName, args);
+                if (expression != null) { // expression may refer to getter or setter, so ...
+                    return newStaticMethodCallX(importType, name, args);
                 }
             }
         }
         return null;
     }
 
-    private static String prefix(String name) {
-        return name.startsWith("is") ? "is" : name.substring(0, 3);
-    }
-
-    private String getAccessorName(String name) {
-        return inLeftExpression ? getSetterName(name) : getGetterName(name);
+    private Expression findStaticPropertyAccessorByFullName(ClassNode staticImportType, String accessorName) {
+        Expression argumentList = inLeftExpression ? new ArgumentListExpression(EmptyExpression.INSTANCE) : ArgumentListExpression.EMPTY_ARGUMENTS;
+        Expression accessorExpr = findStaticMethod(staticImportType, accessorName, argumentList);
+        if (accessorExpr != null && accessorName.startsWith("is")) { // GROOVY-9382, GROOVY-10133
+            MethodNode method = staticImportType.getMethod(accessorName, Parameter.EMPTY_ARRAY);
+            if (method == null || !ClassHelper.isPrimitiveBoolean(method.getReturnType())) {
+                accessorExpr = null;
+            }
+        }
+        return accessorExpr;
     }
 
     private Expression findStaticPropertyAccessorGivenArgs(ClassNode staticImportType, String propName, Expression args) {
-        // TODO validate args?
-        return findStaticPropertyAccessor(staticImportType, propName);
+        return findStaticPropertyAccessor(staticImportType, propName); // TODO: validate args?
     }
 
     private Expression findStaticPropertyAccessor(ClassNode staticImportType, String propName) {
         String accessorName = getAccessorName(propName);
-        Expression accessor = findStaticPropertyAccessorByFullName(staticImportType, accessorName);
-        if (accessor == null && accessorName.startsWith("get")) {
+        Expression accessor = null;
+        if (!inLeftExpression) {
             accessor = findStaticPropertyAccessorByFullName(staticImportType, "is" + accessorName.substring(3));
         }
+        if (accessor == null) {
+            accessor = findStaticPropertyAccessorByFullName(staticImportType, accessorName);
+        }
         if (accessor == null && hasStaticProperty(staticImportType, propName)) {
-            // args will be replaced
             if (inLeftExpression)
-                accessor = newStaticMethodCallX(staticImportType, accessorName, ArgumentListExpression.EMPTY_ARGUMENTS);
+                accessor = newStaticMethodCallX(staticImportType, accessorName, ArgumentListExpression.EMPTY_ARGUMENTS); // <-- will be replaced
             else
                 accessor = newStaticPropertyX(staticImportType, propName);
         }
         return accessor;
     }
 
-    private Expression findStaticPropertyAccessorByFullName(ClassNode staticImportType, String accessorMethodName) {
-        // anything will do as we only check size == 1
-        ArgumentListExpression dummyArgs = new ArgumentListExpression();
-        dummyArgs.addExpression(EmptyExpression.INSTANCE);
-        return findStaticMethod(staticImportType, accessorMethodName, (inLeftExpression ? dummyArgs : ArgumentListExpression.EMPTY_ARGUMENTS));
+    private Expression findStaticPropertyOrField(ClassNode staticImportType, String variableName) {
+        Expression expression = findStaticPropertyAccessor(staticImportType, variableName);
+        if (expression == null) {
+            if (staticImportType.isPrimaryClassNode() || staticImportType.isResolved()) {
+                FieldNode field = getField(staticImportType, variableName, FieldNode::isStatic);
+                if (field != null && isMemberAccessible(field.getDeclaringClass(), field.getModifiers())) { // GROOVY-8145
+                    expression = newStaticPropertyX(staticImportType, variableName);
+                }
+            }
+        }
+        return expression;
     }
 
-    private static Expression findStaticField(ClassNode staticImportType, String fieldName) {
-        if (staticImportType.isPrimaryClassNode() || staticImportType.isResolved()) {
-            FieldNode field = getField(staticImportType, fieldName);
-            if (field != null && field.isStatic())
-                return newStaticPropertyX(staticImportType, fieldName);
+    private Expression findStaticProperty(Map<String, ImportNode> staticImports, String accessorName) {
+        Expression expression = null;
+        ImportNode importNode = staticImports.get(accessorName);
+        if (importNode != null) { ClassNode importType = importNode.getType();
+            expression = findStaticPropertyAccessorByFullName(importType, importNode.getFieldName());
+            if (expression == null) { // perhaps the property accessor will be generated
+                String propertyName = getPropNameForAccessor(importNode.getFieldName());
+                if (hasStaticProperty(importType, propertyName)) {
+                    if (inLeftExpression) {
+                        expression = newStaticMethodCallX(importType, importNode.getFieldName(),
+                                ArgumentListExpression.EMPTY_ARGUMENTS); // <-- will be replaced
+                    } else {
+                        expression = newStaticPropertyX(importType, propertyName);
+                    }
+                }
+            }
         }
-        return null;
+        return expression;
     }
 
     private static Expression findStaticMethod(ClassNode staticImportType, String methodName, Expression args) {
@@ -559,14 +654,42 @@ public class StaticImportVisitor extends ClassCodeExpressionTransformer {
         return null;
     }
 
-    private static PropertyExpression newStaticPropertyX(ClassNode type, String name) {
-        return new PropertyExpression(new ClassExpression(type.getPlainNodeReference()), name);
-    }
-
     private static StaticMethodCallExpression newStaticMethodCallX(ClassNode type, String name, Expression args) {
         return new StaticMethodCallExpression(type.getPlainNodeReference(), name, args);
     }
 
+    private static PropertyExpression newStaticPropertyX(ClassNode type, String name) {
+        return new PropertyExpression(new ClassExpression(type.getPlainNodeReference()), name);
+    }
+
+    private boolean isMemberAccessible(ClassNode declaringClass, int modifiers) {
+        if (isPublic(modifiers)
+                || currentClass.equals(declaringClass)
+                || currentClass.getOuterClasses().contains(declaringClass)) {
+            return true;
+        }
+        if (isProtected(modifiers) && currentClass.isDerivedFrom(declaringClass)) {
+            return true;
+        }
+        if (!isPrivate(modifiers) && samePackageName(currentClass, declaringClass)) {
+            return true;
+        }
+        return false;
+    }
+
+    private String getAccessorName(String name) {
+        return inLeftExpression ? getSetterName(name) : getGetterName(name);
+    }
+
+    private static String prefix(String name) {
+        return name.startsWith("is") ? "is" : name.substring(0, 3);
+    }
+
+    /**
+     * Returns the source unit currently being transformed.
+     *
+     * @return the active source unit
+     */
     @Override
     protected SourceUnit getSourceUnit() {
         return sourceUnit;

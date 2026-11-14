@@ -51,21 +51,33 @@ import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.io.PrintWriter;
 import java.math.BigInteger;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
-import java.security.AccessController;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.security.PrivilegedAction;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Pattern;
+
+import static java.lang.System.Logger.Level.ERROR;
 
 /**
  * A Command line to execute groovy.
  */
 public class GroovyMain {
+
+    private static final System.Logger LOGGER = System.getLogger(GroovyMain.class.getName());
 
     // arguments to the script
     private List<String> args;
@@ -85,7 +97,7 @@ public class GroovyMain {
     // automatically output the result of each script
     private boolean autoOutput;
 
-    // automatically split each line using the splitpattern
+    // automatically split each line using the splitPattern
     private boolean autoSplit;
 
     // The pattern used to split the current line
@@ -94,8 +106,8 @@ public class GroovyMain {
     // process sockets
     private boolean processSockets;
 
-    // port to listen on when processing sockets
-    private int port;
+    // address and port to listen on when processing sockets
+    private InetSocketAddress bindAddress;
 
     // backup input files with extension
     private String backupExtension;
@@ -116,12 +128,26 @@ public class GroovyMain {
     }
 
     // package-level visibility for testing purposes (just usage/errors at this stage)
+    /**
+     * Processes command-line arguments using a single output stream.
+     *
+     * @param args the command-line arguments
+     * @param out the output stream used for both normal and error output
+     * @deprecated use {@link #processArgs(String[], PrintStream, PrintStream)}
+     */
     @Deprecated
     static void processArgs(String[] args, final PrintStream out) {
         processArgs(args, out, out);
     }
 
     // package-level visibility for testing purposes (just usage/errors at this stage)
+    /**
+     * Processes command-line arguments.
+     *
+     * @param args the command-line arguments
+     * @param out the output stream for normal output
+     * @param err the output stream for error output
+     */
     static void processArgs(String[] args, final PrintStream out, final PrintStream err) {
         GroovyCommand groovyCommand = new GroovyCommand();
 
@@ -152,7 +178,15 @@ public class GroovyMain {
         }
     }
 
+    /**
+     * Supplies version text for the command-line interface.
+     */
     public static class VersionProvider implements IVersionProvider {
+        /**
+         * Returns the CLI version lines.
+         *
+         * @return the version lines
+         */
         @Override
         public String[] getVersion() {
             return new String[] {
@@ -167,7 +201,7 @@ public class GroovyMain {
             description = "The Groovy command line processor.",
             sortOptions = false,
             versionProvider = VersionProvider.class)
-    private static class GroovyCommand {
+    private static final class GroovyCommand {
 
         // IMPLEMENTATION NOTE:
         // classpath must be the first argument, so that the `startGroovy(.bat)` script
@@ -204,13 +238,13 @@ public class GroovyMain {
         @Option(names = {"-p"}, description = "Process files line by line and print result (see also -n)")
         private boolean lineByLinePrint;
 
-        @Option(names = {"-pa", "--parameters"}, description = "Generate metadata for reflection on method parameter names (jdk8+ only)")
+        @Option(names = {"-pa", "--parameters"}, description = "Generate metadata for reflection on method parameter names")
         private boolean parameterMetadata;
 
-        @Option(names = {"-pr", "--enable-preview"}, description = "Enable preview Java features (JEP 12) (jdk12+ only)")
+        @Option(names = {"-pr", "--enable-preview"}, description = "Enable preview Java features")
         private boolean previewFeatures;
 
-        @Option(names = "-l", arity = "0..1", paramLabel = "<port>", description = "Listen on a port and process inbound lines (default: 1960)")
+        @Option(names = "-l", arity = "0..1", paramLabel = "<[host:]port>", description = "Listen on a port and process inbound lines (default: 1960). Binds the loopback address unless a host is given; use 0.0.0.0 to accept connections from other hosts")
         private String port;
 
         @Option(names = {"-a", "--autosplit"}, arity = "0..1", paramLabel = "<splitPattern>", description = "Split lines using splitPattern (default '\\s') using implicit 'split' variable")
@@ -234,6 +268,9 @@ public class GroovyMain {
         @Option(names = {"--type-checked"}, description = "Use TypeChecked")
         private boolean typeChecked;
 
+        /**
+         * Unmatched command-line arguments.
+         */
         @Unmatched
         List<String> arguments = new ArrayList<>();
 
@@ -251,7 +288,7 @@ public class GroovyMain {
             final GroovyMain main = new GroovyMain();
 
             // add the ability to parse scripts with a specified encoding
-            main.conf.setSourceEncoding(encoding);
+            if (encoding != null) main.conf.setSourceEncoding(encoding);
 
             main.debug = debug;
             main.conf.setDebug(main.debug);
@@ -284,8 +321,12 @@ public class GroovyMain {
 
             main.processSockets = port != null;
             if (main.processSockets) {
-                String p = port.trim().length() > 0 ? port : "1960"; // default port to listen to
-                main.port = Integer.parseInt(p);
+                String p = !port.trim().isEmpty() ? port : "1960"; // default port to listen to
+                try {
+                    main.bindAddress = parseBindAddress(p);
+                } catch (IllegalArgumentException e) {
+                    throw new ParameterException(parser, e.getMessage());
+                }
             }
 
             for (String optimization : disableopt) {
@@ -331,6 +372,13 @@ public class GroovyMain {
         }
     }
 
+    /**
+     * Evaluates configuration scripts against the supplied compiler configuration.
+     *
+     * @param scripts the configuration script paths
+     * @param conf the configuration to customize
+     * @throws IOException if a script cannot be read
+     */
     public static void processConfigScripts(List<String> scripts, CompilerConfiguration conf) throws IOException {
         if (scripts.isEmpty()) return;
 
@@ -341,6 +389,12 @@ public class GroovyMain {
         }
     }
 
+    /**
+     * Evaluates inline configuration script text against the supplied compiler configuration.
+     *
+     * @param scriptText the configuration script text
+     * @param conf the configuration to customize
+     */
     public static void processConfigScriptText(String scriptText, CompilerConfiguration conf) {
         if (scriptText.trim().isEmpty()) return;
 
@@ -349,6 +403,12 @@ public class GroovyMain {
         shell.evaluate(scriptText);
     }
 
+    /**
+     * Builds a configuration script that applies the supplied transformations.
+     *
+     * @param transforms the transformation declarations
+     * @return the generated configuration script text
+     */
     public static String buildConfigScriptText(List<String> transforms) {
         StringBuilder script = new StringBuilder();
         script.append("withConfig(configuration) {").append("\n");
@@ -391,14 +451,13 @@ public class GroovyMain {
             }
             return true;
         } catch (CompilationFailedException e) {
-            System.err.println(e);
+            LOGGER.log(ERROR, e.toString());
             return false;
         } catch (Throwable e) {
-            if (e instanceof InvokerInvocationException) {
-                InvokerInvocationException iie = (InvokerInvocationException) e;
+            if (e instanceof InvokerInvocationException iie) {
                 e = iie.getCause();
             }
-            System.err.println("Caught: " + e);
+            LOGGER.log(ERROR, "Caught: {0}", e);
             if (!debug) {
                 StackTraceUtils.deepSanitize(e);
             }
@@ -408,11 +467,62 @@ public class GroovyMain {
     }
 
     /**
+     * Parses the {@code -l} argument, which is either a bare port or a host and a port
+     * separated by a colon. An IPv6 literal host must be enclosed in square brackets, as
+     * in {@code [::1]:1960}. A bare port binds the loopback address, so the listener is
+     * reachable from other hosts only when one is asked for explicitly.
+     *
+     * @param value the option argument
+     * @return the address to bind the listening socket to
+     * @throws IllegalArgumentException if the argument is not a port, or names a host that cannot be resolved
+     */
+    static InetSocketAddress parseBindAddress(String value) {
+        String host;
+        String portText;
+        if (value.startsWith("[")) {
+            int close = value.indexOf(']');
+            if (close < 0 || close + 1 >= value.length() || value.charAt(close + 1) != ':') {
+                throw new IllegalArgumentException("Invalid value for option '-l': expected '[host]:port' but was '" + value + "'");
+            }
+            host = value.substring(1, close);
+            portText = value.substring(close + 2);
+        } else {
+            int colon = value.indexOf(':');
+            if (colon < 0) {
+                host = null;
+                portText = value;
+            } else if (value.indexOf(':', colon + 1) >= 0) {
+                throw new IllegalArgumentException("Invalid value for option '-l': enclose an IPv6 address in square brackets, as in '[::1]:1960', but was '" + value + "'");
+            } else {
+                host = value.substring(0, colon);
+                portText = value.substring(colon + 1);
+            }
+        }
+        int portNumber;
+        try {
+            portNumber = Integer.parseInt(portText.trim());
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Invalid value for option '-l': '" + portText + "' is not a port number");
+        }
+        if (portNumber < 0 || portNumber > 65535) {
+            throw new IllegalArgumentException("Invalid value for option '-l': port " + portNumber + " is out of range");
+        }
+        if (host == null || host.isEmpty()) {
+            return new InetSocketAddress(InetAddress.getLoopbackAddress(), portNumber);
+        }
+        InetSocketAddress address = new InetSocketAddress(host, portNumber);
+        if (address.isUnresolved()) {
+            throw new IllegalArgumentException("Invalid value for option '-l': cannot resolve host '" + host + "'");
+        }
+        return address;
+    }
+
+    /**
      * Process Sockets.
      */
     private void processSockets() throws CompilationFailedException, IOException, URISyntaxException {
         GroovyShell groovy = new GroovyShell(conf);
-        new GroovySocketServer(groovy, getScriptSource(isScriptFile, script), autoOutput, port);
+        new GroovySocketServer(groovy, getScriptSource(isScriptFile, script), autoOutput, bindAddress);
     }
 
     /**
@@ -513,13 +623,29 @@ public class GroovyMain {
     // GROOVY-6771
     private static void setupContextClassLoader(GroovyShell shell) {
         final Thread current = Thread.currentThread();
+        /**
+         * Privileged action that updates the thread context class loader.
+         */
         class DoSetContext implements PrivilegedAction<Object> {
+            /**
+             * Context class loader to install.
+             */
             ClassLoader classLoader;
 
-            public DoSetContext(ClassLoader loader) {
+            /**
+             * Creates the context-switch action.
+             *
+             * @param loader the class loader to install
+             */
+            DoSetContext(ClassLoader loader) {
                 classLoader = loader;
             }
 
+            /**
+             * Sets the current thread context class loader.
+             *
+             * @return {@code null}
+             */
             @Override
             public Object run() {
                 current.setContextClassLoader(classLoader);
@@ -527,7 +653,7 @@ public class GroovyMain {
             }
         }
 
-        AccessController.doPrivileged(new DoSetContext(shell.getClassLoader()));
+        new DoSetContext(shell.getClassLoader()).run();
     }
 
     /**
@@ -573,23 +699,103 @@ public class GroovyMain {
                 writer.flush();
             }
         } else {
+            boolean unnamedScratch = backupExtension == null || backupExtension.isEmpty();
+            // Read before the original is moved aside: the rewrite creates a new file at the same
+            // path, which would otherwise take the ambient umask and could widen access to content
+            // that was deliberately restricted. sed and perl preserve the mode for the same reason.
+            Set<PosixFilePermission> permissions = posixPermissionsOf(file.toPath());
             File backup;
-            if (backupExtension == null) {
-                backup = File.createTempFile("groovy_", ".tmp");
-                backup.deleteOnExit();
+            if (unnamedScratch) {
+                // unique sibling of the source: same-filesystem rename, and the
+                // parent is the user's file directory rather than java.io.tmpdir
+                backup = moveAsideForInPlaceEdit(file);
             } else {
                 backup = new File(file.getPath() + backupExtension);
+                if (backup.exists() && !backup.delete()) {
+                    throw new IOException("unable to remove existing backup " + backup);
+                }
+                if (!file.renameTo(backup)) {
+                    throw new IOException("unable to rename " + file + " to " + backup);
+                }
             }
-            backup.delete();
-            if (!file.renameTo(backup))
-                throw new IOException("unable to rename " + file + " to " + backup);
-
-
-            try(BufferedReader reader = new BufferedReader(new FileReader(backup));
-                PrintWriter writer = new PrintWriter(new FileWriter(file))) {
+            createWithPermissions(file.toPath(), permissions);
+            try (BufferedReader reader = new BufferedReader(new FileReader(backup));
+                 PrintWriter writer = new PrintWriter(new FileWriter(file))) {
                 processReader(s, reader, writer);
             }
+            if (unnamedScratch) {
+                Files.deleteIfExists(backup.toPath());
+            }
         }
+    }
+
+    /**
+     * The POSIX permissions of an existing file, or {@code null} where the file system does not
+     * record them.
+     *
+     * @param path the file to inspect
+     * @return the permissions, or {@code null} when unavailable
+     */
+    private static Set<PosixFilePermission> posixPermissionsOf(final Path path) {
+        try {
+            return Files.getPosixFilePermissions(path);
+        } catch (IOException | UnsupportedOperationException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Creates the file that the in-place rewrite is about to fill, carrying the permissions the
+     * original had.
+     * <p>
+     * The file is created with those permissions rather than created and then adjusted, so its
+     * contents are never briefly readable by anyone the original excluded. Where permissions are
+     * unavailable, the file is left for the writer to create as before.
+     *
+     * @param path the file to create
+     * @param permissions the permissions to give it, or {@code null} to leave creation to the writer
+     * @throws IOException if the file cannot be created
+     */
+    private static void createWithPermissions(final Path path, final Set<PosixFilePermission> permissions)
+            throws IOException {
+        if (permissions == null) {
+            return;
+        }
+        try {
+            Files.createFile(path, PosixFilePermissions.asFileAttribute(permissions));
+        } catch (FileAlreadyExistsException e) {
+            Files.setPosixFilePermissions(path, permissions);
+        } catch (UnsupportedOperationException e) {
+            // no POSIX support after all; the writer creates the file
+        }
+    }
+
+    /**
+     * Moves {@code file} aside to a uniquely named sibling so the original path
+     * can be rewritten in place. The sibling is created in the source directory
+     * so the move stays on the same filesystem and the parent is not the
+     * process-wide publicly writable temp directory. The caller deletes the
+     * sibling after a successful rewrite; it is left in place on failure so the
+     * original contents remain recoverable.
+     */
+    private static File moveAsideForInPlaceEdit(final File file) throws IOException {
+        Path source = file.toPath();
+        Path directory = source.toAbsolutePath().getParent();
+        if (directory == null) {
+            throw new IOException("unable to resolve parent directory of " + file);
+        }
+        Path backup = Files.createTempFile(directory, "groovy_", ".tmp");
+        try {
+            Files.move(source, backup, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            try {
+                Files.deleteIfExists(backup);
+            } catch (IOException suppressed) {
+                e.addSuppressed(suppressed);
+            }
+            throw e;
+        }
+        return backup.toFile();
     }
 
     /**

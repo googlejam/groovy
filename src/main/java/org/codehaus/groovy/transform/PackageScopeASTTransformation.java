@@ -58,7 +58,7 @@ public class PackageScopeASTTransformation extends AbstractASTTransformation {
     private static final ClassNode MY_TYPE = ClassHelper.make(MY_CLASS);
     private static final String MY_TYPE_NAME = "@" + MY_TYPE.getNameWithoutPackage();
     private static final String LEGACY_TYPE_NAME = "groovy.lang.PackageScope";
-    private static final Class TARGET_CLASS = groovy.transform.PackageScopeTarget.class;
+    private static final Class TARGET_CLASS = PackageScopeTarget.class;
     private static final String TARGET_CLASS_NAME = ClassHelper.make(TARGET_CLASS).getNameWithoutPackage();
 
     @Override
@@ -71,7 +71,7 @@ public class PackageScopeASTTransformation extends AbstractASTTransformation {
 
         Expression value = node.getMember("value");
         if (parent instanceof ClassNode) {
-            List<groovy.transform.PackageScopeTarget> targets;
+            List<PackageScopeTarget> targets;
             if (value == null) targets = Collections.singletonList(legacyMode ? PackageScopeTarget.FIELDS : PackageScopeTarget.CLASS);
             else targets = determineTargets(value);
             visitClassNode((ClassNode) parent, targets);
@@ -100,17 +100,17 @@ public class PackageScopeASTTransformation extends AbstractASTTransformation {
         if (cNode.isInterface() && value.size() != 1 && value.get(0) != PackageScopeTarget.CLASS) {
             addError("Error processing interface '" + cName + "'. " + MY_TYPE_NAME + " not allowed for interfaces except when targeting Class level.", cNode);
         }
-        if (value.contains(groovy.transform.PackageScopeTarget.CLASS)) {
+        if (value.contains(PackageScopeTarget.CLASS)) {
             if (cNode.isSyntheticPublic()) revertVisibility(cNode);
             else addError("Can't use " + MY_TYPE_NAME + " for class '" + cNode.getName() + "' which has explicit visibility.", cNode);
         }
-        if (value.contains(groovy.transform.PackageScopeTarget.METHODS)) {
+        if (value.contains(PackageScopeTarget.METHODS)) {
             final List<MethodNode> mList = cNode.getMethods();
             for (MethodNode mNode : mList) {
                 if (mNode.isSyntheticPublic()) revertVisibility(mNode);
             }
         }
-        if (value.contains(groovy.transform.PackageScopeTarget.CONSTRUCTORS)) {
+        if (value.contains(PackageScopeTarget.CONSTRUCTORS)) {
             final List<ConstructorNode> cList = cNode.getDeclaredConstructors();
             for (MethodNode mNode : cList) {
                 if (mNode.isSyntheticPublic()) revertVisibility(mNode);
@@ -142,7 +142,7 @@ public class PackageScopeASTTransformation extends AbstractASTTransformation {
         PropertyNode foundProp = null;
         String fName = fNode.getName();
         for (PropertyNode pNode : pList) {
-            if (pNode.getName().equals(fName) && pNode.getAnnotations(MY_TYPE) != null) {
+            if (pNode.getField() == fNode) { // the annotated declaration
                 foundProp = pNode;
                 break;
             }
@@ -159,15 +159,20 @@ public class PackageScopeASTTransformation extends AbstractASTTransformation {
                 }
             }
             if (foundProp != null) {
-                FieldNode oldField = foundProp.getField();
-                cNode.getFields().remove(oldField);
-                cNode.getFieldIndex().put(fName, fNode);
+                if (!foundProp.getType().equals(fNode.getType())) {
+                    addError("The split property definition named '" + fName + "' must not have different types for the field and the property", fNode);
+                }
                 if (foundProp.hasInitialExpression()) {
                     if (fNode.hasInitialExpression()) {
                         addError("The split property definition named '" + fName + "' must not have an initial value for both the field and the property", fNode);
                     }
                     fNode.setInitialValueExpression(foundProp.getInitialExpression());
                 }
+                // each declaration created its own field and removeField drops only the indexed one,
+                // so remove every field of that name and keep fNode as the only one
+                cNode.removeField(fName);
+                cNode.getFields().removeIf(field -> field.getName().equals(fName));
+                cNode.addField(fNode);
                 foundProp.setField(fNode);
             }
         }
@@ -175,6 +180,7 @@ public class PackageScopeASTTransformation extends AbstractASTTransformation {
 
     private static void revertVisibility(FieldNode fNode) {
         fNode.setModifiers(fNode.getModifiers() & ~ACC_PRIVATE);
+        fNode.setSynthetic(false);
     }
 
     private static void revertVisibility(MethodNode mNode) {
@@ -185,12 +191,11 @@ public class PackageScopeASTTransformation extends AbstractASTTransformation {
         cNode.setModifiers(cNode.getModifiers() & ~ACC_PUBLIC);
     }
 
-    private static List<groovy.transform.PackageScopeTarget> determineTargets(Expression expr) {
-        List<groovy.transform.PackageScopeTarget> list = new ArrayList<groovy.transform.PackageScopeTarget>();
+    private static List<PackageScopeTarget> determineTargets(Expression expr) {
+        List<PackageScopeTarget> list = new ArrayList<PackageScopeTarget>();
         if (expr instanceof PropertyExpression) {
             list.add(extractTarget((PropertyExpression) expr));
-        } else if (expr instanceof ListExpression) {
-            final ListExpression expressionList = (ListExpression) expr;
+        } else if (expr instanceof ListExpression expressionList) {
             final List<Expression> expressions = expressionList.getExpressions();
             for (Expression ex : expressions) {
                 if (ex instanceof PropertyExpression) {
@@ -201,11 +206,10 @@ public class PackageScopeASTTransformation extends AbstractASTTransformation {
         return list;
     }
 
-    private static groovy.transform.PackageScopeTarget extractTarget(PropertyExpression expr) {
+    private static PackageScopeTarget extractTarget(PropertyExpression expr) {
         Expression oe = expr.getObjectExpression();
-        if (oe instanceof ClassExpression) {
-            ClassExpression ce = (ClassExpression) oe;
-            if (ce.getType().getName().equals("groovy.transform.PackageScopeTarget")) {
+        if (oe instanceof ClassExpression ce) {
+            if ("groovy.transform.PackageScopeTarget".equals(ce.getType().getName())) {
                 Expression prop = expr.getProperty();
                 if (prop instanceof ConstantExpression) {
                     String propName = (String) ((ConstantExpression) prop).getValue();

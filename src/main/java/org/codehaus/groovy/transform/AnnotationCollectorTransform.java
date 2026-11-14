@@ -18,6 +18,7 @@
  */
 package org.codehaus.groovy.transform;
 
+import groovy.lang.GroovyRuntimeException;
 import groovy.transform.AnnotationCollector;
 import org.apache.groovy.ast.tools.ClassNodeUtils;
 import org.codehaus.groovy.GroovyBugError;
@@ -37,20 +38,23 @@ import org.codehaus.groovy.ast.expr.ListExpression;
 import org.codehaus.groovy.ast.expr.MapExpression;
 import org.codehaus.groovy.ast.stmt.ReturnStatement;
 import org.codehaus.groovy.ast.stmt.Statement;
+import org.codehaus.groovy.control.CompilationUnit;
 import org.codehaus.groovy.control.SourceUnit;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.ListIterator;
 import java.util.Map;
 import java.util.Set;
 
-import static org.codehaus.groovy.transform.trait.TraitComposer.COMPILESTATIC_CLASSNODE;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.classX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.propX;
+import static org.codehaus.groovy.transform.sc.StaticCompilationVisitor.COMPILESTATIC_CLASSNODE;
 import static org.objectweb.asm.Opcodes.ACC_ABSTRACT;
 import static org.objectweb.asm.Opcodes.ACC_ANNOTATION;
 import static org.objectweb.asm.Opcodes.ACC_ENUM;
@@ -66,6 +70,8 @@ import static org.objectweb.asm.Opcodes.ACC_STATIC;
  * @see AnnotationCollectorTransform#visit(AnnotationNode, AnnotationNode, AnnotatedNode, SourceUnit)
  */
 public class AnnotationCollectorTransform {
+    private static final ClassNode ANNOTATIONCOLLECTOR_ANNOTATION = ClassHelper.make(AnnotationCollector.class);
+    private static final String ANNOTATIONCOLLECTOR_CLASS_NAME = AnnotationCollector.class.getName();
 
     private static List<AnnotationNode> getMeta(ClassNode cn) {
         List<AnnotationNode> meta = cn.getNodeMetaData(AnnotationCollector.class);
@@ -81,7 +87,7 @@ public class AnnotationCollectorTransform {
     }
 
     /**
-     * Class used by {@link org.codehaus.groovy.control.CompilationUnit} to transform the alias class
+     * Class used by {@link CompilationUnit} to transform the alias class
      * into what is needed by the compiler. This means removing invalid
      * modifiers, interfaces and superclasses, as well as adding a static
      * value method returning our serialized version of the data for processing
@@ -98,7 +104,7 @@ public class AnnotationCollectorTransform {
         public void transformClass(ClassNode cn) {
             AnnotationNode collector = null;
             for (AnnotationNode an : cn.getAnnotations()) {
-                if (an.getClassNode().getName().equals(AnnotationCollector.class.getName())) {
+                if (an.getClassNode().getName().equals(ANNOTATIONCOLLECTOR_CLASS_NAME)) {
                     collector = an;
                     break;
                 }
@@ -108,8 +114,7 @@ public class AnnotationCollectorTransform {
             }
             boolean legacySerialization = false;
             final Expression member = collector.getMember("serializeClass");
-            if (member instanceof ClassExpression) {
-                ClassExpression ce = (ClassExpression) member;
+            if (member instanceof ClassExpression ce) {
                 legacySerialization = ce.getType().getName().equals(cn.getName());
             }
             ClassNode helper = cn;
@@ -121,10 +126,10 @@ public class AnnotationCollectorTransform {
                 // force no interfaces implemented
                 helper.setInterfaces(ClassNode.EMPTY_ARRAY);
             } else {
-                helper = new InnerClassNode(cn.getPlainNodeReference(), cn.getName() + "$CollectorHelper",
+                helper = new InnerClassNode(cn, cn.getName() + "$CollectorHelper",
                         ACC_PUBLIC | ACC_STATIC | ACC_FINAL, ClassHelper.OBJECT_TYPE.getPlainNodeReference());
                 cn.getModule().addClass(helper);
-                helper.addAnnotation(new AnnotationNode(COMPILESTATIC_CLASSNODE));
+                helper.addAnnotation(COMPILESTATIC_CLASSNODE);
                 collector.setMember("serializeClass", new ClassExpression(helper.getPlainNodeReference()));
             }
 
@@ -153,12 +158,11 @@ public class AnnotationCollectorTransform {
         }
 
         private Expression serialize(Expression e) {
-            if (e instanceof AnnotationConstantExpression) {
-                AnnotationConstantExpression ace = (AnnotationConstantExpression) e;
+            if (e instanceof AnnotationConstantExpression ace) {
                 return serialize((AnnotationNode) ace.getValue());
-            } else if (e instanceof ListExpression) {
+            }
+            if (e instanceof ListExpression le) {
                 boolean annotationConstant = false;
-                ListExpression le = (ListExpression) e;
                 List<Expression> list = le.getExpressions();
                 List<Expression> newList = new ArrayList<>(list.size());
                 for (Expression exp: list) {
@@ -168,6 +172,12 @@ public class AnnotationCollectorTransform {
                 ClassNode type = ClassHelper.OBJECT_TYPE;
                 if (annotationConstant) type = type.makeArray();
                 return new ArrayExpression(type, newList);
+            }
+            if (e instanceof ConstantExpression) {
+                Object obj = ((ConstantExpression) e).getValue();
+                if (obj instanceof Enum) {
+                    return propX(classX(obj.getClass()), e);
+                }
             }
             return e;
         }
@@ -203,11 +213,10 @@ public class AnnotationCollectorTransform {
         if (memberValue == null) {
             return Collections.emptyList();
         }
-        if (!(memberValue instanceof ListExpression)) {
+        if (!(memberValue instanceof ListExpression memberListExp)) {
             addError("Annotation collector expected a list of classes, but got a "+memberValue.getClass(), collector, source);
             return Collections.emptyList();
         }
-        ListExpression memberListExp = (ListExpression) memberValue;
         List<Expression> memberList = memberListExp.getExpressions();
         if (memberList.isEmpty()) {
             return Collections.emptyList();
@@ -247,7 +256,9 @@ public class AnnotationCollectorTransform {
         List<AnnotationNode> ret = new ArrayList<>(annotations.size());
         for (AnnotationNode an : annotations) {
             ClassNode type = an.getClassNode();
-            if (type.getName().equals(AnnotationCollector.class.getName()) || "java.lang.annotation".equals(type.getPackageName())) continue;
+            if ("java.lang.annotation".equals(type.getPackageName())
+                    || ANNOTATIONCOLLECTOR_CLASS_NAME.equals(type.getName())
+                    || "org.apache.groovy.lang.annotation.Incubating".equals(type.getName())) continue;
             AnnotationNode toAdd = new AnnotationNode(type);
             copyMembers(an, toAdd);
             ret.add(toAdd);
@@ -266,36 +277,41 @@ public class AnnotationCollectorTransform {
         }
     }
 
-    private static List<AnnotationNode> getTargetListFromClass(ClassNode alias) {
-        alias = getSerializeClass(alias);
-        Class<?> c = alias.getTypeClass();
-        Object[][] data;
+    private static List<AnnotationNode> getTargetListFromClass(final ClassNode alias) {
+        ClassNode cn = getSerializeClass(alias);
+        Class<?> c = cn.getTypeClass();
         try {
             Method m = c.getMethod("value");
-            data = (Object[][]) m.invoke(null);
+            if ((m.getModifiers() & ACC_STATIC) == 0) {
+                throw new NoSuchMethodException("non-static value()");
+            }
+            return makeListOfAnnotations((Object[][]) m.invoke(null));
+        } catch (NoSuchMethodException | ClassCastException e) {
+            throw new GroovyRuntimeException("Expecting static method `Object[][] value()`" +
+                    " in " + cn.toString(false) + ". Was it compiled from a Java source?");
         } catch (Exception e) {
             throw new GroovyBugError(e);
         }
-        return makeListOfAnnotations(data);
     }
 
     // 2.5.3 and above gets from annotation attribute otherwise self
-    private static ClassNode getSerializeClass(ClassNode alias) {
-        List<AnnotationNode> annotations = alias.getAnnotations(ClassHelper.make(AnnotationCollector.class));
-        if (!annotations.isEmpty()) {
-            AnnotationNode annotationNode = annotations.get(0);
-            Expression member = annotationNode.getMember("serializeClass");
-            if (member instanceof ClassExpression) {
-                ClassExpression ce = (ClassExpression) member;
-                if (!ce.getType().getName().equals(AnnotationCollector.class.getName())) {
-                    alias = ce.getType();
+    private static ClassNode getSerializeClass(final ClassNode alias) {
+        List<AnnotationNode> collectors = alias.getAnnotations(ANNOTATIONCOLLECTOR_ANNOTATION);
+        if (!collectors.isEmpty()) {
+            assert collectors.size() == 1;
+            AnnotationNode collectorNode = collectors.get(0);
+            Expression serializeClass = collectorNode.getMember("serializeClass");
+            if (serializeClass instanceof ClassExpression) {
+                ClassNode serializeClassType = serializeClass.getType();
+                if (!serializeClassType.getName().equals(ANNOTATIONCOLLECTOR_CLASS_NAME)) {
+                    return serializeClassType;
                 }
             }
         }
         return alias;
     }
 
-    private static List<AnnotationNode> makeListOfAnnotations(Object[][] data) {
+    private static List<AnnotationNode> makeListOfAnnotations(final Object[][] data) {
         if (data.length == 0) {
             return Collections.emptyList();
         }
@@ -310,7 +326,11 @@ public class AnnotationCollectorTransform {
             if (member.isEmpty()) {
                 continue;
             }
-            Map<String, Expression> generated = new HashMap<>(member.size());
+            // insertion-ordered: copyMembers iterates this map to populate the annotation's
+            // members, which are written to the class file in that order; the incoming map
+            // preserves the order the members were declared on the collector, so hash order
+            // here would emit them in an arbitrary order
+            Map<String, Expression> generated = new LinkedHashMap<>(member.size());
             for (Map.Entry<String, Object> entry : member.entrySet()) {
                 generated.put(entry.getKey(), makeExpression(entry.getValue()));
             }
@@ -319,7 +339,7 @@ public class AnnotationCollectorTransform {
         return ret;
     }
 
-    private static Expression makeExpression(Object o) {
+    private static Expression makeExpression(final Object o) {
         if (o instanceof Class) {
             return new ClassExpression(ClassHelper.make((Class<?>) o));
         }
@@ -331,9 +351,8 @@ public class AnnotationCollectorTransform {
                 le.addExpression(new AnnotationConstantExpression(an));
             }
             return le;
-        } else if (o instanceof Object[]) {
+        } else if (o instanceof Object[] values) {
             ListExpression le = new ListExpression();
-            Object[] values = (Object[]) o;
             for (Object val : values) {
                 le.addExpression(makeExpression(val));
             }
@@ -368,7 +387,7 @@ public class AnnotationCollectorTransform {
      * get the list of annotations we aliased from the collector and adds it to
      * aliasAnnotationUsage. The method will also map all members from
      * aliasAnnotationUsage to the aliased nodes. Should a member stay unmapped,
-     * we will ad an error. Further processing of those members is done by the
+     * we will add an error. Further processing of those members is done by the
      * annotations.
      *
      * @param collector                 reference to the annotation with {@link AnnotationCollector}

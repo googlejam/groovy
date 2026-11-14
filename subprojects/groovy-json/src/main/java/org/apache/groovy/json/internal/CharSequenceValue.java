@@ -23,7 +23,11 @@ import groovy.json.JsonException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.Arrays;
+import groovy.json.JsonDateHandling;
+
+import java.time.OffsetDateTime;
 import java.util.Date;
+import java.util.Locale;
 import java.util.Objects;
 
 import static org.apache.groovy.json.internal.CharScanner.isInteger;
@@ -31,10 +35,13 @@ import static org.apache.groovy.json.internal.CharScanner.parseIntFromTo;
 import static org.apache.groovy.json.internal.CharScanner.parseLongFromTo;
 import static org.apache.groovy.json.internal.Exceptions.die;
 
+/**
+ * Overlay-backed {@link Value} that keeps a character slice until conversion is required.
+ */
 public class CharSequenceValue implements Value, CharSequence {
 
     private final Type type;
-    private final boolean checkDate;
+    private final JsonDateHandling dateHandling;
     private final boolean decodeStrings;
 
     private char[] buffer;
@@ -43,10 +50,45 @@ public class CharSequenceValue implements Value, CharSequence {
     private int endIndex;
     private Object value;
 
+    /**
+     * Retained so that the boolean form of this constructor keeps working.
+     *
+     * @param chop whether to eagerly copy the slice out of the buffer
+     * @param type token type
+     * @param startIndex start index, inclusive
+     * @param endIndex end index, exclusive
+     * @param buffer buffer holding the token
+     * @param encoded whether the token carries escapes
+     * @param checkDate whether a date-like string should become a {@link Date}
+     * @deprecated use the constructor taking a {@link JsonDateHandling}
+     */
+    @Deprecated
     public CharSequenceValue(boolean chop, Type type, int startIndex, int endIndex, char[] buffer,
                              boolean encoded, boolean checkDate) {
+        this(chop, type, startIndex, endIndex, buffer, encoded,
+                checkDate ? JsonDateHandling.UTIL_DATE : JsonDateHandling.STRING);
+    }
+
+    /**
+     * Keeps the slice {@code buffer[startIndex, endIndex)} as this value.
+     * When {@code chop} is true the slice is copied into a private array and
+     * a failed copy is rethrown as an internal JSON exception; otherwise the
+     * caller's array and indexes are retained. {@code encoded} is remembered
+     * so later string conversion can decode escapes, and {@code dateHandling}
+     * selects how a date-like string is converted.
+     *
+     * @param chop whether to copy the slice out of {@code buffer}
+     * @param type token type of the slice
+     * @param startIndex start index, inclusive
+     * @param endIndex end index, exclusive
+     * @param buffer characters holding the token
+     * @param encoded whether the token still contains escapes
+     * @param dateHandling how a date-like string is converted
+     */
+    public CharSequenceValue(boolean chop, Type type, int startIndex, int endIndex, char[] buffer,
+                             boolean encoded, JsonDateHandling dateHandling) {
         this.type = type;
-        this.checkDate = checkDate;
+        this.dateHandling = dateHandling;
         this.decodeStrings = encoded;
 
         if (chop) {
@@ -65,6 +107,11 @@ public class CharSequenceValue implements Value, CharSequence {
         }
     }
 
+    /**
+     * Returns the current character slice without additional decoding.
+     *
+     * @return the raw slice text
+     */
     @Override
     public String toString() {
         if (startIndex == 0 && endIndex == buffer.length) {
@@ -74,11 +121,17 @@ public class CharSequenceValue implements Value, CharSequence {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public final Object toValue() {
         return value != null ? value : (value = doToValue());
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public <T extends Enum> T toEnum(Class<T> cls) {
         switch (type) {
@@ -93,14 +146,31 @@ public class CharSequenceValue implements Value, CharSequence {
         return null;
     }
 
+    /**
+     * Resolves an enum constant from the decoded token text.
+     *
+     * @param cls enum type
+     * @param value decoded token text
+     * @param <T> enum type
+     * @return the matching enum constant
+     */
+    @SuppressWarnings({"rawtypes", "unchecked"})
     public static <T extends Enum> T toEnum(Class<T> cls, String value) {
         try {
             return (T) Enum.valueOf(cls, value);
         } catch (Exception ex) {
-            return (T) Enum.valueOf(cls, value.toUpperCase().replace('-', '_'));
+            return (T) Enum.valueOf(cls, value.toUpperCase(Locale.ROOT).replace('-', '_'));
         }
     }
 
+    /**
+     * Resolves an enum constant from its ordinal.
+     *
+     * @param cls enum type
+     * @param value ordinal value
+     * @param <T> enum type
+     * @return the matching enum constant
+     */
     public static <T extends Enum> T toEnum(Class<T> cls, int value) {
         T[] enumConstants = cls.getEnumConstants();
         for (T e : enumConstants) {
@@ -112,6 +182,9 @@ public class CharSequenceValue implements Value, CharSequence {
         return null;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public boolean isContainer() {
         return false;
@@ -128,22 +201,28 @@ public class CharSequenceValue implements Value, CharSequence {
                     return longValue();
                 }
             case STRING:
-                if (checkDate) {
-                    Date date = null;
-                    if (Dates.isISO8601QuickCheck(buffer, startIndex, endIndex)) {
-                        if (Dates.isJsonDate(buffer, startIndex, endIndex)) {
-                            date = Dates.fromJsonDate(buffer, startIndex, endIndex);
-                        } else if (Dates.isISO8601(buffer, startIndex, endIndex)) {
-                            date = Dates.fromISO8601(buffer, startIndex, endIndex);
-                        } else {
+                if (dateHandling != JsonDateHandling.STRING
+                        && Dates.isISO8601QuickCheck(buffer, startIndex, endIndex)) {
+                    OffsetDateTime moment;
+                    if (Dates.isJsonDate(buffer, startIndex, endIndex)) {
+                        moment = Dates.offsetDateTimeFromJsonDate(buffer, startIndex, endIndex);
+                    } else if (Dates.isISO8601(buffer, startIndex, endIndex)) {
+                        moment = Dates.offsetDateTimeFromISO8601(buffer, startIndex, endIndex);
+                    } else {
+                        return stringValue();
+                    }
+                    if (moment == null) {
+                        return stringValue();
+                    }
+                    switch (dateHandling) {
+                        case OFFSET_DATE_TIME:
+                            return moment;
+                        case INSTANT:
+                            return moment.toInstant();
+                        case UTIL_DATE:
+                            return Date.from(moment.toInstant());
+                        default:
                             return stringValue();
-                        }
-
-                        if (date == null) {
-                            return stringValue();
-                        } else {
-                            return date;
-                        }
                     }
                 }
                 return stringValue();
@@ -152,6 +231,12 @@ public class CharSequenceValue implements Value, CharSequence {
         return null;
     }
 
+    /**
+     * Compares the overlay state and cached value.
+     *
+     * @param o other object
+     * @return {@code true} when the overlays match
+     */
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
@@ -167,6 +252,11 @@ public class CharSequenceValue implements Value, CharSequence {
 
     }
 
+    /**
+     * Returns a hash code for the overlay state and cached value.
+     *
+     * @return hash code for this value view
+     */
     @Override
     public int hashCode() {
         int result = type != null ? type.hashCode() : 0;
@@ -177,31 +267,58 @@ public class CharSequenceValue implements Value, CharSequence {
         return result;
     }
 
+    /**
+     * Returns the length of the current backing buffer.
+     *
+     * @return backing buffer length
+     */
     @Override
     public final int length() {
         return buffer.length;
     }
 
+    /**
+     * Returns the character at the supplied backing-buffer index.
+     *
+     * @param index backing-buffer index
+     * @return the character at {@code index}
+     */
     @Override
     public final char charAt(int index) {
         return buffer[index];
     }
 
+    /**
+     * Creates another overlay view over the same backing buffer.
+     *
+     * @param start subsequence start in the backing buffer
+     * @param end subsequence end in the backing buffer
+     * @return a new overlay view
+     */
     @Override
     public final CharSequence subSequence(int start, int end) {
-        return new CharSequenceValue(false, type, start, end, buffer, decodeStrings, checkDate);
+        return new CharSequenceValue(false, type, start, end, buffer, decodeStrings, dateHandling);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public BigDecimal bigDecimalValue() {
         return new BigDecimal(buffer, startIndex, endIndex - startIndex);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public BigInteger bigIntegerValue() {
         return new BigInteger(toString());
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public String stringValue() {
         if (this.decodeStrings) {
@@ -211,11 +328,17 @@ public class CharSequenceValue implements Value, CharSequence {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public String stringValueEncoded() {
         return JsonStringDecoder.decode(buffer, startIndex, endIndex);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public Date dateValue() {
         if (type == Type.STRING) {
@@ -238,6 +361,9 @@ public class CharSequenceValue implements Value, CharSequence {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public int intValue() {
         int sign = 1;
@@ -248,6 +374,9 @@ public class CharSequenceValue implements Value, CharSequence {
         return parseIntFromTo(buffer, startIndex, endIndex) * sign;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public long longValue() {
         if (isInteger(buffer, startIndex, endIndex - startIndex)) {
@@ -257,31 +386,49 @@ public class CharSequenceValue implements Value, CharSequence {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public byte byteValue() {
         return (byte) intValue();
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public short shortValue() {
         return (short) intValue();
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public double doubleValue() {
         return CharScanner.parseDouble(this.buffer, startIndex, endIndex);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public boolean booleanValue() {
         return Boolean.parseBoolean(toString());
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public float floatValue() {
         return CharScanner.parseFloat(this.buffer, startIndex, endIndex);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public final void chop() {
         if (!chopped) {
@@ -292,6 +439,9 @@ public class CharSequenceValue implements Value, CharSequence {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public char charValue() {
         return buffer[startIndex];

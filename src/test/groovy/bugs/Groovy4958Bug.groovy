@@ -16,24 +16,26 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
 
-class Groovy4958Bug extends GroovyTestCase {
+
+class Groovy4958Bug {
+    @Test
     void testConfigSlurperParsingConfigFilesWithDollarSymbolInPropValues() {
         def config = new ConfigObject()
         config.instObject = '1. Dyn. Aktber. ($IO_AKTBER)   # Aktenbereich \' " (V-AKTBER)'
-        
+
         def beforeVersion = config.toString()
-        
+
         def sw = new StringWriter()
         config.writeTo(sw)
-        
+
         config = new ConfigSlurper().parse(sw.toString())
         def afterVersion = config.toString()
-        
+
         assert beforeVersion == afterVersion
     }
 }

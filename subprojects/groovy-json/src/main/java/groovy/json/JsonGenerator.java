@@ -101,7 +101,7 @@ public interface JsonGenerator {
      *
      * <p>
      * Example:
-     * <pre><code class="groovyTestCase">
+     * <pre><code class="language-groovy groovyTestCase">
      *     def generator = new groovy.json.JsonGenerator.Options()
      *                         .excludeNulls()
      *                         .dateFormat('yyyy')
@@ -119,19 +119,33 @@ public interface JsonGenerator {
      */
     class Options {
 
+        /** Default date format pattern used for JSON date values. */
         protected static final String JSON_DATE_FORMAT = "yyyy-MM-dd'T'HH:mm:ssZ";
+        /** Default locale used with the JSON date format pattern. */
         protected static final Locale JSON_DATE_FORMAT_LOCALE = Locale.US;
+        /** Default time zone ID used for JSON date values. */
         protected static final String DEFAULT_TIMEZONE = "GMT";
 
+        /** Indicates whether {@code null} values should be omitted. */
         protected boolean excludeNulls;
+        /** Indicates whether Unicode escaping should be disabled. */
         protected boolean disableUnicodeEscaping;
+        /** Date format pattern used when serializing dates. */
         protected String dateFormat = JSON_DATE_FORMAT;
+        /** Locale used when serializing dates. */
         protected Locale dateLocale = JSON_DATE_FORMAT_LOCALE;
+        /** Time zone used when serializing dates. */
         protected TimeZone timezone = TimeZone.getTimeZone(DEFAULT_TIMEZONE);
+        /** Registered converters applied before default serialization. */
         protected final Set<Converter> converters = new LinkedHashSet<Converter>();
+        /** Field names excluded from generated JSON objects. */
         protected final Set<String> excludedFieldNames = new HashSet<String>();
+        /** Field types excluded from generated JSON objects. */
         protected final Set<Class<?>> excludedFieldTypes = new HashSet<Class<?>>();
 
+        /**
+         * Creates an options builder with the default JSON serialization settings.
+         */
         public Options() {}
 
         /**
@@ -156,7 +170,7 @@ public interface JsonGenerator {
 
         /**
          * Sets the date format that will be used to serialize {@code Date} objects.
-         * This must be a valid pattern for {@link java.text.SimpleDateFormat} and the
+         * This must be a valid pattern for {@link SimpleDateFormat} and the
          * date formatter will be constructed with the default locale of {@link Locale#US}.
          *
          * @param format date format pattern used to serialize dates
@@ -170,7 +184,7 @@ public interface JsonGenerator {
 
         /**
          * Sets the date format that will be used to serialize {@code Date} objects.
-         * This must be a valid pattern for {@link java.text.SimpleDateFormat}.
+         * This must be a valid pattern for {@link SimpleDateFormat}.
          *
          * @param format date format pattern used to serialize dates
          * @param locale the locale whose date format symbols will be used
@@ -223,7 +237,7 @@ public interface JsonGenerator {
          *
          * <p>
          * Example:
-         * <pre><code class="groovyTestCase">
+         * <pre><code class="language-groovy groovyTestCase">
          *     def generator = new groovy.json.JsonGenerator.Options()
          *                         .addConverter(URL) { URL u {@code ->}
          *                             u.getHost()
@@ -237,7 +251,7 @@ public interface JsonGenerator {
          *
          * <p>If two or more closures are registered for the exact same type the last
          * closure based on the order they were specified will be used.  When serializing an
-         * object its type is compared to the list of registered types in the order the were
+         * object its type is compared to the list of registered types in the order they were
          * given and the closure for the first suitable type will be called.  Therefore, it is
          * important to register more specific types first.
          *

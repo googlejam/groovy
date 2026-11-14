@@ -16,16 +16,18 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase;
-import org.codehaus.groovy.dummy.*
+
+import org.codehaus.groovy.dummy.ClassWithStaticMethod
+import org.junit.jupiter.api.Test
 
 /**
  * Test case to check if imports can use wildcard (*) for static method calls.
  * Bug reference: Explicit import needed to call static method, GROOVY-935
  */
-class StaticMethodImportBug extends GroovyTestCase {
+class StaticMethodImportBug {
+    @Test
     void testBug() {
         assert ClassWithStaticMethod.staticMethod()
     }

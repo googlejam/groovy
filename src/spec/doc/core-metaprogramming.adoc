@@ -51,6 +51,7 @@ For every method call Groovy checks whether the object is a POJO or a POGO. For 
 .Groovy interception mechanism
 [plantuml, GroovyInterceptions, png]
 ....
+!pragma layout smetana
 start
 if (Class implements\nGroovyInterceptable?) then (yes)
     :Call its invokeMethod();
@@ -83,6 +84,10 @@ else (no)
     endif
 endif
 ....
+
+A method call or property access without an explicit receiver inside a closure first selects its receiver from the
+closure's owner and delegate, as described in the
+link:core-closures.html#closure-resolution-rules[closure resolution rules]. The steps above then apply to that receiver.
 
 === GroovyObject interface
 
@@ -405,6 +410,12 @@ first parameter. The target type class is given as an argument to the annotation
 [NOTE]
 There is a distinct section on `@Category` in the <<xform-Category,compile-time metaprogramming section>>.
 
+[NOTE]
+Because category methods are resolved dynamically at runtime, categories cannot be used in code under
+`@TypeChecked` or `@CompileStatic`; the type checker reports an error for `use` method calls.
+If you need statically checked code, consider an <<extension-modules,extension module>> instead,
+which provides methods in the same form as a category class but is compatible with type checking.
+
 === Metaclasses
 
 As explained earlier, Metaclasses play a central role in method resolution.
@@ -436,11 +447,20 @@ assert f.metaClass =~ /MetaClassImpl/
 
 ==== Custom metaclasses
 
-You can change the metaclass of any object or class and replace with a custom implementation of the `MetaClass` gapi:groovy.lang.MetaClass[interface]. Usually you will want to subclass one of the existing metaclasses `MetaClassImpl`, `DelegatingMetaClass`, `ExpandoMetaClass`, `ProxyMetaClass`, etc. otherwise you will need to implement the complete method lookup logic. Before using a new metaclass instance you should call  gapid:groovy.lang.MetaClass#initialize()[] otherwise the metaclass may or may not behave as expected.
+You can change the metaclass of any object or class and replace it with a
+custom implementation of the `MetaClass` gapi:groovy.lang.MetaClass[interface].
+Usually you will want to extend one of the existing metaclasses such as
+`MetaClassImpl`, `DelegatingMetaClass`, `ExpandoMetaClass`, or `ProxyMetaClass`;
+otherwise you will need to implement the complete method lookup logic.
+Before using a new metaclass instance you should call
+gapid:groovy.lang.MetaClass#initialize()[],
+otherwise the metaclass may or may not behave as expected.
 
 ===== Delegating metaclass
 
-If you only need to decorate an existing metaclass the `DelegatingMetaClass` simplifies that use case. The old metaclass implementation is still accessible via `super` making easy to apply pretransformations to the inputs, routing to other methods and postprocess the outputs.
+If you only need to decorate an existing metaclass the `DelegatingMetaClass` simplifies that use case.
+The old metaclass implementation is still accessible via `super` making it easy to apply
+pretransformations to the inputs, routing to other methods and postprocessing the outputs.
 
 [source,groovy]
 ----
@@ -553,7 +573,7 @@ The following sections go into detail on how `ExpandoMetaClass` can be used in v
 
 ===== Methods
 
-Once the `ExpandoMetaClass` is accessed by calling the `metaClass` property, methods can added by using either the left shift
+Once the `ExpandoMetaClass` is accessed by calling the `metaClass` property, methods can be added by using either the left shift
 `<<` or the `=` operator.
 
 [NOTE]
@@ -668,8 +688,8 @@ class HTMLCodec {
 
 The example above shows a codec implementation. Grails comes with various codec implementations each defined in a single class.
 At runtime there will be multiple codec classes in the application classpath. At application startup the framework adds
-a `encodeXXX` and a `decodeXXX` method to certain meta-classes where `XXX` is the first part of the codec class name (e.g.
-`encodeHTML`). This mechanism is in the following shown in some Groovy pseudo-code:
+a `encodeXXX` and a `decodeXXX` method to certain metaclasses where `XXX` is the first part of the codec class name (e.g.
+`encodeHTML`). This mechanism is in the following shown in some Groovy pseudocode:
 
 [source,groovy]
 ----
@@ -714,7 +734,7 @@ The following example shows how to override `invokeMethod`:
 include::../test/metaprogramming/ExpandoMetaClassTest.groovy[tags=emc_invoke_method,indent=0]
 ----
 
-The first step in the `Closure` code is to lookup the `MetaMethod` for the given name and arguments. If the method
+The first step in the `Closure` code is to look up the `MetaMethod` for the given name and arguments. If the method
 can be found everything is fine and it is delegated to. If not, a dummy value is returned.
 
 [NOTE]
@@ -753,6 +773,7 @@ globally using the `ExpandoMetaClass.enableGlobally()` method before application
 include::../test/metaprogramming/ExpandoMetaClassTest.groovy[tags=emc_interface,indent=0]
 ----
 
+[[extension-modules]]
 === Extension modules
 ==== Extending existing classes
 
@@ -866,6 +887,17 @@ separated.
 static methods. You can provide several classes, given that they are
 comma separated.
 
+An optional fifth key, _requiredClasses_, lists classes (comma separated)
+that must be loadable before the extension helper classes are loaded,
+typically a class from an optional dependency that the extension methods'
+signatures mention. While one of them is missing, Groovy defers the module
+instead of failing to load it, and registers the module as soon as a later
+`@Grab` adds the missing dependency to the class loader that holds the
+module (for a module in the distribution's `lib` directory, that is the
+launcher's root loader, so the grab needs
+`@GrabConfig(systemClassLoader=true)`). The runtime and the static type
+checker both honour the key.
+
 Note that it is not required for a module to define both static helpers
 and instance helpers, and that you may add several classes to a single
 module. You can also extend different classes in a single module without
@@ -928,7 +960,7 @@ boilerplate code incorrect is reduced.
 
 [[xform-ToString]]
 ===== `@groovy.transform.ToString`
-The `@ToString` AST transformation generates a human readable `toString` representation of the class. For example,
+The `@ToString` AST transformation generates a human-readable `toString` representation of the class. For example,
 annotating the `Person` class like below will automatically generate the `toString` method for you:
 
 [source,groovy]
@@ -1237,6 +1269,63 @@ The generated constructor will be roughly like this:
 ----
 include::../test/CodeGenerationASTTransformsTest.groovy[tags=mapconstructor_equiv,indent=0]
 ----
+
+[[xform-NamedVariant]]
+===== `@groovy.transform.NamedVariant`
+
+`@NamedVariant`, added in Groovy 2.5.0, generates an overload whose first parameter is a `Map`,
+so the method or constructor can be called with named arguments. The annotated method is kept
+and is what the generated method calls. The generated method has the same visibility and return
+type as the original; `@VisibilityOptions` can change the visibility of the generated one.
+
+With no `@NamedParam` or `@NamedDelegate` on any parameter, every parameter is a named argument.
+`autoDelegate` (since Groovy 2.5.3) set to `true` treats the first parameter as a delegate instead.
+`@NamedParam` and `@NamedDelegate` select parameters explicitly and may be mixed. A delegate type
+must be one Groovy can produce from a `Map` with `as`. Duplicate names, whether from named
+parameters or from properties of a delegate, are a compile error.
+
+[source,groovy]
+----
+import groovy.transform.NamedVariant
+
+@NamedVariant
+int makeSense(int dollars, int cents) {
+    100 * dollars + cents
+}
+
+assert makeSense(dollars: 2, cents: 50) == 250
+----
+
+A default is used only when the map has no entry for that name. A value that is present is
+passed through, including values that are false under <<{core-semantics}#the-groovy-truth,Groovy truth>>,
+such as `0`, `false` or `''`.
+
+[source,groovy]
+----
+import groovy.transform.NamedParam
+import groovy.transform.NamedVariant
+
+@NamedVariant
+String greet(@NamedParam String name, String suffix = '!') {
+    name + suffix
+}
+
+assert greet(name: 'Ada') == 'Ada!'
+assert greet(name: 'Ada', '') == 'Ada'
+----
+
+A trailing positional parameter with a default also produces the usual default-argument
+overloads of the named-argument method. A positional argument supplied beside the named
+arguments, including `0` or `null`, is that positional parameter and does not fall back
+to the default.
+
+`coerce` (since Groovy 3.0.6), when `true`, converts each map value with `as`. Otherwise the
+value is passed on for ordinary assignment.
+
+Joint compilation exposes the all-`Map` form to Java callers in the same compilation unit
+(`returnType methodName(Map namedArgs)`, or `ClassName(Map)` for a constructor). A method that
+mixes named and positional parameters has a richer signature at run time. Java code that needs
+the richer form should call it from Groovy, or through a hand-written method that delegates.
 
 [[xform-Canonical]]
 ===== `@groovy.transform.Canonical`
@@ -1752,7 +1841,7 @@ include::../test/CodeGenerationASTTransformsTest.groovy[tags=autoimplement_excep
 ----
 
 The fourth example illustrates the case of user supplied code. Our class is annotated with `@AutoImplement`,
-implements an interface, has an explcitly overriden `hasNext` method, and has an annotation attribute containing the
+implements an interface, has an explicitly overridden `hasNext` method, and has an annotation attribute containing the
 supplied code for any supplied methods. Here is the class definition:
 
 [source,groovy]
@@ -1798,7 +1887,7 @@ singleton, ...) by using a declarative style.
 ===== `@groovy.transform.BaseScript`
 
 `@BaseScript` is used within scripts to indicate that the script should
-extend fron a custom script base class rather than `groovy.lang.Script`.
+extend from a custom script base class rather than `groovy.lang.Script`.
 See the documentation for <<{core-domain-specific-languages}#dsl-basescript,domain specific languages>> for further details.
 
 [[xform-Delegate]]
@@ -1914,6 +2003,7 @@ The `@Immutable` meta-annotation combines the following annotations:
 * <<xform-EqualsAndHashCode,@EqualsAndHashCode>>
 * <<xform-TupleConstructor,@TupleConstructor>>
 * <<xform-MapConstructor,@MapConstructor>>
+* <<xform-Final,@Final>>
 * <<xform-ImmutableBase,@ImmutableBase>>
 * <<xform-ImmutableOptions,@ImmutableOptions>>
 * <<xform-PropertyOptions,@PropertyOptions>>
@@ -2075,7 +2165,7 @@ and some non-tail recursive calls are erroneously treated as tail recursive.
 
 The `@Singleton` annotation can be used to implement the singleton design pattern on a class. The singleton instance
 is defined eagerly by default, using class initialization, or lazily, in which case the field is initialized using
-double checked locking.
+double-checked locking.
 
 [source,groovy]
 ----
@@ -2104,110 +2194,7 @@ In this example, we also set the `strict` parameter to false, which allows us to
 
 Deprecated. Consider using traits instead.
 
-==== Logging improvements
-
-Groovy provides AST transformation that helps integrating with the most widely used logging frameworks. It's worth noting
-that annotating a class with one of those annotations doesn't prevent you from adding the appropriate logging framework
-on classpath.
-
-All transformations work in a similar way:
-
-* add static final `log` field corresponding to the logger
-* wrap all calls to `log.level()` into the appropriate `log.isLevelEnabled` guard, depending on the underlying framework
-
-Those transformations support two parameters:
-
-* `value` (default `log`) corresponds to the name of the logger field
-* `category` (defaults to the class name) is the name of the logger category
-
-[[xform-Log]]
-===== `@groovy.util.logging.Log`
-
-The first logging AST transformation available is the `@Log` annotation which relies on the JDK logging framework. Writing:
-
-[source,groovy]
-----
-include::../test/LogImprovementsASTTransformsTest.groovy[tags=log_spec,indent=0]
-----
-
-is equivalent to writing:
-
-[source,groovy]
-----
-include::../test/LogImprovementsASTTransformsTest.groovy[tags=log_equiv,indent=0]
-----
-
-[[xform-Commons]]
-===== `@groovy.util.logging.Commons`
-
-Groovy supports the http://commons.apache.org/proper/commons-logging/[Apache Commons Logging] framework using to the
-`@Commons` annotation. Writing:
-
-[source,groovy]
-----
-include::../test/LogImprovementsASTTransformsTest.groovy[tags=commons_spec,indent=0]
-----
-
-is equivalent to writing:
-
-[source,groovy]
-----
-include::../test/LogImprovementsASTTransformsTest.groovy[tags=commons_equiv,indent=0]
-----
-
-[[xform-Log4j]]
-===== `@groovy.util.logging.Log4j`
-
-Groovy supports the http://logging.apache.org/log4j/1.2/[Apache Log4j 1.x] framework using to the
-`@Log4j` annotation. Writing:
-
-[source,groovy]
-----
-include::../test/LogImprovementsASTTransformsTest.groovy[tags=log4j_spec,indent=0]
-----
-
-is equivalent to writing:
-
-[source,groovy]
-----
-include::../test/LogImprovementsASTTransformsTest.groovy[tags=log4j_equiv,indent=0]
-----
-
-[[xform-Log4j2]]
-===== `@groovy.util.logging.Log4j2`
-
-Groovy supports the http://logging.apache.org/log4j/2.x/[Apache Log4j 2.x] framework using to the
-`@Log4j2` annotation. Writing:
-
-[source,groovy]
-----
-include::../test/LogImprovementsASTTransformsTest.groovy[tags=log4j2_spec,indent=0]
-----
-
-is equivalent to writing:
-
-[source,groovy]
-----
-include::../test/LogImprovementsASTTransformsTest.groovy[tags=log4j2_equiv,indent=0]
-----
-
-[[xform-Slf4j]]
-===== `@groovy.util.logging.Slf4j`
-
-Groovy supports the http://www.slf4j.org/[Simple Logging Facade for Java (SLF4J)] framework using to the
-`@Slf4j` annotation. Writing:
-
-[source,groovy]
-----
-include::../test/LogImprovementsASTTransformsTest.groovy[tags=slf4j_spec,indent=0]
-----
-
-is equivalent to writing:
-
-[source,groovy]
-----
-include::../test/LogImprovementsASTTransformsTest.groovy[tags=slf4j_equiv,indent=0]
-----
+include::../../../subprojects/groovy-logging-test/src/spec/doc/logging-transforms.adoc[]
 
 ==== Declarative concurrency
 
@@ -2373,7 +2360,7 @@ generating code which will for example allow you to interrupt execution automati
 ===== `@groovy.transform.ThreadInterrupt`
 
 One complicated situation in the JVM world is when a thread can't be stopped. The `Thread#stop` method exists but is
-deprecated (and isn't reliable) so your only chance relies in `Thread#interrupt`. Calling the latter will set the
+deprecated (and isn't reliable) so your only chance lies in `Thread#interrupt`. Calling the latter will set the
 `interrupt` flag on the thread, but it will *not* stop the execution of the thread. This is problematic because it's the
 responsibility of the code executing in the thread to check the interrupt flag and properly exit. This makes sense when
 you, as a developer, know that the code you are executing is meant to be run in an independent thread, but in general,
@@ -2607,6 +2594,72 @@ class A {
 ----
 |=======================================================================
 
+[[xform-SafeRegex]]
+===== `@groovy.transform.SafeRegex`
+
+Regular expression evaluation is another way for untrusted input to consume unbounded CPU.
+Java's regex engine has no native timeout, so a pattern subject to _catastrophic backtracking_
+can effectively hang a thread when fed adversarial input -- a Regular Expression Denial of
+Service (ReDoS). Thread interruption doesn't help here: the regex engine never checks the
+interrupt flag, so even `@ThreadInterrupt` or `@TimedInterrupt` cannot stop a runaway match --
+the hang occurs inside a single JDK library call, not in user code where those transforms
+insert their checks.
+
+`@SafeRegex` addresses this for the regex operators. Within the annotated scope, find (`=~`)
+and match (`==~`) expressions are rewritten at compile time to deadline-guarded
+gapi:groovy.util.regex.RegexGuard[] calls which throw a
+gapi:groovy.util.regex.RegexTimeoutException[] if an evaluation exceeds the configured timeout.
+Matching semantics are otherwise unchanged:
+
+[source,groovy]
+----
+include::../test/SaferScriptingASTTransformsTest.groovy[tags=saferegex_handler,indent=0]
+----
+
+The `check` method is rewritten to the equivalent of:
+
+[source,groovy]
+----
+include::../test/SaferScriptingASTTransformsTest.groovy[tags=saferegex_handler_equiv,indent=0]
+----
+
+Well-behaved evaluations are unaffected, while a runaway one is cut off shortly after the
+deadline:
+
+[source,groovy]
+----
+include::../test/SaferScriptingASTTransformsTest.groovy[tags=saferegex_control,indent=0]
+----
+
+The annotation may be placed on a class, method, or constructor. It may also be placed on a
+field or local variable declaration, in which case only regex operators lexically within the
+initializer expression are guarded (a guarded field initializer runs, as usual, in the
+constructor, or in the static initializer for a static field, where a timeout surfaces as an
+`ExceptionInInitializerError` whose cause is the `RegexTimeoutException`).
+
+`@SafeRegex` supports one option:
+
+[cols="1,1,2,3a",options="header"]
+|=======================================================================
+|Attribute|Default value|Description|Example
+|millis|1000|The timeout in milliseconds applied to each guarded regex evaluation within the annotated scope. Must be a positive constant.|
+[source,groovy]
+----
+@SafeRegex(millis = 200)
+boolean check(String input) {
+    input ==~ /(.*,){16}X/
+}
+----
+|=======================================================================
+
+Only regex operators lexically visible within the annotated scope are rewritten. Regex
+evaluation via method calls such as `String#matches`, `replaceAll` or `split`, or occurring in
+code called from the annotated scope, is not guarded by this transform; for those, use
+gapi:groovy.util.regex.RegexGuard[] explicitly -- its `guard(timeout) { ... }` form guards all
+regex evaluations reached through Groovy's runtime for the dynamic extent of a closure. See the
+link:core-operators.html#_guarding_against_runaway_regular_expressions[operator documentation]
+for details.
+
 ==== Compiler directives
 
 This category of AST transformations groups annotations which have a direct impact on the semantics of the code, rather
@@ -2678,6 +2731,19 @@ include::../test/CompilerDirectivesASTTransformsTest.groovy[tags=packagescope_pr
 The `@PackageScope` annotation is seldom used as part of normal Groovy conventions but is sometimes useful
 for factory methods that should be visible internally within a package or for methods or constructors provided
 for testing purposes, or when integrating with third-party libraries which require such visibility conventions.
+
+[[xform-Final]]
+===== `@groovy.transform.Final`
+
+`@Final` is essentially an alias for the `final` modifier.
+The intention is that you would almost never use the `@Final` annotation directly (just use `final`).
+However, when creating meta-annotations that should apply
+the final modifier to the node being annotated, you can mix in `@Final`, e.g..
+
+[source,groovy]
+----
+include::../test/CompilerDirectivesASTTransformsTest.groovy[tags=final_annotation,indent=0]
+----
 
 [[xform-AutoFinal]]
 ===== `@groovy.transform.AutoFinal`
@@ -2950,14 +3016,14 @@ thoroughly in this <<{grape}#section-grape,section of the guide>>.
 
 There are two kinds of transformations: global and local transformations.
 
-* <<transforms-global,Global transformations>> are applied to by the compiler on the code being compiled,
-wherever the transformation apply. Compiled classes that implement global transformations
+* <<transforms-global,Global transformations>> are applied by the compiler on the code being compiled,
+wherever the transformation applies. Compiled classes that implement global transformations
 are in a JAR added to the classpath of the compiler and contain service locator file
 `META-INF/services/org.codehaus.groovy.transform.ASTTransformation` with a line with the name of the
-transformation class. The transformation class must have a no-args constructor and implement the
+transformation class. The transformation class must have a no-arg constructor and implement the
 `org.codehaus.groovy.transform.ASTTransformation` interface.
-It will be run against *every source in the compilation*, so be sure to not create transformations which
-scan all the AST in an expansive and time-consuming manner, to keep the compiler fast.
+It will be run against *every source in the compilation*, so if you want fast compilation times, don't create transformations which
+scan all the AST in an expansive and time-consuming manner.
 * <<transforms-local,Local transformations>> are transformations applied locally by annotating code elements you want to
 transform. For this, we reuse the annotation notation, and those annotations should implement
 `org.codehaus.groovy.transform.ASTTransformation`. The compiler will discover them and apply the
@@ -2973,13 +3039,13 @@ transformations may only be applied in the semantic analysis phase or
 later. Briefly, the compiler phases are:
 
 * _Initialization_: source files are opened and environment configured
-* _Parsing_: the grammar is used to to produce tree of tokens representing
+* _Parsing_: the grammar is used to produce tree of tokens representing
 the source code
 * _Conversion_: An abstract syntax tree (AST) is created from token trees.
 * _Semantic Analysis_: Performs consistency and validity checks that the
 grammar can’t check for, and resolves classes.
 * _Canonicalization_: Complete building the AST
-* _Instruction Selection_: instruction set is chosen, for example Java 6 or Java 7 bytecode level
+* _Instruction Selection_: Prepare for class generation, for example static type checking is performed in this phase
 * _Class Generation_: creates the bytecode of the class in memory
 * _Output_: write the binary output to the file system
 * _Finalization_: Perform any last cleanup
@@ -2989,6 +3055,50 @@ the phases. If your transformation is concerned with reading the AST,
 then a later phase where information is more plentiful might be a good
 choice. If your transformation is concerned with writing AST, then an
 earlier phase where the tree is more sparse might be more convenient.
+
+[[transforms-static-compilation]]
+==== Transformations and static compilation
+
+The phase advice above is about convenience. If classes using your
+transformation may also use `@TypeChecked` or `@CompileStatic` — which for a
+transformation shipped by a library or framework is out of your hands — the
+phase you pick additionally decides whether the type checker sees the code you
+generate at all.
+
+Static type checking runs during instruction selection. Code that your
+transformation adds in an earlier phase is visited by the type checker exactly
+like code the user wrote: it is checked, and under static compilation every
+method call and property access in it is annotated with the resolution
+metadata the bytecode writers depend on, chiefly
+`StaticTypesMarker.DIRECT_METHOD_CALL_TARGET` (the resolved method) and
+`StaticTypesMarker.INFERRED_TYPE` (see
+gapi:org.codehaus.groovy.transform.stc.StaticTypesMarker[]). Code injected
+during or after instruction selection is never visited by the type checker.
+Dynamic Groovy and `@TypeChecked` classes do not care, because their bytecode
+dispatches dynamically either way — but under `@CompileStatic` the static
+writers have nothing to link against. The result is code that works
+dynamically and type-checked yet breaks statically compiled, typically with
+"Target method for method call expression hasn't been set", a
+`VerifyError`, or a "Cannot find matching method" error that only appears
+under `@CompileStatic`. If users of your transformation report errors like
+these, check what phase the generating code runs in before suspecting their
+code.
+
+The safe pattern is therefore to generate code before instruction selection —
+usually semantic analysis for local transformations — and let the type checker
+annotate it for you. If your transformation must run late, the options are to
+mark the generated methods with `@CompileDynamic` (or generate calls through
+the dynamic runtime deliberately), or to attach the required metadata
+yourself; the latter means hand-resolving targets the way the type checker
+would, which is expert territory for the same reasons described in
+<<{core-semantics}#ast-xform-as-extension,Transforming the AST in an extension>>.
+
+TIP: The mirror image of this problem — a type checking *extension* that
+vouches for dynamic code under `@TypeChecked`, leaving the static compiler
+nothing to link against — is covered in the type checking extensions
+documentation: prefer `makeDynamic` (see
+<<{core-semantics}#mixed-mode,mixed mode compilation>>) or resolve a real
+method target instead of simply setting `handled`.
 
 [[transforms-local]]
 ==== Local transformations
@@ -3110,6 +3220,28 @@ to the next one, there's a direct consequence: the transformation will not be co
 conclusion, AST transformations need to be precompiled before you can use them. In general, it is as easy as having them
 in a separate source tree.
 
+===== Relocating code the user wrote
+
+Some annotations take a closure as a member, and that closure is code written by the user of
+your transform. Transforms routinely move such code somewhere else — `@TupleConstructor(pre={...})`
+inlines it into the constructor it generates, for example — and several then replace the
+annotation member with an empty closure so that the type checker does not also try to check it
+in place.
+
+That is fine, provided the relocated code ends up somewhere in the AST and keeps the source
+position it had in the original source. Anything inspecting the AST at compile time — IDE
+tooling, static analysis, other transforms, a
+gapi:org.codehaus.groovy.control.customizers.CompilationCustomizer[] — tells code the user wrote
+apart from code the compiler generated by its source position, because generated nodes carry
+none. Moving user code somewhere only your own transform can find it, such as node metadata,
+makes it invisible to all of them.
+
+If your transform cannot do that, because it evaluates the user's code during compilation or
+takes it out of the AST altogether, then provide a documented system property which turns the
+transform off, so a build compiling source it does not control can decline the behaviour.
+`@Grab` does this with `groovy.grape.enable`, and `@ASTTest` with `groovy.asttest.enable`; both
+default to `true`.
+
 [[transforms-global]]
 ==== Global transformations
 
@@ -3209,8 +3341,8 @@ future, meaning that your transformations _could_ break. Despite that warning, t
 and such a thing rarely happens.
 
 Classes of the Abstract Syntax Tree belong to the `org.codehaus.groovy.ast` package. It is recommended to the reader
-to use the Groovy Console, in particular the AST browser tool, to gain knowledge about those classes. However, a good
-resource for learning is the https://github.com/apache/groovy/tree/master/src/test/org/codehaus/groovy/ast/builder[AST Builder]
+to use the Groovy Console, in particular the AST browser tool, to gain knowledge about those classes.
+Another resource for learning is the https://github.com/apache/groovy/tree/master/subprojects/groovy-astbuilder/src/test/groovy/org/codehaus/groovy/ast/builder[AST Builder]
 test suite.
 
 ==== Macros
@@ -3267,10 +3399,10 @@ Although the `macro` method is used in this example to create a **statement** th
 **expressions** as well, it depends on which `macro` signature you use:
 
 - `macro(Closure)`: Create a given statement with the code inside the closure.
-- `macro(Boolean,Closure)`: if **true** wrap expressions inside the closure inside an statement, if **false** then return
+- `macro(Boolean,Closure)`: if **true** wrap expressions inside the closure inside a statement, if **false** then return
 an expression
 - `macro(CompilePhase, Closure)`: Create a given statement with the code inside the closure in a specific compile phase
-- `macro(CompilePhase, Boolean, Closure)`: Create an statement or an expression (true == statement, false == expression)
+- `macro(CompilePhase, Boolean, Closure)`: Create a statement or an expression (true == statement, false == expression)
 in a specific compilation phase.
 
 NOTE: All these signatures can be found at `org.codehaus.groovy.macro.runtime.MacroGroovyMethods`
@@ -3311,7 +3443,7 @@ include::../test/metaprogramming/MacroVariableSubstitutionTest.groovy[tags=md5tr
 
 <1> We need a reference to a variable expression
 <2> If using a class outside the standard packages we should add any needed imports or use the qualified name. When
-using the qualified named of a given static method you need to make sure it's resolved in the proper compile phase. In
+using the qualified name of a given static method you need to make sure it's resolved in the proper compile phase. In
 this particular case we're instructing the macro to resolve it at the SEMANTIC_ANALYSIS phase, which is the first compile phase
 with type information.
 <3> In order to substitute any `expression` inside the macro we need to use the `$v` method. `$v` receives a closure as an
@@ -3403,10 +3535,31 @@ def nullObject = null
 assert null == safe(safe(nullObject.hashcode()).toString())
 ----
 
+===== Disabling macro methods
+
+The `groovy.macro.disable` system property suppresses selected `@Macro`
+methods from extension lookup before macro expansion runs. Its value is a
+comma-separated list of bare method names; any macro method whose name
+appears in the list is filtered out of the macro extension cache. For
+example, compiling with `-Dgroovy.macro.disable=DO,SVI` skips both the `DO`
+and `SVI` macros that ship with the `groovy-macro-library` module.
+
+A few details to be aware of:
+
+* *Bare-name matching only.* Every overload of a disabled name is filtered
+  together, and the same name in different modules collides globally. There
+  is no per-signature form (unlike `groovy.extension.disable`, which accepts
+  `name(type1,type2,...)` for regular extension methods).
+* *Read once at compiler startup.* The property is captured when the macro
+  extension cache is first initialised, so it must be set as a `-D` argument
+  to the JVM that runs the Groovy compiler.
+* *No whitespace trimming.* Entries are split on commas only, so write
+  `-Dgroovy.macro.disable=DO,SVI`, not `-Dgroovy.macro.disable=DO, SVI`.
+
 ==== Testing AST transformations
 ===== Separating source trees
 
-This section is about good practices with regards to testing AST transformations. Previous sections highlighted the fact
+This section is about good practices in regard to testing AST transformations. Previous sections highlighted the fact
 that to be able to execute an AST transformation, it has to be precompiled. It might sound obvious but a lot of people
 get caught on this, trying to use an AST transformation in the same source tree as where it is defined.
 

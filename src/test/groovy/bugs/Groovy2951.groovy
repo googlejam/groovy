@@ -16,9 +16,9 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 final class Groovy2951 {
 
@@ -46,16 +46,16 @@ final class Groovy2951 {
         def result = new Groovy2951BugClass3().test3('arg1', 'arg2')
         assert result == 'test3'
     }
-}
 
-class Groovy2951BugClass1 {
-}
+    static class Groovy2951BugClass1 {
+    }
 
-class Groovy2951BugClass2 {
-}
+    static class Groovy2951BugClass2 {
+    }
 
-class Groovy2951BugClass3 {
-    static def mm(method, args) {
-        return method
+    static class Groovy2951BugClass3 {
+        static def mm(method, args) {
+            return method
+        }
     }
 }

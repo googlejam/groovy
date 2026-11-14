@@ -19,19 +19,34 @@
 package org.apache.groovy.contracts.domain;
 
 import org.codehaus.groovy.ast.expr.BooleanExpression;
-import org.codehaus.groovy.ast.expr.ConstantExpression;
 import org.codehaus.groovy.ast.stmt.BlockStatement;
+
+import static org.codehaus.groovy.ast.tools.GeneralUtils.block;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.boolX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.constX;
 
 /**
  * <p>A class-invariant assertion.</p>
  */
 public class ClassInvariant extends Assertion<ClassInvariant> {
 
-    public static final ClassInvariant DEFAULT = new ClassInvariant(new BlockStatement(), new BooleanExpression(new ConstantExpression(true)));
+    /**
+     * Shared invariant instance representing an unconstrained class invariant.
+     */
+    public static final ClassInvariant DEFAULT = new ClassInvariant(block(), boolX(constX(true)));
 
+    /**
+     * Creates a class invariant that defaults to {@code true}.
+     */
     public ClassInvariant() {
     }
 
+    /**
+     * Creates a class invariant from the supplied source block and boolean expression.
+     *
+     * @param blockStatement the original invariant block
+     * @param booleanExpression the normalized invariant expression
+     */
     public ClassInvariant(BlockStatement blockStatement, BooleanExpression booleanExpression) {
         super(blockStatement, booleanExpression);
     }

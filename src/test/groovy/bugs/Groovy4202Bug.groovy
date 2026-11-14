@@ -16,11 +16,13 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy4202Bug extends GroovyTestCase {
+
+class Groovy4202Bug {
+    @Test
     void testSuccessiveMCModificationFirstClassThenInstance() {
         def inst0 = new Foo4202()
         def inst1 = new Foo4202()
@@ -29,7 +31,7 @@ class Groovy4202Bug extends GroovyTestCase {
 
         inst0.metaClass.addedMethod1 = { 'hello10'}
         inst0.metaClass.addedMethod2 = { 'hello20'}
-        
+
         inst1.metaClass.addedMethod1 = { 'hello11'}
         inst1.metaClass.addedMethod2 = { 'hello21'}
     }

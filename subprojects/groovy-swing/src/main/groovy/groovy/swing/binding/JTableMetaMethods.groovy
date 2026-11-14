@@ -21,18 +21,27 @@ package groovy.swing.binding
 import org.codehaus.groovy.runtime.InvokerHelper
 
 import javax.swing.JTable
+import javax.swing.table.DefaultTableModel
 import javax.swing.table.TableColumn
 import javax.swing.table.TableColumnModel
 import javax.swing.table.TableModel
 
+/**
+ * Adds synthetic convenience properties used by Swing binding code for {@link JTable}.
+ */
 class JTableMetaMethods {
 
+    /**
+     * Enhances the table with synthetic element and selection accessors.
+     *
+     * @param table the table to enhance
+     */
     static void enhanceMetaClass(table) {
         AbstractSyntheticMetaMethods.enhance(table, [
 
             getElements:{->
                 def model = delegate.model;
-                if (model instanceof javax.swing.table.DefaultTableModel) {
+                if (model instanceof DefaultTableModel) {
                     return Collections.unmodifiableList(model.getDataVector())
                 } else if (model instanceof groovy.swing.model.DefaultTableModel) {
                     return Collections.unmodifiableList(model.rows)
@@ -48,12 +57,22 @@ class JTableMetaMethods {
         ])
     }
 
+    /**
+     * Returns the logical row object for the supplied table row.
+     *
+     * <p>Default Swing table models are exposed as identifier-to-value maps, while Groovy's
+     * table model returns the backing row object.</p>
+     *
+     * @param table the table supplying the model data
+     * @param row the selected row index
+     * @return the row value, or {@code null} when no row is selected
+     */
     static Object getElement(JTable table, int row) {
         if (row == -1) {
             return null
         }
         TableModel model = table.model
-        if (model instanceof javax.swing.table.DefaultTableModel) {
+        if (model instanceof DefaultTableModel) {
             // could be groovier, but it works and is a well understood idiom
             Map value = [:]
             TableColumnModel cmodel = table.columnModel

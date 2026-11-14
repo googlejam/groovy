@@ -21,7 +21,7 @@ package groovy.lang;
 import java.util.EventListener;
 
 /**
- * A listener called whenever a constant MetaClass is set, removed or replaced. 
+ * A listener called whenever a constant MetaClass is set, removed or replaced.
  *
  * @see groovy.lang.MetaClassRegistry
  * @see groovy.lang.MetaClassRegistryChangeEvent
@@ -30,7 +30,7 @@ import java.util.EventListener;
 public interface MetaClassRegistryChangeEventListener extends EventListener{
 
     /**
-     * Called when the a constant MetaClass is updated. If the new MetaClass is null, then the MetaClass
+     * Called when the constant MetaClass is updated. If the new MetaClass is null, then the MetaClass
      * is removed. Be careful, while this method is executed other updates may happen. If you want this
      * method thread safe, you have to take care of that by yourself.
      *

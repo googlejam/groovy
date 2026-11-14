@@ -18,37 +18,113 @@
  */
 package groovy.util;
 
+import groovy.lang.Closure;
+import groovy.transform.stc.ClosureParams;
+import groovy.transform.stc.FromString;
+import org.codehaus.groovy.runtime.ArrayGroovyMethods;
 import org.codehaus.groovy.runtime.DefaultGroovyMethods;
+import org.codehaus.groovy.runtime.NumberAwareComparator;
 import org.codehaus.groovy.runtime.typehandling.DefaultTypeTransformation;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
- * A Collections utility class
+ * Utility methods for working with combinations, subsequences, and aggregate collection operations.
  */
 public class GroovyCollections {
+
     /**
      * Finds all combinations of items from the given collections.
      *
      * @param collections the given collections
-     * @return a List of the combinations found
+     * @return A list of the combinations found.
      * @see #combinations(Iterable)
      */
-    public static List combinations(Object[] collections) {
+    public static List<List> combinations(Object[]    collections) {
         return combinations(Arrays.asList(collections));
     }
 
     /**
-     * Finds all non-null subsequences of a list.
+     * Finds all combinations of items from the given collections.
+     * So, <code>combinations([[true, false], [true, false]])</code>
+     * is <code>[[true, true], [false, true], [true, false], [false, false]]</code>
+     * and <code>combinations([['a', 'b'],[1, 2, 3]])</code>
+     * is <code>[['a', 1], ['b', 1], ['a', 2], ['b', 2], ['a', 3], ['b', 3]]</code>.
+     * If a non-collection item is given, it is treated as a singleton collection,
+     * i.e. <code>combinations([[1, 2], 'x'])</code> is <code>[[1, 'x'], [2, 'x']]</code>.
+     * If an empty collection is found within the given collections, the result will be an empty list.
+     *
+     * @param collections the Iterable of given collections
+     * @return A list of the combinations found.
+     * @since 2.2.0
+     */
+    public static List<List> combinations(Iterable<?> collections) {
+        List<List<Object>> combos = new ArrayList<>();
+        for (var collection : collections) {
+            if (combos.isEmpty()) {
+                for (var object : DefaultTypeTransformation.asCollection(collection)) {
+                    List<Object> list = new ArrayList<>();
+                    list.add(object);
+                    combos.add(list);
+                }
+            } else {
+                List<List<Object>> next = new ArrayList<>(); // each list plus each item
+                for (var object : DefaultTypeTransformation.asCollection(collection)) {
+                    for (var combo : combos) {
+                        List<Object> list = new ArrayList<>(combo);
+                        list.add(object);
+                        next.add(list);
+                    }
+                }
+                combos = next;
+            }
+            if (combos.isEmpty())
+                break;
+        }
+        return (List) combos;
+    }
+
+    /**
+     * @since 2.5.0
+     */
+    public static <T> List<List<T>> inits(Iterable<T> collections) {
+        List<T> copy = DefaultGroovyMethods.toList(collections);
+        List<List<T>> result = new ArrayList<>();
+        for (int i = copy.size(); i >= 0; i--) {
+            List<T> next = copy.subList(0, i);
+            result.add(next);
+        }
+        return result;
+    }
+
+    /**
+     * @since 2.5.0
+     */
+    public static <T> List<List<T>> tails(Iterable<T> collections) {
+        List<T> copy = DefaultGroovyMethods.toList(collections);
+        List<List<T>> result = new ArrayList<>();
+        for (int i = 0; i <= copy.size(); i++) {
+            List<T> next = copy.subList(i, copy.size());
+            result.add(next);
+        }
+        return result;
+    }
+
+    /**
+     * Finds all non-empty subsequences of a list.
      * E.g. <code>subsequences([1, 2, 3])</code> would be:
      * [[1, 2, 3], [1, 3], [2, 3], [1, 2], [1], [2], [3]]
      *
      * @param items the List of items
      * @return the subsequences from items
+     * @since 1.8.0
      */
     public static <T> Set<List<T>> subsequences(List<T> items) {
         // items.inject([]){ ss, h -> ss.collect { it + [h] }  + ss + [[h]] }
@@ -67,69 +143,6 @@ public class GroovyCollections {
             ans = next;
         }
         return ans;
-    }
-
-    /**
-     * Finds all combinations of items from the given Iterable aggregate of collections.
-     * So, <code>combinations([[true, false], [true, false]])</code>
-     * is <code>[[true, true], [false, true], [true, false], [false, false]]</code>
-     * and <code>combinations([['a', 'b'],[1, 2, 3]])</code>
-     * is <code>[['a', 1], ['b', 1], ['a', 2], ['b', 2], ['a', 3], ['b', 3]]</code>.
-     * If a non-collection item is given, it is treated as a singleton collection,
-     * i.e. <code>combinations([[1, 2], 'x'])</code> is <code>[[1, 'x'], [2, 'x']]</code>.
-     * If an empty collection is found within the given collections, the result will be an empty list.
-     *
-     * @param collections the Iterable of given collections
-     * @return a List of the combinations found
-     * @since 2.2.0
-     */
-    public static List combinations(Iterable collections) {
-        List collectedCombos = new ArrayList();
-        for (Object collection : collections) {
-            Iterable items = DefaultTypeTransformation.asCollection(collection);
-            if (collectedCombos.isEmpty()) {
-                for (Object item : items) {
-                    List l = new ArrayList();
-                    l.add(item);
-                    collectedCombos.add(l);
-                }
-            } else {
-                List savedCombos = new ArrayList(collectedCombos);
-                List newCombos = new ArrayList();
-                for (Object value : items) {
-                    for (Object savedCombo : savedCombos) {
-                        List oldList = new ArrayList((List) savedCombo);
-                        oldList.add(value);
-                        newCombos.add(oldList);
-                    }
-                }
-                collectedCombos = newCombos;
-            }
-
-            if (collectedCombos.isEmpty())
-                break;
-        }
-        return collectedCombos;
-    }
-
-    public static <T> List<List<T>> inits(Iterable<T> collections) {
-        List<T> copy = DefaultGroovyMethods.toList(collections);
-        List<List<T>> result = new ArrayList<>();
-        for (int i = copy.size(); i >= 0; i--) {
-            List<T> next = copy.subList(0, i);
-            result.add(next);
-        }
-        return result;
-    }
-
-    public static <T> List<List<T>> tails(Iterable<T> collections) {
-        List<T> copy = DefaultGroovyMethods.toList(collections);
-        List<List<T>> result = new ArrayList<>();
-        for (int i = 0; i <= copy.size(); i++) {
-            List<T> next = copy.subList(i, copy.size());
-            result.add(next);
-        }
-        return result;
     }
 
     /**
@@ -183,7 +196,7 @@ public class GroovyCollections {
      * @return the minimum value
      */
     public static <T> T min(T[] items) {
-        return DefaultGroovyMethods.min(items);
+        return ArrayGroovyMethods.min(items);
     }
 
     /**
@@ -205,7 +218,7 @@ public class GroovyCollections {
      * @return the maximum value
      */
     public static <T> T max(T[] items) {
-        return DefaultGroovyMethods.max(items);
+        return ArrayGroovyMethods.max(items);
     }
 
     /**
@@ -226,7 +239,7 @@ public class GroovyCollections {
      * @return the sum of the items
      */
     public static Object sum(Object[] items) {
-        return DefaultGroovyMethods.sum(items);
+        return ArrayGroovyMethods.sum(items);
     }
 
     /**
@@ -240,4 +253,112 @@ public class GroovyCollections {
         return DefaultGroovyMethods.sum(items);
     }
 
+    /**
+     * Returns an ordered set of all the unique items found in the provided argument iterables.
+     * <pre class="language-groovy groovyTestCase">
+     * assert GroovyCollections.union([1, 2], [2, 3], [1, 4]) == [1, 2, 3, 4]
+     * </pre>
+     *
+     * @param iterables the sources of items
+     * @return the ordered list of unique values found
+     * @since 4.0.0
+     */
+    public static <T> List<T> union(Iterable<T>... iterables) {
+        return union(Arrays.asList(iterables));
+    }
+
+    /**
+     * Returns an ordered set of all the unique items found in the provided argument iterables.
+     * <pre class="language-groovy groovyTestCase">
+     * assert GroovyCollections.union([[1, 2], [2, 3], [1, 4]]) == [1, 2, 3, 4]
+     * </pre>
+     *
+     * @param iterables the list of source items
+     * @return the ordered list of unique values found
+     * @since 4.0.0
+     */
+    public static <T> List<T> union(List<Iterable<T>> iterables) {
+        return union(iterables, new NumberAwareComparator<>());
+    }
+
+    /**
+     * Returns an ordered set of all the unique items found in the provided argument iterables
+     * using the provided comparator to compare items.
+     * <pre class="language-groovy groovyTestCase">
+     * assert GroovyCollections.union(n -&gt; n.abs(), [1, 2, 5], [-3, -4, -5], [4, 6]) == [1, 2, 5, -3, -4, 6]
+     * assert GroovyCollections.union(n -&gt; n.trunc(), [1.1, 2.2], [2.5, 3.3], [3.9, 4.1]) == [1.1, 2.2, 3.3, 4.1]
+     * assert GroovyCollections.union(w -&gt; w.toUpperCase(), ['a', 'A'], ['B', 'a', 'c', 'b']) == ['a', 'B', 'c']
+     * </pre>
+     *
+     * @param comparator a Comparator
+     * @param iterables the sources of items
+     * @return the ordered list of unique values found
+     * @since 4.0.0
+     */
+    public static <T> List<T> union(Comparator<T> comparator, Iterable<T>... iterables) {
+        return union(Arrays.asList(iterables), comparator);
+    }
+
+    /**
+     * Returns an ordered set of all the unique items found in the provided argument iterables
+     * using the provided comparator to compare items.
+     * <pre class="language-groovy groovyTestCase">
+     * assert GroovyCollections.union([[1, 2, 5], [-3, -4, -5], [4, 6]], n -&gt; n.abs()) == [1, 2, 5, -3, -4, 6]
+     * assert GroovyCollections.union([[1.1, 2.2], [2.5, 3.3], [3.9, 4.1]], n -&gt; n.trunc()) == [1.1, 2.2, 3.3, 4.1]
+     * assert GroovyCollections.union([['a', 'A'], ['B', 'a', 'c', 'b']], w -&gt; w.toUpperCase()) == ['a', 'B', 'c']
+     * </pre>
+     *
+     * @param iterables the list of source items
+     * @param comparator a Comparator
+     * @return the ordered list of unique values found
+     * @since 4.0.0
+     */
+    public static <T> List<T> union(List<Iterable<T>> iterables, Comparator<T> comparator) {
+        LinkedHashSet<T> ansSet = new LinkedHashSet<>();
+        TreeSet<T> seen = new TreeSet<>(comparator);
+        for (Iterable<T> nextList : iterables) {
+            for (T next : nextList) {
+                if (seen.add(next)) {
+                    ansSet.add(next);
+                }
+            }
+        }
+        return new ArrayList<>(ansSet);
+    }
+
+    /**
+     * Returns an ordered set of all the unique items found in the provided argument iterables
+     * using the provided closure to compare items.
+     * <pre class="language-groovy groovyTestCase">
+     * def abs = { n -&gt; n.abs() }
+     * assert GroovyCollections.union(abs, [1, 2, 5], [-3, -4, -5], [4, 6]) == [1, 2, 5, -3, -4, 6]
+     * </pre>
+     *
+     * @param condition a Closure used to determine unique items
+     * @param iterables the sources of items
+     * @return the ordered list of unique values found
+     * @since 4.0.0
+     */
+    public static <T> List<T> union(@ClosureParams(value= FromString.class, options={"T","T,T"}) Closure condition, Iterable<T>... iterables) {
+        return union(Arrays.asList(iterables), condition);
+    }
+
+    /**
+     * Returns an ordered set of all the unique items found in the provided argument iterables
+     * using the provided closure to compare items.
+     * <pre class="language-groovy groovyTestCase">
+     * assert GroovyCollections.union([[1, 2, 5], [-3, -4, -5], [4, 6]]){ n -&gt; n.abs() } == [1, 2, 5, -3, -4, 6]
+     * </pre>
+     *
+     * @param iterables the list of source items
+     * @param condition a Closure used to determine unique items
+     * @return the ordered list of unique values found
+     * @since 4.0.0
+     */
+    public static <T> List<T> union(List<Iterable<T>> iterables, @ClosureParams(value= FromString.class, options={"T","T,T"}) Closure condition) {
+        Comparator<T> comparator = condition.getMaximumNumberOfParameters() == 1
+                ? new OrderBy<>(condition, true)
+                : new ClosureComparator<>(condition);
+        return union(iterables, comparator);
+    }
 }

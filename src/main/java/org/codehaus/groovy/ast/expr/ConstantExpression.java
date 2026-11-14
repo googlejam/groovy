@@ -22,30 +22,80 @@ import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.GroovyCodeVisitor;
 
 /**
- * Represents a constant expression such as null, true, false.
+ * Represents a constant value expression such as literals (null, true, false, numbers, strings),
+ * class literals, and other compile-time constant values. Each user-defined constant expression
+ * maintains its own instance to preserve line and column information for accurate error reporting.
+ * Predefined instances (e.g., {@link #NULL}, {@link #TRUE}, {@link #FALSE}) are provided as
+ * internal constants and should not be compared directly; use the {@code isXXXExpression()} methods instead.
+ *
+ * @see Expression
+ * @see VariableExpression
+ * @see BinaryExpression
  */
 public class ConstantExpression extends Expression {
-    // The following fields are only used internally; every occurrence of a user-defined expression of the same kind
-    // has its own instance so as to preserve line information. Consequently, to test for such an expression, don't
-    // compare against the field but call isXXXExpression() instead.
+    /**
+     * Shared null constant. A null literal from source has its own instance, so
+     * identity comparison with this field is not a null test; use {@link #isNullExpression()}.
+     */
     public static final ConstantExpression NULL = new ConstantExpression(null);
+    /**
+     * Shared {@link Boolean#TRUE} constant, typed as {@code Boolean}. A {@code true}
+     * literal from source has its own instance; use {@link #isTrueExpression()}.
+     */
     public static final ConstantExpression TRUE = new ConstantExpression(Boolean.TRUE);
+    /**
+     * Shared {@link Boolean#FALSE} constant, typed as {@code Boolean}. A {@code false}
+     * literal from source has its own instance; use {@link #isFalseExpression()}.
+     */
     public static final ConstantExpression FALSE = new ConstantExpression(Boolean.FALSE);
+    /**
+     * Shared empty-string constant. An empty string literal from source has its own
+     * instance; use {@link #isEmptyStringExpression()}.
+     */
     public static final ConstantExpression EMPTY_STRING = new ConstantExpression("");
+    /**
+     * {@link Boolean#TRUE} with the primitive type kept, so the expression type is
+     * {@code boolean} rather than {@code Boolean}.
+     */
     public static final ConstantExpression PRIM_TRUE = new ConstantExpression(Boolean.TRUE, true);
+    /**
+     * {@link Boolean#FALSE} with the primitive type kept, so the expression type is
+     * {@code boolean} rather than {@code Boolean}.
+     */
     public static final ConstantExpression PRIM_FALSE = new ConstantExpression(Boolean.FALSE, true);
 
-    // the following fields are only used internally; there are no user-defined expressions of the same kind
+    /**
+     * Constant whose value is {@code Void.class}. Source code has no literal of this form.
+     */
     public static final ConstantExpression VOID = new ConstantExpression(Void.class);
+    /**
+     * Null-valued placeholder for a missing size or initializer. Callers recognize
+     * it by identity, unlike {@link #NULL}.
+     */
     public static final ConstantExpression EMPTY_EXPRESSION = new ConstantExpression(null);
 
     private final Object value;
     private String constantName;
 
+    /**
+     * Creates a constant expression with the specified value. The type of this constant
+     * expression will be inferred from the value's class.
+     *
+     * @param value the constant value; may be null to represent a null literal
+     */
     public ConstantExpression(Object value) {
         this(value, false);
     }
 
+    /**
+     * Creates a constant expression with optional primitive type preservation.
+     * If {@code keepPrimitive} is true, primitive wrapper types (Integer, Long, Boolean, etc.)
+     * are kept as their primitive equivalents rather than boxed types.
+     *
+     * @param value the constant value; may be null
+     * @param keepPrimitive if true, preserve primitive types for wrapper classes (e.g., Integer
+     *                      becomes int); if false, use the boxed type
+     */
     public ConstantExpression(Object value, boolean keepPrimitive) {
         this.value = value;
         if (value != null) {
@@ -88,7 +138,9 @@ public class ConstantExpression extends Expression {
     }
 
     /**
-     * @return the value of this constant expression
+     * Returns the constant value represented by this expression.
+     *
+     * @return the constant value; may be null to represent a null literal
      */
     public Object getValue() {
         return value;
@@ -99,26 +151,57 @@ public class ConstantExpression extends Expression {
         return (value == null ? "null" : value.toString());
     }
 
+    /**
+     * Returns the constant name associated with this expression. This is typically used for
+     * named constants defined in source code.
+     *
+     * @return the constant name; may be null if not set
+     */
     public String getConstantName() {
         return constantName;
     }
 
+    /**
+     * Sets the constant name for this expression.
+     *
+     * @param constantName the name to associate with this constant; may be null
+     */
     public void setConstantName(String constantName) {
         this.constantName = constantName;
     }
 
+    /**
+     * Indicates whether this constant expression represents a null value.
+     *
+     * @return true if this expression represents null; false otherwise
+     */
     public boolean isNullExpression() {
         return value == null;
     }
 
+    /**
+     * Indicates whether this constant expression represents the boolean true value.
+     *
+     * @return true if this expression represents Boolean.TRUE; false otherwise
+     */
     public boolean isTrueExpression() {
         return Boolean.TRUE.equals(value);
     }
 
+    /**
+     * Indicates whether this constant expression represents the boolean false value.
+     *
+     * @return true if this expression represents Boolean.FALSE; false otherwise
+     */
     public boolean isFalseExpression() {
         return Boolean.FALSE.equals(value);
     }
 
+    /**
+     * Indicates whether this constant expression represents an empty string value.
+     *
+     * @return true if this expression represents an empty string; false otherwise
+     */
     public boolean isEmptyStringExpression() {
         return "".equals(value);
     }

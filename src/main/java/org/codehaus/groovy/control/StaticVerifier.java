@@ -18,6 +18,7 @@
  */
 package org.codehaus.groovy.control;
 
+import org.apache.groovy.ast.tools.ClassNodeUtils;
 import org.codehaus.groovy.ast.ClassCodeVisitorSupport;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.DynamicVariable;
@@ -27,9 +28,8 @@ import org.codehaus.groovy.ast.Parameter;
 import org.codehaus.groovy.ast.expr.ClosureExpression;
 import org.codehaus.groovy.ast.expr.ConstructorCallExpression;
 import org.codehaus.groovy.ast.expr.VariableExpression;
+import org.codehaus.groovy.transform.trait.Traits;
 
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -40,16 +40,32 @@ public class StaticVerifier extends ClassCodeVisitorSupport {
     private MethodNode methodNode;
     private SourceUnit sourceUnit;
 
+    /**
+     * Returns the source unit currently being verified.
+     *
+     * @return the active source unit
+     */
     @Override
     protected SourceUnit getSourceUnit() {
         return sourceUnit;
     }
 
+    /**
+     * Starts verification for the supplied class and source unit.
+     *
+     * @param node the class to verify
+     * @param unit the owning source unit
+     */
     public void visitClass(ClassNode node, SourceUnit unit) {
         sourceUnit = unit;
         visitClass(node);
     }
 
+    /**
+     * Tracks closure nesting while visiting closure expressions.
+     *
+     * @param ce the closure expression to visit
+     */
     @Override
     public void visitClosureExpression(ClosureExpression ce) {
         boolean oldInClosure = inClosure;
@@ -58,6 +74,11 @@ public class StaticVerifier extends ClassCodeVisitorSupport {
         inClosure = oldInClosure;
     }
 
+    /**
+     * Tracks whether the visitor is inside a special constructor call.
+     *
+     * @param cce the constructor call to visit
+     */
     @Override
     public void visitConstructorCallExpression(ConstructorCallExpression cce) {
         boolean oldIsSpecialConstructorCall = inSpecialConstructorCall;
@@ -66,6 +87,12 @@ public class StaticVerifier extends ClassCodeVisitorSupport {
         inSpecialConstructorCall = oldIsSpecialConstructorCall;
     }
 
+    /**
+     * Tracks the current method or constructor while verifying static references.
+     *
+     * @param node the method or constructor being visited
+     * @param isConstructor whether {@code node} is a constructor
+     */
     @Override
     public void visitConstructorOrMethod(MethodNode node, boolean isConstructor) {
         MethodNode oldMethodNode = methodNode;
@@ -85,37 +112,48 @@ public class StaticVerifier extends ClassCodeVisitorSupport {
         methodNode = oldMethodNode;
     }
 
+    /**
+     * Reports dynamic variable access that is illegal in static contexts.
+     *
+     * @param ve the variable expression to inspect
+     */
     @Override
     public void visitVariableExpression(VariableExpression ve) {
         if (ve.getAccessedVariable() instanceof DynamicVariable && (ve.isInStaticContext() || inSpecialConstructorCall) && !inClosure) {
-            // GROOVY-5687: interface constants not visible to implementing sub-class in static context
+            String variableName = ve.getName();
+            // GROOVY-5687: interface constants not visible to implementing subclass in static context
             if (methodNode != null && methodNode.isStatic()) {
-                FieldNode fieldNode = getDeclaredOrInheritedField(methodNode.getDeclaringClass(), ve.getName());
+                ClassNode classNode = methodNode.getDeclaringClass();
+                FieldNode fieldNode = getDeclaredOrInheritedField(classNode, variableName);
                 if (fieldNode != null && fieldNode.isStatic()) {
                     return;
                 }
             }
-            addError("Apparent variable '" + ve.getName() + "' was found in a static scope but doesn't refer to a local variable, static field or class. Possible causes:\n" +
+            addError("Apparent variable '" + variableName + "' was found in a static scope but doesn't refer to a local variable, static field or class. Possible causes:\n" +
                     "You attempted to reference a variable in the binding or an instance variable from a static context.\n" +
                     "You misspelled a classname or statically imported field. Please check the spelling.\n" +
-                    "You attempted to use a method '" + ve.getName() + "' but left out brackets in a place not allowed by the grammar.", ve);
+                    "You attempted to use a method '" + variableName + "' but left out brackets in a place not allowed by the grammar.",
+                    ve);
         }
     }
 
-    private static FieldNode getDeclaredOrInheritedField(ClassNode cn, String fieldName) {
-        ClassNode node = cn;
-        while (node != null) {
-            FieldNode fn = node.getDeclaredField(fieldName);
-            if (fn != null) return fn;
-            List<ClassNode> interfacesToCheck = new ArrayList<>(Arrays.asList(node.getInterfaces()));
-            while (!interfacesToCheck.isEmpty()) {
-                ClassNode nextInterface = interfacesToCheck.remove(0);
-                fn = nextInterface.getDeclaredField(fieldName);
-                if (fn != null) return fn;
-                interfacesToCheck.addAll(Arrays.asList(nextInterface.getInterfaces()));
+    private static FieldNode getDeclaredOrInheritedField(ClassNode classNode, String fieldName) {
+        FieldNode fieldNode = ClassNodeUtils.getField(classNode, fieldName);
+        if (fieldNode == null && fieldName.contains("__")) { // GROOVY-11663
+            List<ClassNode> traits = Traits.findTraits(classNode);
+            traits.remove(classNode); // included if it is a trait
+            for (ClassNode cn : traits) {
+                cn = Traits.findFieldHelper(cn);
+                if (cn != null) {
+                    for (FieldNode fn : cn.getFields()) {
+                        if (fn.getName().endsWith(fieldName)) { // prefix for modifiers
+                            fieldNode = fn;
+                            break;
+                        }
+                    }
+                }
             }
-            node = node.getSuperClass();
         }
-        return null;
+        return fieldNode;
     }
 }

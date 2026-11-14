@@ -20,7 +20,6 @@ package org.codehaus.groovy.classgen.asm.sc;
 
 import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
-import org.codehaus.groovy.ast.FieldNode;
 import org.codehaus.groovy.ast.MethodNode;
 import org.codehaus.groovy.ast.Parameter;
 import org.codehaus.groovy.ast.PropertyNode;
@@ -28,58 +27,49 @@ import org.codehaus.groovy.ast.expr.AttributeExpression;
 import org.codehaus.groovy.ast.expr.BinaryExpression;
 import org.codehaus.groovy.ast.expr.ConstructorCallExpression;
 import org.codehaus.groovy.ast.expr.Expression;
-import org.codehaus.groovy.ast.expr.LambdaExpression;
 import org.codehaus.groovy.ast.expr.MethodCallExpression;
-import org.codehaus.groovy.ast.expr.MethodReferenceExpression;
 import org.codehaus.groovy.ast.expr.PropertyExpression;
 import org.codehaus.groovy.ast.expr.VariableExpression;
 import org.codehaus.groovy.ast.stmt.EmptyStatement;
 import org.codehaus.groovy.ast.stmt.ForStatement;
 import org.codehaus.groovy.ast.tools.WideningCategories;
 import org.codehaus.groovy.classgen.asm.BinaryExpressionMultiTypeDispatcher;
-import org.codehaus.groovy.classgen.asm.BytecodeHelper;
 import org.codehaus.groovy.classgen.asm.CompileStack;
 import org.codehaus.groovy.classgen.asm.OperandStack;
 import org.codehaus.groovy.classgen.asm.VariableSlotLoader;
 import org.codehaus.groovy.classgen.asm.WriterController;
 import org.codehaus.groovy.syntax.Token;
 import org.codehaus.groovy.syntax.TokenUtil;
-import org.codehaus.groovy.transform.sc.StaticCompilationVisitor;
 import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 
-import java.lang.reflect.Modifier;
-import java.util.Map;
-import java.util.Objects;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.apache.groovy.ast.tools.ExpressionUtils.isThisExpression;
-import static org.codehaus.groovy.ast.ClassHelper.CLOSURE_TYPE;
-import static org.codehaus.groovy.ast.ClassHelper.char_TYPE;
-import static org.codehaus.groovy.ast.ClassHelper.double_TYPE;
-import static org.codehaus.groovy.ast.ClassHelper.float_TYPE;
-import static org.codehaus.groovy.ast.ClassHelper.long_TYPE;
+import static org.codehaus.groovy.ast.ClassHelper.isNumberType;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveChar;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveDouble;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveFloat;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveLong;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveType;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.args;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.binX;
-import static org.codehaus.groovy.ast.tools.GeneralUtils.callThisX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.callX;
-import static org.codehaus.groovy.ast.tools.GeneralUtils.castX;
-import static org.codehaus.groovy.ast.tools.GeneralUtils.classX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.ctorX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.declX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.getSetterName;
-import static org.codehaus.groovy.ast.tools.GeneralUtils.nullX;
-import static org.codehaus.groovy.ast.tools.GeneralUtils.propX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.isOrImplements;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.stmt;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.varX;
-import static org.codehaus.groovy.transform.sc.StaticCompilationMetadataKeys.PRIVATE_FIELDS_MUTATORS;
+import static org.codehaus.groovy.classgen.AsmClassGenerator.ELIDE_EXPRESSION_VALUE;
 import static org.codehaus.groovy.transform.sc.StaticCompilationVisitor.ARRAYLIST_ADD_METHOD;
 import static org.codehaus.groovy.transform.sc.StaticCompilationVisitor.ARRAYLIST_CLASSNODE;
 import static org.codehaus.groovy.transform.sc.StaticCompilationVisitor.ARRAYLIST_CONSTRUCTOR;
 import static org.codehaus.groovy.transform.stc.StaticTypeCheckingSupport.isAssignment;
 import static org.codehaus.groovy.transform.stc.StaticTypeCheckingVisitor.inferLoopElementType;
+import static org.codehaus.groovy.transform.stc.StaticTypesMarker.COMPOUND_ASSIGN_TARGET;
 import static org.codehaus.groovy.transform.stc.StaticTypesMarker.DIRECT_METHOD_CALL_TARGET;
-import static org.codehaus.groovy.transform.stc.StaticTypesMarker.INFERRED_FUNCTIONAL_INTERFACE_TYPE;
 import static org.codehaus.groovy.transform.stc.StaticTypesMarker.INFERRED_TYPE;
 import static org.objectweb.asm.Opcodes.ACC_PUBLIC;
 import static org.objectweb.asm.Opcodes.DADD;
@@ -95,8 +85,6 @@ import static org.objectweb.asm.Opcodes.ISUB;
 import static org.objectweb.asm.Opcodes.LADD;
 import static org.objectweb.asm.Opcodes.LCONST_1;
 import static org.objectweb.asm.Opcodes.LSUB;
-import static org.objectweb.asm.Opcodes.PUTFIELD;
-import static org.objectweb.asm.Opcodes.PUTSTATIC;
 
 /**
  * A specialized version of the multi type binary expression dispatcher which is aware of static compilation.
@@ -104,27 +92,36 @@ import static org.objectweb.asm.Opcodes.PUTSTATIC;
  */
 public class StaticTypesBinaryExpressionMultiTypeDispatcher extends BinaryExpressionMultiTypeDispatcher {
 
-    private static final MethodNode CLOSURE_GETTHISOBJECT_METHOD = CLOSURE_TYPE.getMethod("getThisObject", Parameter.EMPTY_ARRAY);
-
     private final AtomicInteger labelCounter = new AtomicInteger();
 
+    /**
+     * Creates a binary-expression dispatcher for statically compiled bytecode generation.
+     */
     public StaticTypesBinaryExpressionMultiTypeDispatcher(final WriterController wc) {
         super(wc);
     }
 
+    /** {@inheritDoc} */
     @Override
     protected void writePostOrPrefixMethod(final int op, final String method, final Expression expression, final Expression orig) {
         MethodNode mn = orig.getNodeMetaData(DIRECT_METHOD_CALL_TARGET);
         if (mn != null) {
-            controller.getOperandStack().pop();
-            MethodCallExpression call = callX(expression, method);
+            // GROOVY-12622: call next() or previous() on the value already loaded;
+            // evaluating the operand again repeats the getter or getAt call
+            OperandStack operandStack = controller.getOperandStack();
+            ClassNode valueType = operandStack.getTopOperand();
+            int slot = controller.getCompileStack().defineTemporaryVariable("$value", valueType, true);
+            MethodCallExpression call = callX(new VariableSlotLoader(valueType, slot, operandStack), method);
             call.setMethodTarget(mn);
+            call.setImplicitThis(false);
+            call.setSourcePosition(orig);
             call.visit(controller.getAcg());
+            controller.getCompileStack().removeVar(slot);
             return;
         }
 
         ClassNode top = controller.getOperandStack().getTopOperand();
-        if (ClassHelper.isPrimitiveType(top) && (ClassHelper.isNumberType(top) || char_TYPE.equals(top))) {
+        if (isPrimitiveType(top) && (isNumberType(top) || isPrimitiveChar(top))) {
             MethodVisitor mv = controller.getMethodVisitor();
             visitInsnByType(top, mv, ICONST_1, LCONST_1, FCONST_1, DCONST_1);
             if ("next".equals(method)) {
@@ -139,22 +136,46 @@ public class StaticTypesBinaryExpressionMultiTypeDispatcher extends BinaryExpres
     }
 
     private static void visitInsnByType(final ClassNode top, final MethodVisitor mv, final int iInsn, final int lInsn, final int fInsn, final int dInsn) {
-        if (WideningCategories.isIntCategory(top) || char_TYPE.equals(top)) {
+        if (WideningCategories.isIntCategory(top) || isPrimitiveChar(top)) {
             mv.visitInsn(iInsn);
-        } else if (long_TYPE.equals(top)) {
+        } else if (isPrimitiveLong(top)) {
             mv.visitInsn(lInsn);
-        } else if (float_TYPE.equals(top)) {
+        } else if (isPrimitiveFloat(top)) {
             mv.visitInsn(fInsn);
-        } else if (double_TYPE.equals(top)) {
+        } else if (isPrimitiveDouble(top)) {
             mv.visitInsn(dInsn);
         }
     }
 
+    /** {@inheritDoc} */
     @Override
     protected void evaluateBinaryExpressionWithAssignment(final String method, final BinaryExpression expression) {
+        if (tryStaticCompoundAssignPaths(method, expression)) return;
+        super.evaluateBinaryExpressionWithAssignment(method, expression);
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    protected void evaluateCompoundAssign(final String assignName, final String baseName, final BinaryExpression expression) {
+        if (tryStaticCompoundAssignPaths(baseName, expression)) return;
+        super.evaluateCompoundAssign(assignName, baseName, expression);
+    }
+
+    /**
+     * GEP-15 + legacy setter fast-path. Returns true when codegen has been emitted
+     * (no further dispatch required).
+     */
+    private boolean tryStaticCompoundAssignPaths(final String baseName, final BinaryExpression expression) {
+        MethodNode assignTarget = expression.getNodeMetaData(COMPOUND_ASSIGN_TARGET);
+        if (assignTarget != null) {
+            // GEP-15: receiver.<assignMethod>(arg); receiver remains the expression value.
+            // The setter (for property LHS) is intentionally skipped.
+            emitCompoundAssignCall(assignTarget, expression);
+            return true;
+        }
         Expression leftExpression = expression.getLeftExpression();
-        if (leftExpression instanceof PropertyExpression) {
-            PropertyExpression pexp = (PropertyExpression) leftExpression;
+        if (leftExpression instanceof PropertyExpression pexp
+                && !(leftExpression instanceof AttributeExpression)) {
 
             BinaryExpression expressionWithoutAssignment = binX(
                     leftExpression,
@@ -176,43 +197,58 @@ public class StaticTypesBinaryExpressionMultiTypeDispatcher extends BinaryExpres
                     pexp.isSafe(),
                     pexp.isSpreadSafe(),
                     pexp.isImplicitThis(),
-                    pexp instanceof AttributeExpression)) {
-                return;
+                    true)) { // TODO: GROOVY-11843
+                return true;
             }
         }
-        super.evaluateBinaryExpressionWithAssignment(method, expression);
+        return false;
     }
 
+    private void emitCompoundAssignCall(final MethodNode target, final BinaryExpression expression) {
+        OperandStack operandStack = controller.getOperandStack();
+        Expression leftExpression = expression.getLeftExpression();
+        Expression rightExpression = expression.getRightExpression();
+
+        leftExpression.visit(controller.getAcg());
+        ClassNode receiverType = operandStack.getTopOperand();
+        int slot = controller.getCompileStack().defineTemporaryVariable("$gep15recv", receiverType, true);
+
+        VariableSlotLoader callReceiver = new VariableSlotLoader(receiverType, slot, operandStack);
+        MethodCallExpression call = callX(callReceiver, target.getName(), rightExpression);
+        call.setMethodTarget(target);
+        call.setImplicitThis(false);
+        call.setSourcePosition(expression);
+        call.visit(controller.getAcg());
+        operandStack.pop(); // discard the *Assign return value
+
+        new VariableSlotLoader(receiverType, slot, operandStack).visit(controller.getAcg());
+        controller.getCompileStack().removeVar(slot);
+    }
+
+    /** {@inheritDoc} */
     @Override
     public void evaluateEqual(final BinaryExpression expression, final boolean defineVariable) {
         Expression leftExpression = expression.getLeftExpression();
-        if (!defineVariable) {
-            if (leftExpression instanceof PropertyExpression) {
-                PropertyExpression pexp = (PropertyExpression) leftExpression;
-                if (makeSetProperty(
-                        pexp.getObjectExpression(),
-                        pexp.getProperty(),
-                        expression.getRightExpression(),
-                        pexp.isSafe(),
-                        pexp.isSpreadSafe(),
-                        pexp.isImplicitThis(),
-                        pexp instanceof AttributeExpression)) {
-                    return;
-                }
+        if (leftExpression instanceof PropertyExpression pexp
+                && !(leftExpression instanceof AttributeExpression)) {
+            // GROOVY-12649: a spread assignment writes each element; the setters of the
+            // collection itself do not apply, so the spread is rewritten as a loop below
+            if (!defineVariable && !pexp.isSpreadSafe() && makeSetProperty(
+                    pexp.getObjectExpression(),
+                    pexp.getProperty(),
+                    expression.getRightExpression(),
+                    pexp.isSafe(),
+                    pexp.isSpreadSafe(),
+                    pexp.isImplicitThis(),
+                    !Boolean.TRUE.equals(expression.getNodeMetaData(ELIDE_EXPRESSION_VALUE)))) { // GROOVY-11843
+                return;
             }
-        } else {
-            Expression rightExpression = expression.getRightExpression();
-            if (rightExpression instanceof LambdaExpression || rightExpression instanceof MethodReferenceExpression) {
-                rightExpression.putNodeMetaData(INFERRED_FUNCTIONAL_INTERFACE_TYPE, leftExpression.getNodeMetaData(INFERRED_TYPE));
+            // GROOVY-5620: spread-safe operator on LHS is not supported
+            if (pexp.isSpreadSafe() && isAssignment(expression.getOperation().getType())) {
+                // rewrite it so that it can be statically compiled
+                transformSpreadOnLHS(expression);
+                return;
             }
-        }
-        // GROOVY-5620: spread-safe operator on LHS is not supported
-        if (leftExpression instanceof PropertyExpression
-                && ((PropertyExpression) leftExpression).isSpreadSafe()
-                && isAssignment(expression.getOperation().getType())) {
-            // rewrite it so that it can be statically compiled
-            transformSpreadOnLHS(expression);
-            return;
         }
         super.evaluateEqual(expression, defineVariable);
     }
@@ -264,161 +300,82 @@ public class StaticTypesBinaryExpressionMultiTypeDispatcher extends BinaryExpres
         result.visit(controller.getAcg());
     }
 
-    private boolean makeSetProperty(final Expression receiver, final Expression message, final Expression arguments, final boolean safe, final boolean spreadSafe, final boolean implicitThis, final boolean isAttribute) {
-        ClassNode receiverType = controller.getTypeChooser().resolveType(receiver, controller.getClassNode());
-        String property = message.getText();
-        boolean isThisExpression = isThisExpression(receiver);
-        if (isAttribute || (isThisExpression && receiverType.getDeclaredField(property) != null)) {
-            ClassNode current = receiverType;
-            FieldNode fn = null;
-            while (fn == null && current != null) {
-                fn = current.getDeclaredField(property);
-                if (fn == null) {
-                    current = current.getSuperClass();
-                }
-            }
-            if (fn != null && receiverType != current && !fn.isPublic()) {
-                // check that direct access is allowed
-                if (!fn.isProtected()) {
-                    return false;
-                }
-                if (!Objects.equals(receiverType.getPackageName(), current.getPackageName())) {
-                    return false;
-                }
-                if (!fn.isStatic()) {
-                    receiver.visit(controller.getAcg());
-                }
-                arguments.visit(controller.getAcg());
-                OperandStack operandStack = controller.getOperandStack();
-                operandStack.doGroovyCast(fn.getOriginType());
-                MethodVisitor mv = controller.getMethodVisitor();
-                mv.visitFieldInsn(fn.isStatic() ? PUTSTATIC : PUTFIELD,
-                        BytecodeHelper.getClassInternalName(fn.getOwner()),
-                        property,
-                        BytecodeHelper.getTypeDescription(fn.getOriginType()));
-                operandStack.remove(fn.isStatic() ? 1 : 2);
-                return true;
-            }
-        }
-        if (!isAttribute) {
-            String setter = getSetterName(property);
-            MethodNode setterMethod = receiverType.getSetterMethod(setter, false);
-            ClassNode declaringClass = setterMethod != null ? setterMethod.getDeclaringClass() : null;
-            if (isThisExpression && declaringClass != null && declaringClass.equals(controller.getClassNode())) {
-                // this.x = ... shouldn't use a setter if in the same class
+    private boolean makeSetProperty(final Expression receiver, final Expression message, final Expression arguments, final boolean safe, final boolean spreadSafe, final boolean implicitThis, final boolean returnValue) {
+        var receiverType = controller.getTypeChooser().resolveType(receiver, controller.getClassNode());
+        var thisReceiver = isThisExpression(receiver);
+        var propertyName = message.getText();
+
+        String setterName = getSetterName(propertyName);
+        MethodNode setterMethod = receiverType.getSetterMethod(setterName, false);
+        if (setterMethod != null) {
+            if ((thisReceiver && setterMethod.getDeclaringClass().equals(controller.getClassNode()))
+                || (!setterMethod.isPublic() && isOrImplements(receiverType, ClassHelper.MAP_TYPE))) {
+                // this.x = ... should not use same-class setter
+                // that.x = ... should not use non-public setter for map
                 setterMethod = null;
-            } else if (setterMethod == null) {
-                PropertyNode propertyNode = receiverType.getProperty(property);
-                if (propertyNode != null) {
-                    if (!Modifier.isFinal(propertyNode.getModifiers())) {
-                        setterMethod = new MethodNode(
-                                setter,
-                                ACC_PUBLIC,
-                                ClassHelper.VOID_TYPE,
-                                new Parameter[]{new Parameter(propertyNode.getOriginType(), "value")},
-                                ClassNode.EMPTY_ARRAY,
-                                EmptyStatement.INSTANCE
-                        );
-                        setterMethod.setDeclaringClass(receiverType);
-                    }
-                }
+            } else { // GROOVY-11119
+                List<MethodNode> setters = receiverType.getMethods(setterName);
+                setters.removeIf(s -> s.isAbstract() || s.getParameters().length != 1);
+                if (setters.size() > 1) setterMethod = null;
             }
-            if (setterMethod != null) {
-                Expression call = StaticPropertyAccessHelper.transformToSetterCall(
-                        receiver,
-                        setterMethod,
-                        arguments,
-                        implicitThis,
-                        safe,
-                        spreadSafe,
-                        true, // to be replaced with a proper test whether a return value should be used or not
-                        message
+        } else {
+            PropertyNode propertyNode = receiverType.getProperty(propertyName);
+            if (propertyNode != null && !propertyNode.isFinal()) {
+                setterMethod = new MethodNode(
+                        setterName,
+                        ACC_PUBLIC,
+                        ClassHelper.VOID_TYPE,
+                        new Parameter[]{new Parameter(propertyNode.getOriginType(), "value")},
+                        ClassNode.EMPTY_ARRAY,
+                        EmptyStatement.INSTANCE
                 );
-                call.visit(controller.getAcg());
-                return true;
-            }
-            if (isThisExpression && !controller.isInGeneratedFunction()) {
-                receiverType = controller.getClassNode();
-            }
-            if (makeSetPrivateFieldWithBridgeMethod(receiver, receiverType, property, arguments, safe, spreadSafe, implicitThis)) {
-                return true;
+                setterMethod.setDeclaringClass(receiverType);
+                setterMethod.setSynthetic(true);
             }
         }
+        if (setterMethod != null) {
+            Expression call = StaticPropertyAccessHelper.transformToSetterCall(
+                    receiver,
+                    setterMethod,
+                    arguments,
+                    implicitThis,
+                    safe,
+                    spreadSafe,
+                    returnValue,
+                    message
+            );
+            call.visit(controller.getAcg());
+            return true;
+        }
+
         return false;
     }
 
-    private boolean makeSetPrivateFieldWithBridgeMethod(final Expression receiver, final ClassNode receiverType, final String fieldName, final Expression arguments, final boolean safe, final boolean spreadSafe, final boolean implicitThis) {
-        FieldNode field = receiverType.getField(fieldName);
-        ClassNode outerClass = receiverType.getOuterClass();
-        if (field == null && implicitThis && outerClass != null && !receiverType.isStaticClass()) {
-            Expression pexp;
-            if (controller.isInGeneratedFunction()) {
-                MethodCallExpression mce = callThisX("getThisObject");
-                mce.setImplicitThis(true);
-                mce.setMethodTarget(CLOSURE_GETTHISOBJECT_METHOD);
-                mce.putNodeMetaData(INFERRED_TYPE, controller.getOutermostClass());
-                pexp = castX(controller.getOutermostClass(), mce);
-            } else {
-                pexp = propX(classX(outerClass), "this");
-                ((PropertyExpression) pexp).setImplicitThis(true);
-            }
-            pexp.putNodeMetaData(INFERRED_TYPE, outerClass);
-            pexp.setSourcePosition(receiver);
-            return makeSetPrivateFieldWithBridgeMethod(pexp, outerClass, fieldName, arguments, safe, spreadSafe, true);
-        }
-        ClassNode classNode = controller.getClassNode();
-        if (field != null && field.isPrivate() && !receiverType.equals(classNode)
-                && (StaticInvocationWriter.isPrivateBridgeMethodsCallAllowed(receiverType, classNode)
-                    || StaticInvocationWriter.isPrivateBridgeMethodsCallAllowed(classNode,receiverType))) {
-            Map<String, MethodNode> mutators = receiverType.redirect().getNodeMetaData(PRIVATE_FIELDS_MUTATORS);
-            if (mutators != null) {
-                MethodNode methodNode = mutators.get(fieldName);
-                if (methodNode != null) {
-                    MethodCallExpression call = callX(receiver, methodNode.getName(), args(field.isStatic() ? nullX() : receiver, arguments));
-                    call.setImplicitThis(implicitThis);
-                    call.setMethodTarget(methodNode);
-                    call.setSafe(safe);
-                    call.setSpreadSafe(spreadSafe);
-                    call.visit(controller.getAcg());
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
+    /** {@inheritDoc} */
     @Override
     protected void assignToArray(final Expression enclosing, final Expression receiver, final Expression subscript, final Expression rhsValueLoader, final boolean safe) {
         ClassNode receiverType = controller.getTypeChooser().resolveType(receiver, controller.getClassNode());
 
-        if (receiverType.isArray() && !safe && binExpWriter[getOperandType(receiverType.getComponentType())].arraySet(true)) {
-            super.assignToArray(enclosing, receiver, subscript, rhsValueLoader, safe);
-        } else {
-            /*
-             * This code path is needed because ACG creates array access expressions
-             */
-
-            // GROOVY-6061
-            if (rhsValueLoader instanceof VariableSlotLoader && enclosing instanceof BinaryExpression) {
-                rhsValueLoader.putNodeMetaData(INFERRED_TYPE, controller.getTypeChooser().resolveType(enclosing, controller.getClassNode()));
+        if (!safe && receiverType.isArray() && binExpWriter[getOperandType(receiverType.getComponentType())].arraySet(true)) {
+            super.assignToArray(enclosing, receiver, subscript, rhsValueLoader, false);
+        } else { // handle safe subscript and other cases by calling the "putAt" method
+            boolean keepValue = !Boolean.TRUE.equals(enclosing.getNodeMetaData(ELIDE_EXPRESSION_VALUE));
+            int[] slot = { -1 };
+            ClassNode[] keptType = { null };
+            Expression value = preserveSubscriptRhs(rhsValueLoader, keepValue, slot, keptType);
+            if (value instanceof VariableSlotLoader && enclosing instanceof BinaryExpression) { // GROOVY-6061
+                value.putNodeMetaData(INFERRED_TYPE, controller.getTypeChooser().resolveType(enclosing, controller.getClassNode()));
             }
-            // GROOVY-9771
-            receiver.visit(new StaticCompilationVisitor(controller.getSourceUnit(), controller.getClassNode()));
 
             // replace assignment to a subscript operator with a method call
-            // e.g. x[5] = 10 -> methodCall(x, "putAt", [5, 10])
-            MethodCallExpression call = callX(receiver, "putAt", args(subscript, rhsValueLoader));
+            // e.g. x[5] = 10 --> x.putAt(5, 10)
+            MethodCallExpression call = callX(receiver, "putAt", args(subscript, value));
             call.setSafe(safe);
             call.setSourcePosition(enclosing);
 
-            OperandStack operandStack = controller.getOperandStack();
-            int height = operandStack.getStackLength();
             call.visit(controller.getAcg());
-            operandStack.pop();
-            operandStack.remove(operandStack.getStackLength() - height);
-
-            // return value of assignment
-            rhsValueLoader.visit(controller.getAcg());
+            controller.getOperandStack().pop(); // method return value
+            finishPreservedRhs(rhsValueLoader, keepValue, slot, keptType);
         }
     }
 }

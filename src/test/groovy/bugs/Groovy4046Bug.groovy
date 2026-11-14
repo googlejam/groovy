@@ -16,14 +16,18 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy4046Bug extends GroovyTestCase {
+import static org.junit.jupiter.api.Assertions.assertFalse
+
+
+class Groovy4046Bug {
+    @Test
     void testComparableOnLeftObjectOnRight() {
         assertFalse MyEnum4046.A == new Object()
-        
+
         assertFalse 1 == new Object()
     }
 }

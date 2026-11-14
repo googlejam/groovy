@@ -19,6 +19,8 @@
 package org.codehaus.groovy.runtime.memoize;
 
 import javax.annotation.concurrent.ThreadSafe;
+
+import java.io.Serial;
 import java.io.Serializable;
 import java.util.Collection;
 import java.util.Map;
@@ -26,15 +28,15 @@ import java.util.Set;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
- * Represents a simple key-value cache, which is thread safe and backed by a {@link java.util.Map} instance
+ * Represents a simple key-value cache, which is thread safe and backed by a {@link Map} instance
  *
  * @param <K> type of the keys
  * @param <V> type of the values
  * @since 2.5.0
  */
 @ThreadSafe
-public class ConcurrentCommonCache<K, V> implements EvictableCache<K, V>, ValueConvertable<V, Object>, Serializable {
-    private static final long serialVersionUID = -7352338549333024936L;
+public class ConcurrentCommonCache<K, V> implements FlexibleCache<K, V>, ValueConvertable<V, Object>, Serializable {
+    @Serial private static final long serialVersionUID = -7352338549333024936L;
 
     private final ReentrantReadWriteLock rwl = new ReentrantReadWriteLock();
     private final ReentrantReadWriteLock.ReadLock readLock = rwl.readLock();
@@ -53,14 +55,14 @@ public class ConcurrentCommonCache<K, V> implements EvictableCache<K, V>, ValueC
      *
      * @param initialCapacity  initial capacity of the cache
      * @param maxSize          max size of the cache
-     * @param evictionStrategy LRU or FIFO, see {@link org.codehaus.groovy.runtime.memoize.EvictableCache.EvictionStrategy}
+     * @param evictionStrategy LRU or FIFO, see {@link EvictableCache.EvictionStrategy}
      */
     public ConcurrentCommonCache(int initialCapacity, int maxSize, EvictionStrategy evictionStrategy) {
         commonCache = new CommonCache<K, V>(initialCapacity, maxSize, evictionStrategy);
     }
 
     /**
-     * Constructs a LRU cache with the specified initial capacity and max size.
+     * Constructs an LRU cache with the specified initial capacity and max size.
      * The LRU cache is slower than {@link LRUCache}
      *
      * @param initialCapacity initial capacity of the LRU cache
@@ -71,7 +73,7 @@ public class ConcurrentCommonCache<K, V> implements EvictableCache<K, V>, ValueC
     }
 
     /**
-     * Constructs a LRU cache with the default initial capacity(16)
+     * Constructs an LRU cache with the default initial capacity(16)
      *
      * @param maxSize max size of the LRU cache
      * @see #ConcurrentCommonCache(int, int)
@@ -81,9 +83,9 @@ public class ConcurrentCommonCache<K, V> implements EvictableCache<K, V>, ValueC
     }
 
     /**
-     * Constructs a cache backed by the specified {@link java.util.Map} instance
+     * Constructs a cache backed by the specified {@link Map} instance
      *
-     * @param map the {@link java.util.Map} instance
+     * @param map the {@link Map} instance
      */
     public ConcurrentCommonCache(Map<K, V> map) {
         commonCache = new CommonCache<K, V>(map);
@@ -113,6 +115,10 @@ public class ConcurrentCommonCache<K, V> implements EvictableCache<K, V>, ValueC
         return getAndPut(key, valueProvider, true);
     }
 
+    /**
+     * {@inheritDoc}
+     */
+    @Override
     public V getAndPut(K key, ValueProvider<? super K, ? extends V> valueProvider, boolean shouldCache) {
         V value;
 
@@ -153,6 +159,11 @@ public class ConcurrentCommonCache<K, V> implements EvictableCache<K, V>, ValueC
         return doWithReadLock(EvictableCache::values);
     }
 
+    /**
+     * Returns a live view of the cache entries.
+     *
+     * @return the cache entries
+     */
     @Override
     public Set<Entry<K, V>> entrySet() {
         return doWithReadLock(Map::entrySet);
@@ -174,6 +185,12 @@ public class ConcurrentCommonCache<K, V> implements EvictableCache<K, V>, ValueC
         return doWithReadLock(c -> c.containsKey(key));
     }
 
+    /**
+     * Determines whether the cache contains the specified stored value.
+     *
+     * @param value the value whose presence should be tested
+     * @return {@code true} if the cache contains the value
+     */
     @Override
     public boolean containsValue(Object value) {
         return doWithReadLock(c -> c.containsValue(value));
@@ -187,6 +204,11 @@ public class ConcurrentCommonCache<K, V> implements EvictableCache<K, V>, ValueC
         return doWithReadLock(EvictableCache::size);
     }
 
+    /**
+     * Returns whether the cache currently holds no entries.
+     *
+     * @return {@code true} if the cache is empty
+     */
     @Override
     public boolean isEmpty() {
         return size() == 0;
@@ -200,6 +222,11 @@ public class ConcurrentCommonCache<K, V> implements EvictableCache<K, V>, ValueC
         return doWithWriteLock(c -> c.remove(key));
     }
 
+    /**
+     * Copies all mappings from the supplied map into this cache.
+     *
+     * @param m the mappings to copy
+     */
     @Override
     public void putAll(Map<? extends K, ? extends V> m) {
         doWithWriteLock(c -> {
@@ -208,6 +235,11 @@ public class ConcurrentCommonCache<K, V> implements EvictableCache<K, V>, ValueC
         });
     }
 
+    /**
+     * Returns a live view of the keys in this cache.
+     *
+     * @return the cache keys
+     */
     @Override
     public Set<K> keySet() {
         return keys();
@@ -233,7 +265,10 @@ public class ConcurrentCommonCache<K, V> implements EvictableCache<K, V>, ValueC
     }
 
     /**
-     * {@inheritDoc}
+     * Returns the stored value unchanged.
+     *
+     * @param value the stored value
+     * @return {@code value}
      */
     @Override
     public Object convertValue(V value) {

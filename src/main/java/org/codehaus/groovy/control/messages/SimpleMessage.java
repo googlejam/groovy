@@ -28,32 +28,67 @@ import java.io.PrintWriter;
  * A base class for compilation messages.
  */
 public class SimpleMessage extends Message {
-    protected String message;  // Message text
-    protected Object data;     // Data, when the message text is an I18N identifier
+
+    /** used when {@link #message} is an I18N identifier */
+    protected Object data;
+    /**
+     * Message text to render.
+     */
+    protected String message;
+    /**
+     * Processing unit that owns the message.
+     */
     protected ProcessingUnit owner;
 
-    public SimpleMessage(String message, ProcessingUnit source) {
-        this(message, null, source);
+    /**
+     * Creates a simple message with no auxiliary data.
+     *
+     * @param message the message text
+     * @param owner the owning processing unit
+     */
+    public SimpleMessage(final String message, final ProcessingUnit owner) {
+        this(message, null, owner);
     }
 
-    public SimpleMessage(String message, Object data, ProcessingUnit source) {
+    /**
+     * Creates a simple message with optional auxiliary data.
+     *
+     * @param message the message text
+     * @param data supplemental message data
+     * @param owner the owning processing unit
+     */
+    public SimpleMessage(final String message, final Object data, final ProcessingUnit owner) {
         this.message = message;
-        this.data = null;
-        this.owner = source;
+        this.owner = owner;
+        this.data = data;
     }
 
-    @Override
-    public void write(PrintWriter writer, Janitor janitor) {
-        if (owner instanceof SourceUnit) {
-            String name = ((SourceUnit) owner).getName();
-            writer.println("" + name + ": " + message);
-        } else {
-            writer.println(message);
-        }
-    }
-
+    /**
+     * Returns the message text.
+     *
+     * @return the message text
+     */
     public String getMessage() {
         return message;
     }
 
+    @Override
+    public Diagnostic toDiagnostic() {
+        return new Diagnostic(sourceName(owner), -1, -1, message);
+    }
+
+    /**
+     * Writes this message, prefixing it with the source name when available.
+     *
+     * @param writer the destination writer
+     * @param janitor the cleanup helper for temporary source access
+     */
+    @Override
+    public void write(final PrintWriter writer, final Janitor janitor) {
+        if (owner instanceof SourceUnit) {
+            writer.println(((SourceUnit) owner).getName() + ": " + message);
+        } else {
+            writer.println(message);
+        }
+    }
 }

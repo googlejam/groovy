@@ -23,11 +23,12 @@ import org.codehaus.groovy.ast.MethodNode;
 import org.codehaus.groovy.ast.Parameter;
 import org.codehaus.groovy.ast.expr.BinaryExpression;
 import org.codehaus.groovy.ast.expr.ClosureExpression;
+import org.codehaus.groovy.ast.expr.ConstructorCallExpression;
 import org.codehaus.groovy.ast.expr.Expression;
 import org.codehaus.groovy.ast.expr.MethodCallExpression;
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression;
 import org.codehaus.groovy.ast.expr.VariableExpression;
-import org.codehaus.groovy.ast.stmt.BlockStatement;
+import org.codehaus.groovy.ast.expr.SwitchExpression;
 import org.codehaus.groovy.ast.stmt.SwitchStatement;
 import org.codehaus.groovy.control.CompilationUnit;
 import org.codehaus.groovy.control.CompilerConfiguration;
@@ -37,18 +38,22 @@ import org.codehaus.groovy.control.SourceUnit;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.Stack;
 import java.util.TreeSet;
 
+/**
+ * Holds mutable state shared across a static type-checking visit.
+ */
 public class TypeCheckingContext {
 
+    /**
+     * Creates a context for the supplied type-checking visitor.
+     */
     public TypeCheckingContext(final StaticTypeCheckingVisitor visitor) {
         this.visitor = visitor;
     }
@@ -58,46 +63,72 @@ public class TypeCheckingContext {
         pushErrorCollector(source.getErrorCollector());
     }*/
 
+    /** Visitor that owns this context. */
     protected final StaticTypeCheckingVisitor visitor;
+    /** Source unit currently being type checked. */
     protected       SourceUnit source;
 
+    /**
+     * Returns the source unit currently being type checked.
+     */
     public SourceUnit getSource() {
         return source;
     }
 
     //--------------------------------------------------------------------------
 
+    /** Compilation unit associated with the current type-checking run. */
     protected CompilationUnit compilationUnit;
 
+    /**
+     * Returns the compilation unit associated with this context.
+     */
     public CompilationUnit getCompilationUnit() {
         return compilationUnit;
     }
 
+    /**
+     * Sets the compilation unit associated with this context.
+     */
     public void setCompilationUnit(final CompilationUnit compilationUnit) {
         this.compilationUnit = compilationUnit;
     }
 
     //--------------------------------------------------------------------------
 
+    /** Error collectors stacked for nested type-checking operations. */
     protected final LinkedList<ErrorCollector> errorCollectors = new LinkedList<>();
 
+    /**
+     * Pushes a fresh error collector derived from the current compiler configuration.
+     */
     public ErrorCollector pushErrorCollector() {
-        CompilerConfiguration config = Optional.ofNullable(getErrorCollector())
-                .map(ErrorCollector::getConfiguration).orElseGet(() -> getSource().getConfiguration());
+        ErrorCollector current = getErrorCollector();
+        CompilerConfiguration config = current != null ? current.getConfiguration() : null;
+        if (config == null) config = getSource().getConfiguration();
 
         ErrorCollector collector = new ErrorCollector(config);
         pushErrorCollector(collector);
         return collector;
     }
 
+    /**
+     * Pushes the supplied error collector.
+     */
     public void pushErrorCollector(final ErrorCollector collector) {
         errorCollectors.addFirst(collector);
     }
 
+    /**
+     * Pops the current error collector.
+     */
     public ErrorCollector popErrorCollector() {
         return errorCollectors.removeFirst();
     }
 
+    /**
+     * Returns the current error collector, or {@code null} if none is active.
+     */
     public ErrorCollector getErrorCollector() {
         if (errorCollectors.isEmpty()) {
             return null;
@@ -105,6 +136,9 @@ public class TypeCheckingContext {
         return errorCollectors.getFirst();
     }
 
+    /**
+     * Returns the active error collector stack.
+     */
     public List<ErrorCollector> getErrorCollectors() {
         return Collections.unmodifiableList(errorCollectors);
     }
@@ -112,16 +146,26 @@ public class TypeCheckingContext {
     //--------------------------------------------------------------------------
 
     /**
-     * Stores information which is only valid in the "if" branch of an if-then-else statement. This is used when the if
-     * condition expression makes use of an instanceof check
+     * Stores information which is valid in the "then" branch of an if-then-else
+     * statement.  This is used when the if condition expression makes use of an
+     * {@code instanceof} check.
      */
     protected Stack<Map<Object, List<ClassNode>>> temporaryIfBranchTypeInformation = new Stack<>();
 
-    public void pushTemporaryTypeInfo() {
-        Map<Object, List<ClassNode>> potentialTypes = new HashMap<>();
-        temporaryIfBranchTypeInformation.push(potentialTypes);
+    List<ClassNode> peekTemporaryTypeInfo(final Object o) {
+        return temporaryIfBranchTypeInformation.peek().computeIfAbsent(o, x -> new LinkedList<>());
     }
 
+    /**
+     * Pushes a temporary type-information frame.
+     */
+    public void pushTemporaryTypeInfo() {
+        temporaryIfBranchTypeInformation.push(new HashMap<>());
+    }
+
+    /**
+     * Pops the current temporary type-information frame.
+     */
     public void popTemporaryTypeInfo() {
         temporaryIfBranchTypeInformation.pop();
     }
@@ -135,6 +179,7 @@ public class TypeCheckingContext {
      */
     protected DelegationMetadata delegationMetadata;
 
+    /** Indicates whether the current visit happens in a static context. */
     protected boolean isInStaticContext;
 
     /**
@@ -142,6 +187,7 @@ public class TypeCheckingContext {
      */
     protected ClassNode lastImplicitItType;
 
+    /** Optional filter restricting which methods should be visited. */
     protected Set<MethodNode> methodsToBeVisited = Collections.emptySet();
 
     /**
@@ -151,17 +197,7 @@ public class TypeCheckingContext {
      */
     protected Map<VariableExpression, List<ClassNode>> ifElseForWhileAssignmentTracker;
 
-    /**
-     * This field used for type derivation
-     * Check IfStatement matched pattern:
-     * Object var1;
-     * if (!(var1 instanceOf Runnable)){
-     * return
-     * }
-     * // Here var1 instance of Runnable
-     */
-    protected final IdentityHashMap<BlockStatement, Map<VariableExpression, List<ClassNode>>> blockStatements2Types = new IdentityHashMap<>();
-
+    /** Methods already visited during the current checking pass. */
     protected Set<MethodNode> alreadyVisitedMethods = new HashSet<>();
 
     /**
@@ -177,21 +213,39 @@ public class TypeCheckingContext {
      */
     protected final Map<VariableExpression, List<ClassNode>> closureSharedVariablesAssignmentTypes = new HashMap<>();
 
+    /** Types tracked for variables introduced by control structures. */
     protected       Map<Parameter, ClassNode> controlStructureVariables = new HashMap<>();
 
     // this map is used to ensure that two errors are not reported on the same line/column
+    /** Source positions that already produced a type-checking error. */
     protected final Set<Long> reportedErrors = new TreeSet<>();
 
     //--------------------------------------------------------------------------
 
     // TODO: replace with general node stack and filters
+    /** Stack of enclosing class nodes. */
     protected final LinkedList<ClassNode> enclosingClassNodes = new LinkedList<>();
+    /** Stack of enclosing methods. */
     protected final LinkedList<MethodNode> enclosingMethods = new LinkedList<>();
+    /** Stack of enclosing method-call expressions. */
     protected final LinkedList<Expression> enclosingMethodCalls = new LinkedList<>();
-    protected final LinkedList<BlockStatement> enclosingBlocks = new LinkedList<>();
+    /** Stack of enclosing switch statements. */
     protected final LinkedList<SwitchStatement> switchStatements = new LinkedList<>();
+    /** Stack of enclosing switch expressions (GROOVY-12255). */
+    protected final LinkedList<SwitchExpression> switchExpressions = new LinkedList<>();
+    /** Yield types collected for the current switch expression (parallel to {@link #switchExpressions}). */
+    protected final LinkedList<List<ClassNode>> switchExpressionYieldTypes = new LinkedList<>();
+    /**
+     * Innermost-first stack of switch selectors (statement or expression).
+     * Case-label typing must use this rather than preferring statements over
+     * expressions, or a nested switch expression would see the outer selector
+     * (GROOVY-12255).
+     */
+    protected final LinkedList<Expression> switchSelectors = new LinkedList<>();
+    /** Stack of enclosing closures. */
     protected final LinkedList<EnclosingClosure> enclosingClosures = new LinkedList<>();
     // stores the current binary expression. This is used when assignments are made with a null object, for type inference
+    /** Stack of enclosing binary expressions. */
     protected final LinkedList<BinaryExpression> enclosingBinaryExpressions = new LinkedList<>();
 
     /**
@@ -225,10 +279,12 @@ public class TypeCheckingContext {
         return Collections.unmodifiableList(enclosingBinaryExpressions);
     }
 
+    /**
+     * Indicates whether the expression is the left-hand side of the current assignment.
+     */
     public boolean isTargetOfEnclosingAssignment(final Expression expression) {
-        return Optional.ofNullable(getEnclosingBinaryExpression()).filter(be ->
-            be.getLeftExpression() == expression && StaticTypeCheckingSupport.isAssignment(be.getOperation().getType())
-        ).isPresent();
+        BinaryExpression be = getEnclosingBinaryExpression();
+        return be != null && be.getLeftExpression() == expression && StaticTypeCheckingSupport.isAssignment(be.getOperation().getType());
     }
 
     /**
@@ -327,13 +383,13 @@ public class TypeCheckingContext {
     /**
      * Pushes a method call into the method call stack.
      *
-     * @param call the call expression to be pushed, either a {@link MethodCallExpression} or a {@link StaticMethodCallExpression}
+     * @param call the call expression to be pushed, either a {@link MethodCallExpression}, {@link StaticMethodCallExpression}, or {@link ConstructorCallExpression}
      */
     public void pushEnclosingMethodCall(final Expression call) {
-        if (call instanceof MethodCallExpression || call instanceof StaticMethodCallExpression) {
+        if (call instanceof MethodCallExpression || call instanceof StaticMethodCallExpression || call instanceof ConstructorCallExpression) {
             enclosingMethodCalls.addFirst(call);
         } else {
-            throw new IllegalArgumentException("Expression must be a method call or a static method call");
+            throw new IllegalArgumentException("Expression must be a method call, a static method call or a constructor call");
         }
     }
 
@@ -366,12 +422,14 @@ public class TypeCheckingContext {
      */
     public void pushEnclosingSwitchStatement(final SwitchStatement switchStatement) {
         switchStatements.addFirst(switchStatement);
+        switchSelectors.addFirst(switchStatement.getExpression());
     }
 
     /**
      * Pops a switch statement from the enclosing switch statements stack.
      */
     public SwitchStatement popEnclosingSwitchStatement() {
+        switchSelectors.removeFirst();
         return switchStatements.removeFirst();
     }
 
@@ -393,6 +451,134 @@ public class TypeCheckingContext {
     }
 
     /**
+     * Pushes a switch expression onto the enclosing-expression stack
+     * (GROOVY-12255).
+     *
+     * @since 6.0.0
+     */
+    public void pushEnclosingSwitchExpression(final SwitchExpression switchExpression) {
+        switchExpressions.addFirst(switchExpression);
+        switchExpressionYieldTypes.addFirst(new LinkedList<>());
+        switchSelectors.addFirst(switchExpression.getExpression());
+    }
+
+    /**
+     * Pops the current switch expression (GROOVY-12255).
+     *
+     * @since 6.0.0
+     */
+    public SwitchExpression popEnclosingSwitchExpression() {
+        switchSelectors.removeFirst();
+        switchExpressionYieldTypes.removeFirst();
+        return switchExpressions.removeFirst();
+    }
+
+    /**
+     * Returns the switch expression on top of the stack, or {@code null}
+     * (GROOVY-12255).
+     *
+     * @since 6.0.0
+     */
+    public SwitchExpression getEnclosingSwitchExpression() {
+        if (switchExpressions.isEmpty()) return null;
+        return switchExpressions.getFirst();
+    }
+
+    /**
+     * Returns the list collecting yield types for the current switch expression
+     * (GROOVY-12255). Empty when there is no enclosing switch expression; the
+     * returned empty list is not the live collector and must not be mutated.
+     *
+     * @since 6.0.0
+     */
+    public List<ClassNode> getEnclosingSwitchExpressionYieldTypes() {
+        List<ClassNode> types = switchExpressionYieldTypes.peekFirst();
+        return types != null ? types : List.of();
+    }
+
+    /**
+     * Live yield-type collector for the innermost switch expression, or
+     * {@code null} if none is in progress. Unlike
+     * {@link #getEnclosingSwitchExpressionYieldTypes()}, this is always
+     * mutable when non-null, so a yield can be recorded onto it.
+     */
+    List<ClassNode> peekEnclosingSwitchExpressionYieldTypes() {
+        return switchExpressionYieldTypes.peekFirst();
+    }
+
+    /**
+     * Selector of the innermost enclosing switch statement or expression
+     * (GROOVY-12255).
+     *
+     * @since 6.0.0
+     */
+    public Expression getEnclosingSwitchSelector() {
+        if (switchSelectors.isEmpty()) return null;
+        return switchSelectors.getFirst();
+    }
+
+    /**
+     * Clears the state that describes the position being visited, so that a
+     * method of the enclosing class can be visited as if from its declaration.
+     * The enclosing classes, the visited-method sets, the error bookkeeping and
+     * the second-pass data are kept, as they belong to the class being visited.
+     *
+     * @return an action that restores the cleared state
+     */
+    Runnable detachFromEnclosingScope() {
+        var methods        = new LinkedList<>(enclosingMethods);
+        var methodCalls    = new LinkedList<>(enclosingMethodCalls);
+        var closures       = new LinkedList<>(enclosingClosures);
+        var binaries       = new LinkedList<>(enclosingBinaryExpressions);
+        var statements     = new LinkedList<>(switchStatements);
+        var expressions    = new LinkedList<>(switchExpressions);
+        var yieldTypes     = new LinkedList<>(switchExpressionYieldTypes);
+        var selectors      = new LinkedList<>(switchSelectors);
+        var typeInfo       = temporaryIfBranchTypeInformation;
+        var tracker        = ifElseForWhileAssignmentTracker;
+        var controlVars    = controlStructureVariables;
+        var delegation     = delegationMetadata;
+        var itType         = lastImplicitItType;
+        boolean staticCtx  = isInStaticContext;
+
+        enclosingMethods.clear();
+        enclosingMethodCalls.clear();
+        enclosingClosures.clear();
+        enclosingBinaryExpressions.clear();
+        switchStatements.clear();
+        switchExpressions.clear();
+        switchExpressionYieldTypes.clear();
+        switchSelectors.clear();
+        temporaryIfBranchTypeInformation = new Stack<>();
+        ifElseForWhileAssignmentTracker = null;
+        controlStructureVariables = new HashMap<>();
+        delegationMetadata = null;
+        lastImplicitItType = null;
+
+        return () -> {
+            reset(enclosingMethods, methods);
+            reset(enclosingMethodCalls, methodCalls);
+            reset(enclosingClosures, closures);
+            reset(enclosingBinaryExpressions, binaries);
+            reset(switchStatements, statements);
+            reset(switchExpressions, expressions);
+            reset(switchExpressionYieldTypes, yieldTypes);
+            reset(switchSelectors, selectors);
+            temporaryIfBranchTypeInformation = typeInfo;
+            ifElseForWhileAssignmentTracker = tracker;
+            controlStructureVariables = controlVars;
+            delegationMetadata = delegation;
+            lastImplicitItType = itType;
+            isInStaticContext = staticCtx;
+        };
+    }
+
+    private static <T> void reset(final LinkedList<T> list, final List<T> saved) {
+        list.clear();
+        list.addAll(saved);
+    }
+
+    /**
      * Represents the context of an enclosing closure. An enclosing closure wraps
      * a closure expression and the list of return types found in the closure body.
      */
@@ -400,22 +586,37 @@ public class TypeCheckingContext {
         private final ClosureExpression closureExpression;
         private final List<ClassNode> returnTypes = new LinkedList<>();
 
+        /**
+         * Creates metadata for an enclosing closure.
+         */
         public EnclosingClosure(final ClosureExpression closureExpression) {
             this.closureExpression = closureExpression;
         }
 
+        /**
+         * Returns the wrapped closure expression.
+         */
         public ClosureExpression getClosureExpression() {
             return closureExpression;
         }
 
+        /**
+         * Returns the return types collected for the closure body.
+         */
         public List<ClassNode> getReturnTypes() {
             return returnTypes;
         }
 
+        /**
+         * Records another inferred closure return type.
+         */
         public void addReturnType(final ClassNode type) {
             returnTypes.add(type);
         }
 
+        /**
+         * Returns a diagnostic representation of this closure context.
+         */
         @Override
         public String toString() {
             return "EnclosingClosure{closureExpression=" + closureExpression.getText() + ", returnTypes=" + returnTypes + "}";

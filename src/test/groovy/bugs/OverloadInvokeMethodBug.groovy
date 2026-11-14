@@ -16,35 +16,31 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-/**
- */
- 
-class OverloadInvokeMethodBug extends GroovyTestCase {
-     
+final class OverloadInvokeMethodBug {
+
+    @Test
     void testBug() {
         def a = new OverloadA()
         a.duh()
-        
+
         def b = new OverloadB()
         b.duh()
     }
 
-}
-
-class OverloadA {
-    def invokeMethod(String name, Object args) {
-        try {
-            metaClass.invokeMethod(this, name, args)
-        } catch (MissingMethodException e) {
-            println "Missing method: ${name}"
+    static class OverloadA {
+        def invokeMethod(String name, Object args) {
+            try {
+                metaClass.invokeMethod(this, name, args)
+            } catch (MissingMethodException e) {
+                println "Missing method: ${name}"
+            }
         }
     }
-}
 
-class OverloadB extends OverloadA {
-
+    static class OverloadB extends OverloadA {
+    }
 }

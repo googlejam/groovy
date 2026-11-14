@@ -20,20 +20,21 @@ package groovy.transform;
 
 import org.codehaus.groovy.transform.GroovyASTTransformationClass;
 
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 /**
- * Class annotation to make constructors from a super class available in a sub class.
+ * Class annotation to make constructors from a super class available in a subclass.
  * Should be used with care with other annotations which create constructors - see "Known
  * Limitations" for more details.
  * <p>
  * {@code @InheritConstructors} saves you typing some boilerplate code.
  * <p>
  * <em>Example usage:</em>
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * class Person {
  *     String first, last
  *     Person(String first, String last) {
@@ -49,7 +50,7 @@ import java.lang.annotation.Target;
  *
  * def js = new PersonAge('John', 'Smith')
  * js.age = 25
- * 
+ *
  * assert "$js.last, $js.first is $js.age years old" == 'SMITH, John is 25 years old'
  * </pre>
  * for this case, the <code>PersonAge</code> class will be
@@ -70,7 +71,7 @@ import java.lang.annotation.Target;
  * Typical Groovy style is to use named-arg constructors when possible.
  * This is easy to do for Groovy objects or any objects following JavaBean
  * conventions. In other cases, inheriting the constructors may be useful.
- * However, sub-classes often introduce new properties and these are often best
+ * However, subclasses often introduce new properties and these are often best
  * set in a constructor; especially if that matches the style adopted
  * in parent classes. So, even for the example above, it may have been
  * better style to define an explicit constructor for <code>PersonAge</code>
@@ -110,9 +111,15 @@ import java.lang.annotation.Target;
  * this AST transformation. This means that you can't override (i.e. not
  * inherit) the constructors with signatures that Groovy adds later.
  * If you get it wrong you will get a compile-time error about the duplication.</li>
+ * <li>Under joint compilation, when the super class is in the same compilation unit and its
+ * constructors come from another constructor-generating transform (e.g. {@code @TupleConstructor}),
+ * the inherited signatures appear in the stub only when the super class is declared before the
+ * subclass in source. The runtime always produces the full surface; the stub remains a strict
+ * subset when source order is reversed, and Java callers reaching for the missing signatures
+ * won't compile against the stub even though the runtime supports them.</li>
  * </ul>
  * <p>More examples:</p>
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * //--------------------------------------------------------------------------
  * import groovy.transform.InheritConstructors
  *
@@ -124,7 +131,7 @@ import java.lang.annotation.Target;
  * def e1 = new MyException('message')   // Other constructors are available.
  * assert 'message' == e1.message
  * </pre>
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * //--------------------------------------------------------------------------
  * import groovy.transform.InheritConstructors
 
@@ -145,10 +152,13 @@ import java.lang.annotation.Target;
  *
  * @since 1.7.3
  */
-@java.lang.annotation.Documented
+@Documented
 @Retention(RetentionPolicy.SOURCE)
-@Target({ElementType.TYPE})
-@GroovyASTTransformationClass("org.codehaus.groovy.transform.InheritConstructorsASTTransformation")
+@Target(ElementType.TYPE)
+@GroovyASTTransformationClass({
+        "org.codehaus.groovy.transform.InheritConstructorsASTStubber",
+        "org.codehaus.groovy.transform.InheritConstructorsASTTransformation"
+})
 public @interface InheritConstructors {
     /**
      * Whether to carry over annotations on the copied constructors.

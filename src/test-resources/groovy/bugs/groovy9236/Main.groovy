@@ -19,12 +19,13 @@
 package groovy.bugs.groovy9236
 
 class Outer {
-    static class Groovy9236 {}
+    static class Type {
+    }
 
-    def test() {
-        assert new Groovy9236()
-        assert new Outer.Groovy9236()
-        assert new Groovy9236SamePkg()
+    void test() {
+        assert new Peer()
+        assert new Type()
+        assert new Outer.Type()
     }
 }
 

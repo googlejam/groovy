@@ -16,9 +16,11 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import org.junit.Test
+import org.codehaus.groovy.control.CompilerConfiguration
+import org.codehaus.groovy.tools.javac.JavaAwareCompilationUnit
+import org.junit.jupiter.api.Test
 
 import static groovy.test.GroovyAssert.assertScript
 
@@ -65,7 +67,7 @@ final class Groovy8964 {
     @Test // GROOVY-9737
     void testInstanceMethodNotMaskedByStaticMethodWithSameNumberOfArgs2() {
         assertScript '''
-            import groovy.bugs.Groovy8964.A
+            import bugs.Groovy8964.A
             @groovy.transform.CompileStatic
             class C extends A {
                 void test() {
@@ -75,6 +77,55 @@ final class Groovy8964 {
 
             new C().test()
         '''
+    }
+
+    @Test // GROOVY-10379
+    void testInstanceMethodNotMaskedByStaticMethodWithSameNumberOfArgs3() {
+        def config = new CompilerConfiguration(
+            targetDirectory: File.createTempDir(),
+            jointCompilationOptions: [memStub: true]
+        )
+
+        def parentDir = File.createTempDir()
+        try {
+            new File(parentDir, 'p').mkdir()
+
+            def a = new File(parentDir, 'p/A.java')
+            a.write '''
+                package p;
+                public abstract class A implements I {
+                    public static String m(Number n) { return "number"; }
+                }
+            '''
+            def b = new File(parentDir, 'p/I.java')
+            b.write '''
+                package p;
+                public interface I {
+                    default String m(String s) { return "string"; }
+                }
+            '''
+            def c = new File(parentDir, 'Main.groovy')
+            c.write '''
+                @groovy.transform.CompileStatic
+                class C extends p.A {
+                    void test() {
+                        String result = m('') // GroovyCastException: Cannot cast object 'class C' with class 'java.lang.Class' to class 'p.I'
+                        assert result == 'string'
+                    }
+                }
+                new C().test()
+            '''
+
+            def loader = new GroovyClassLoader(this.class.classLoader)
+            def cu = new JavaAwareCompilationUnit(config, loader)
+            cu.addSources(a, b, c)
+            cu.compile()
+
+            loader.loadClass('Main').getDeclaredConstructor().newInstance().run()
+        } finally {
+            config.targetDirectory.deleteDir()
+            parentDir.deleteDir()
+        }
     }
 
     static abstract class A {

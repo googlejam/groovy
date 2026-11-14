@@ -28,23 +28,36 @@ import java.util.Map;
  * (mainly used as a marker).
  */
 public class AnnotationConstantExpression extends ConstantExpression {
-    public AnnotationConstantExpression(AnnotationNode node) {
+
+    /**
+     * Uses {@code node} as the constant value and sets this expression's
+     * type to the annotation class.
+     *
+     * @param node annotation represented by this constant
+     */
+    public AnnotationConstantExpression(final AnnotationNode node) {
         super(node);
         setType(node.getClassNode());
     }
 
     @Override
-    public void visit(GroovyCodeVisitor visitor) {
+    public String getText() {
+        return ((AnnotationNode) getValue()).getText();
+    }
+
+    @Override
+    public String toString() {
+        return super.toString() + "[" + getText() + "]";
+    }
+
+    @Override
+    public void visit(final GroovyCodeVisitor visitor) {
+        super.visit(visitor); // GROOVY-9980
+
         AnnotationNode node = (AnnotationNode) getValue();
         Map<String, Expression> attrs = node.getMembers();
         for (Expression expr : attrs.values()) {
             expr.visit(visitor);
         }
-        super.visit(visitor);
-    }
-
-    @Override
-    public String toString() {
-        return super.toString() + "[" + getValue() + "]";
     }
 }

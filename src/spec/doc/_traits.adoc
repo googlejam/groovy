@@ -301,11 +301,11 @@ include::../test/TraitsSpecificationTest.groovy[tags=dynamicobject,indent=0]
 <2> the `Dynamic` class defines a property
 <3> the `Dynamic` class defines a method
 <4> calling an existing property will call the method from `Dynamic`
-<5> calling an non-existing property will call the method from the trait
+<5> calling a non-existing property will call the method from the trait
 <6> will call `setProperty` defined on the trait
 <7> will call `getProperty` defined on the trait
 <8> calling an existing method on `Dynamic`
-<9> but calling a non existing method thanks to the trait `methodMissing`
+<9> but calling a non-existing method thanks to the trait `methodMissing`
 
 == Multiple inheritance conflicts
 === Default conflict resolution
@@ -388,7 +388,7 @@ include::../test/TraitsSpecificationTest.groovy[tags=withtraits_success,indent=0
 ----
 <1> call to `methodFromA` will fail because `C` doesn't implement `A`
 <2> call to `methodFromB` will fail because `C` doesn't implement `B`
-<3> `withTrait` will wrap `c` into something which implements `A` and `B`
+<3> `withTraits` will wrap `c` into something which implements `A` and `B`
 <4> `methodFromA` will now pass because `d` implements `A`
 <5> `methodFromB` will now pass because `d` also implements `B`
 
@@ -576,7 +576,7 @@ an implementation for a default method, then the implementation from the interfa
 with a major difference: the implementation from the trait is *always* used if the class declares the trait in its interface
 list *and* that it doesn't provide an implementation *even* if a super class does.
 
-This feature can be used to compose behaviors in an very precise way, in case you want to override the behavior of an
+This feature can be used to compose behaviors in a very precise way, in case you want to override the behavior of an
 already implemented method.
 
 To illustrate the concept, let's start with this simple example:
@@ -651,7 +651,7 @@ runtime mixins, not the @Mixin annotation which is deprecated in favour of trait
 
 First of all, methods defined in a trait are visible in bytecode:
 
-* internally, the trait is represented as an interface (without default or static methods) and several helper classes
+* internally, the trait is represented as an interface (without default methods; public static methods are exposed as JVM-native interface statics) and several helper classes
 * this means that an object implementing a trait effectively implements an _interface_
 * those methods are visible from Java
 * they are compatible with type checking and static compilation
@@ -676,22 +676,23 @@ A will continue responding to A even if mixed in.
 
 == Static methods, properties and fields
 
-WARNING: The following instructions are subject to caution. Static member support is work in progress and still experimental. The
-information below is valid for {groovyVersion} only.
+NOTE: Static member support in traits is *incubating*: the behaviour described here is settled for {groovyVersion}
+but may still be refined. GEP-22 gives the full specification.
 
-It is possible to define static methods in a trait, but it comes with numerous limitations:
+A trait may declare static methods, properties and fields:
 
-* Traits with static methods cannot be compiled statically or type checked. All static methods,
-properties and field are accessed dynamically (it's a limitation from the JVM).
-* Static methods do not appear within the generated interfaces for each trait.
-* The trait is interpreted as a _template_ for the implementing class, which means that each
-implementing class will get its own static methods, properties and fields. So a static member
-declared on a trait doesn't belong to the `Trait`, but to its implementing class.
-* You should typically not mix static and instance methods of the same signature. The normal
-rules for applying traits apply (including multiple inheritance conflict resolution). If the
-method chosen is static but some implemented trait has an instance variant, a compilation error
-will occur. If the method chosen is the instance variant, the static variant will be ignored
-(the behavior is similar to static methods in Java interfaces for this case).
+* The trait is interpreted as a _template_ for the implementing class: each implementing class gets its *own copy*
+of the trait's static members. A static member declared on a trait belongs to the implementing class, not to a
+single copy shared across all implementers.
+* Public static methods are _declarer-bound_ by default and are promoted onto the generated trait interface as
+JVM-native static methods, so both `Trait.m(...)` and `Impl.m(...)` resolve. A private static method stays internal
+to the trait and is not promoted.
+* Static methods may be declared in, and called from, `@CompileStatic` and `@TypeChecked` code; they are not
+restricted to dynamic Groovy.
+* You should typically not mix static and instance methods of the same signature. The normal trait method-selection
+rules apply (including multiple inheritance conflict resolution): if the selected method is static but some
+implemented trait has an instance variant, a compilation error occurs; if the instance variant is selected, the
+static variant is ignored (as with static methods in Java interfaces for this case).
 
 Let's start with a simple example:
 
@@ -723,6 +724,49 @@ include::../test/TraitsSpecificationTest.groovy[tags=staticfield_distinct,indent
 <3> `init` is only called on `Bar`
 <4> the static field `CALLED` on `Bar` is updated
 <5> but the static field `CALLED` on `Baz` is not, because it is *distinct*
+
+=== Overridable static defaults with `@Virtual`
+
+By default a trait's static method is _declarer-bound_: when other trait code calls it, it always resolves to the
+trait's own copy, even if an implementing class declares a static method of the same signature. That is the right
+choice for an internal helper or a constant that the trait owns outright.
+
+Sometimes, though, a trait wants to publish a static *default that an implementing class can override*, and have
+the trait's own logic honour that override. This is the template-method pattern applied to a static member — the
+same override-visibility that trait _instance_ methods already have. Annotate the method with
+`@groovy.transform.Virtual` to opt into per-implementer override dispatch:
+
+[source,groovy]
+----
+include::../test/TraitsSpecificationTest.groovy[tags=virtual_default,indent=0]
+----
+<1> the overridable default, marked `@Virtual`
+<2> trait logic that consults the setting
+<3> an unqualified call, so it dispatches through the implementing class
+<4> uses the trait's default
+<5> overrides the default with its own `static`
+<6> the default is seen for `StrictEntity`
+<7> the override is seen by the trait's own `describe()` for `LenientEntity`
+<8> and externally via `Impl.m()`
+
+Reach for `@Virtual` when the overridable thing is genuinely a property of the _type_ rather than of an instance —
+a policy or configuration default that answers a question about the class as a whole (Grails uses this for hooks
+such as `Validateable.defaultNullable()`), that may be consulted where no instance exists yet (class
+initialisation, static factory methods, building metadata), and that external callers can read statically as
+`Impl.setting()`. For overridable static _data_ rather than behaviour, use a `@Virtual` accessor
+(`@Virtual static getSetting()`) rather than a static field, since a bare static-field read from trait code is not
+override-visible (see <<_inheritance_of_state_gotchas,Inheritance of state gotchas>>).
+
+A `@Virtual` static is deliberately *not* exposed on the trait interface (interface statics are declarer-bound by
+JVM rule, which is incompatible with override dispatch). It therefore has no qualified `Trait.m(...)` form: read a
+concrete class's value with `Impl.m(...)`, or use `T.super.m(...)` from within trait code for the trait's own
+default. A qualified `Trait.m(...)` call to a `@Virtual` static is rejected at compile time:
+
+[source,groovy]
+----
+include::../test/TraitsSpecificationTest.groovy[tags=virtual_qualified,indent=0]
+----
+<1> rejected: a `@Virtual` static has no qualified `Trait.m(...)` form
 
 == Inheritance of state gotchas
 
@@ -813,7 +857,7 @@ In order to make this contract explicit, and to make the type checker aware of t
 a `@SelfType` annotation that will:
 
 * let you declare the types that a class that implements this trait must inherit or implement
-* throw a compile time error if those type constraints are not satisfied
+* throw a compile-time error if those type constraints are not satisfied
 
 So in our previous example, we can fix the trait using the `@groovy.transform.SelfType` annotation:
 
@@ -837,6 +881,44 @@ class 'MyDevice' implements trait 'Communicating' but does not extend self type 
 
 In conclusion, self types are a powerful way of declaring constraints on traits without having to declare the contract
 directly in the trait or having to use casts everywhere, maintaining separation of concerns as tight as it should be.
+
+=== Differences with Sealed annotation (incubating)
+
+Both `@Sealed` and `@SelfType` restrict classes which use a trait but in orthogonal ways.
+Consider the following example:
+
+[source,groovy]
+----
+include::../test/TraitsSpecificationTest.groovy[tags=selftype_sealed_volume,indent=0]
+----
+<1> All usages of the `HasVolume` trait must implement or extend both `HasHeight` and `HasArea`
+<2> Only `UnitCube` or `UnitCylinder` can use the trait
+
+For the degenerate case where a single class implements a trait, e.g.:
+
+[source,groovy]
+----
+final class Foo implements FooTrait {}
+----
+
+Then, either:
+
+[source,groovy]
+----
+@SelfType(Foo)
+trait FooTrait {}
+----
+
+or:
+
+[source,groovy]
+----
+@Sealed(permittedSubclasses='Foo') // <1>
+trait FooTrait {}
+----
+<1> Or just `@Sealed` if `Foo` and `FooTrait` are in the same source file
+
+could express this constraint. Generally, the former of these is preferred.
 
 == Limitations
 === Compatibility with AST transformations

@@ -22,7 +22,7 @@
 = Singleton Pattern
 
 
-The http://en.wikipedia.org/wiki/Singleton_pattern[Singleton Pattern] is used to make sure only one object of a particular class is ever created. This can be useful when when exactly one object is needed to coordinate actions across a system; perhaps for efficiency where creating lots of identical objects would be wasteful, perhaps because a particular algorithm needing a single point of control is required or perhaps when an object is used to interact with a non-shareable resource.
+The http://en.wikipedia.org/wiki/Singleton_pattern[Singleton Pattern] is used to make sure only one object of a particular class is ever created. This can be useful when exactly one object is needed to coordinate actions across a system; perhaps for efficiency where creating lots of identical objects would be wasteful, perhaps because a particular algorithm needing a single point of control is required or perhaps when an object is used to interact with a non-shareable resource.
 
 Weaknesses of the Singleton pattern include:
 
@@ -38,7 +38,7 @@ Suppose we wish to create a class for collecting votes. Because getting the righ
 include::../test/DesignPatternsTest.groovy[tags=singleton_vote_collector,indent=0]
 ----
 
-Some points of interest about this code:
+Some points of interest in this code:
 
 - it has a private constructor, so no `VoteCollector` objects can be created in our system (except for the `INSTANCE` we create)
 - the `INSTANCE` is also private, so it can't be changed once set

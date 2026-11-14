@@ -16,43 +16,44 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class GuillaumesMapBug extends GroovyTestCase {
-    
+final class GuillaumesMapBug {
+
+    @Test
     void testBug2() {
         def list = [1, 2, 3]
         def map = [:]
-        
+
         doLoop(list, map)
-    
-        assert map[0] == 1 
-        assert map[1] == 2 
-        assert map[2] == 3 
+
+        assert map[0] == 1
+        assert map[1] == 2
+        assert map[2] == 3
     }
-    
-    void doLoop(list, map) {
+
+    private void doLoop(list, map) {
         def i = 0
         for (it in list) {
             map[i++] = it
         }
     }
-    
-    
+
+    @Test
     void testBug() {
         def list = [1, 2, 3]
         def map = [:]
         doClosureLoop(list, map)
-        
-        assert map[0] == 1 
-        assert map[1] == 2 
-        assert map[2] == 3 
+
+        assert map[0] == 1
+        assert map[1] == 2
+        assert map[2] == 3
     }
-    
-    void doClosureLoop(list, map) {
+
+    private void doClosureLoop(list, map) {
         def i = 0
         list.each { map[i++] = it }
-    }    
+    }
 }

@@ -19,12 +19,20 @@
 package org.codehaus.groovy.tools;
 
 import java.io.File;
+import java.io.IOException;
 import java.net.MalformedURLException;
+import java.net.URI;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.util.Collections;
+import java.util.Enumeration;
 import java.util.HashMap;
-import java.util.List;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Objects;
+import java.util.ServiceLoader;
+import java.util.Set;
 
 /**
  * This ClassLoader should be used as root of class loaders. Any
@@ -73,58 +81,54 @@ import java.util.Map;
  * instance will solve that problem.
  */
 public class RootLoader extends URLClassLoader {
-    private static final URL[] EMPTY_URL_ARRAY = new URL[0];
-    private final Map<String, Class> customClasses = new HashMap<String, Class>();
+
     private static final String ORG_W3C_DOM_NODE = "org.w3c.dom.Node";
+    private final Map<String, Class<?>> customClasses = new HashMap<>();
 
     /**
-     * constructs a new RootLoader without classpath
+     * Constructs a {@code RootLoader} without classpath.
      *
      * @param parent the parent Loader
      */
-    private RootLoader(ClassLoader parent) {
-        this(EMPTY_URL_ARRAY, parent);
+    public RootLoader(final ClassLoader parent) {
+        this(new URL[0], parent);
     }
 
     /**
-     * constructs a new RootLoader with a parent loader and an
-     * array of URLs as classpath
+     * Constructs a {@code RootLoader} with a parent loader and an array of URLs
+     * as its classpath.
      */
-    public RootLoader(URL[] urls, ClassLoader parent) {
+    public RootLoader(final URL[] urls, final ClassLoader parent) {
         super(urls, parent);
-        // major hack here...!
+        // major hack here!!
         try {
             customClasses.put(ORG_W3C_DOM_NODE, super.loadClass(ORG_W3C_DOM_NODE, false));
-        } catch (Exception e) { /* ignore */ }
-    }
-
-    private static ClassLoader chooseParent() {
-        ClassLoader cl = RootLoader.class.getClassLoader();
-        if (cl != null) return cl;
-        return ClassLoader.getSystemClassLoader();
+        } catch (Exception e) {
+            // ignore
+        }
     }
 
     /**
-     * constructs a new RootLoader with a {@link LoaderConfiguration}
-     * object which holds the classpath
+     * Constructs a {@code RootLoader} with a {@link LoaderConfiguration} object
+     * which holds the classpath.
      */
-    public RootLoader(LoaderConfiguration lc) {
-        this(chooseParent());
+    public RootLoader(final LoaderConfiguration lc) {
+        this(Objects.requireNonNullElseGet(RootLoader.class.getClassLoader(), ClassLoader::getSystemClassLoader));
+
         Thread.currentThread().setContextClassLoader(this);
-        URL[] urls = lc.getClassPathUrls();
-        for (URL url : urls) {
+
+        for (URL url : lc.getClassPathUrls()) {
             addURL(url);
         }
         // TODO M12N eventually defer this until later when we have a full Groovy
         // environment and use normal Grape.grab()
         String groovyHome = System.getProperty("groovy.home");
-        List<String> grabUrls = lc.getGrabUrls();
-        for (String grabUrl : grabUrls) {
-            Map<String, Object> grabParts = GrapeUtil.getIvyParts(grabUrl);
-            String group = grabParts.get("group").toString();
-            String module = grabParts.get("module").toString();
-            String name = grabParts.get("module").toString() + "-" + grabParts.get("version") + ".jar";
-            File jar = new File(groovyHome + "/repo/" + group + "/" + module + "/jars/" + name);
+        for (String url : lc.getGrabUrls()) {
+            Map<String, Object> grabParts = GrapeUtil.getIvyParts(url);
+            String group   = (String) grabParts.get("group");
+            String module  = (String) grabParts.get("module");
+            String version = (String) grabParts.get("version");
+            File jar = new File(groovyHome + "/repo/" + group + "/" + module + "/jars/" + module + "-" + version + ".jar");
             try {
                 addURL(jar.toURI().toURL());
             } catch (MalformedURLException e) {
@@ -134,51 +138,114 @@ public class RootLoader extends URLClassLoader {
     }
 
     /**
-     * loads a class using the name of the class
+     * {@inheritDoc}
      */
     @Override
-    protected synchronized Class loadClass(final String name, boolean resolve) throws ClassNotFoundException {
-        Class c = this.findLoadedClass(name);
+    protected synchronized Class<?> loadClass(final String name, final boolean resolve) throws ClassNotFoundException {
+        Class<?> c = findLoadedClass(name);
         if (c != null) return c;
         c = customClasses.get(name);
         if (c != null) return c;
 
         try {
-            c = oldFindClass(name);
-        } catch (ClassNotFoundException cnfe) {
-            // IGNORE
+            c = super.findClass(name);
+        } catch (ClassNotFoundException e) {
+            // ignore
         }
-        if (c == null) c = super.loadClass(name, resolve);
+        if (c == null)
+            c = super.loadClass(name, resolve);
 
-        if (resolve) resolveClass(c);
+        if (resolve)
+            resolveClass(c);
 
         return c;
     }
 
     /**
-     * returns the URL of a resource, or null if it is not found
+     * {@inheritDoc}
      */
     @Override
-    public URL getResource(String name) {
+    public URL getResource(final String name) {
         URL url = findResource(name);
-        if (url == null) url = super.getResource(name);
+        if (url == null)
+            url = super.getResource(name);
         return url;
     }
 
     /**
-     * adds an url to the classpath of this classloader
+     * {@inheritDoc}
+     * <p>
+     * Collapses entries that resolve to the same canonical jar file so callers
+     * such as {@link ServiceLoader} don't see the same providers
+     * twice when the launcher's startup classpath and the {@code load} entries
+     * in {@code groovy-starter.conf} reference the same jar (GROOVY-11978).
      */
     @Override
-    public void addURL(URL url) {
+    public Enumeration<URL> getResources(final String name) throws IOException {
+        LinkedHashSet<URL> result = new LinkedHashSet<>();
+        Set<File> seenJars = new HashSet<>();
+        appendUnique(findResources(name), result, seenJars);
+        ClassLoader parent = getParent();
+        Enumeration<URL> parentResources = (parent != null)
+                ? parent.getResources(name)
+                : ClassLoader.getSystemResources(name);
+        appendUnique(parentResources, result, seenJars);
+        return Collections.enumeration(result);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void addURL(final URL url) {
         super.addURL(url);
     }
 
-    private Class oldFindClass(String name) throws ClassNotFoundException {
-        return super.findClass(name);
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    protected Class<?> findClass(final String name) throws ClassNotFoundException {
+        throw new ClassNotFoundException(name);
     }
 
-    @Override
-    protected Class findClass(String name) throws ClassNotFoundException {
-        throw new ClassNotFoundException(name);
+    private static void appendUnique(Enumeration<URL> in, Set<URL> out, Set<File> seenJars) {
+        while (in.hasMoreElements()) {
+            URL u = in.nextElement();
+            File jar = jarFileOf(u);
+            if (jar == null) {
+                out.add(u); // directory or non-file URL — URL identity is enough
+            } else if (seenJars.add(jar)) {
+                out.add(u); // first occurrence of this jar wins
+            }
+        }
+    }
+
+    private static File jarFileOf(URL u) {
+        if (!"jar".equals(u.getProtocol())) return null;
+        String s = u.toString();
+        int bang = s.indexOf("!/");
+        if (bang < 0) return null;
+        String inner = s.substring(4, bang); // strip "jar:" prefix
+        if (!inner.startsWith("file:")) return null;
+        try {
+            return canonicalFile(new File(URI.create(inner)));
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    private static File canonicalFile(File f) {
+        try {
+            // Path.toRealPath follows symlinks on every platform; File.getCanonicalFile
+            // only does so on UNIX, which is why we don't use it here.
+            return f.toPath().toRealPath().toFile();
+        } catch (IOException e) {
+            try {
+                return f.getCanonicalFile();
+            } catch (IOException e2) {
+                return f.getAbsoluteFile();
+            }
+        }
     }
 }

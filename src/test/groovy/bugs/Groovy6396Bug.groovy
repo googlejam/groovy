@@ -16,11 +16,15 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy6396Bug extends GroovyTestCase {
+import static groovy.test.GroovyAssert.assertScript
+
+
+class Groovy6396Bug {
+    @Test
     void testClassUsageInInterfaceDef() {
         assertScript """
             def stack3 = new LinkedList<String>(['1', '2', '3'])

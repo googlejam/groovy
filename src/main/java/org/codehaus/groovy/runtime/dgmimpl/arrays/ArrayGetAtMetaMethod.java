@@ -18,9 +18,15 @@
  */
 package org.codehaus.groovy.runtime.dgmimpl.arrays;
 
+/** {@code getAt} on an array, with an {@code int} index. */
 public abstract class ArrayGetAtMetaMethod extends ArrayMetaMethod {
+
+    /**
+     * Declares a single {@code int} parameter, the index passed to
+     * {@code getAt}.
+     */
     protected ArrayGetAtMetaMethod() {
-        parameterTypes = INTEGER_CLASS_ARR;
+        setParametersTypes(INTEGER_CLASS_ARR);
     }
 
     @Override

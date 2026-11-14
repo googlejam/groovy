@@ -18,6 +18,9 @@
  */
 package org.apache.groovy.util;
 
+/**
+ * Utility methods for interacting with system properties in a safe manner.
+ */
 public class SystemUtil {
     /**
      * Sets a system property from a {@code name=value} String.
@@ -49,7 +52,6 @@ public class SystemUtil {
     /**
      * Sets a system property from a {@code name=value} String.
      * If no '=' is found, the property is assumed to be a Boolean flag with value {@code true}.
-     * Does nothing if a Security manager is in place which doesn't allow the operation.
      *
      * @param nameValue the non-null name=value String
      * @return the found property name or null if the operation wasn't successful
@@ -69,7 +71,6 @@ public class SystemUtil {
      * <ul>
      * <li>the property isn't found</li>
      * <li>the property name is null or empty</li>
-     * <li>if a security manager exists and its checkPropertyAccess method doesn't allow access to the specified system property.</li>
      * </ul>
      *
      * @param name         the name of the system property.
@@ -90,7 +91,6 @@ public class SystemUtil {
      * <ul>
      * <li>the property isn't found</li>
      * <li>the property name is null or empty</li>
-     * <li>if a security manager exists and its checkPropertyAccess method doesn't allow access to the specified system property.</li>
      * </ul>
      *
      * @param name the name of the system property.
@@ -105,7 +105,6 @@ public class SystemUtil {
      * <ul>
      * <li>the property isn't found</li>
      * <li>the property name is null or empty</li>
-     * <li>if a security manager exists and its checkPropertyAccess method doesn't allow access to the specified system property.</li>
      * </ul>
      *
      * @param name the name of the system property.
@@ -118,6 +117,24 @@ public class SystemUtil {
             // suppress exception
         }
         return false;
+    }
+
+    /**
+     * Retrieves a Boolean System property, supporting an opt-out (default-true)
+     * flag: absent property yields the default, an explicit value is parsed.
+     *
+     * @param name the name of the system property.
+     * @param def the default value when the property is not set
+     * @return the parsed Boolean system property or the default value
+     */
+    public static boolean getBooleanSafe(String name, boolean def) {
+        try {
+            String value = System.getProperty(name);
+            return (value == null) ? def : Boolean.parseBoolean(value);
+        } catch (SecurityException ignore) {
+            // suppress exception
+        }
+        return def;
     }
 
     /**
@@ -138,7 +155,7 @@ public class SystemUtil {
     }
 
     /**
-     * Retrieves an Long System property
+     * Retrieves a Long System property
      *
      * @param name the name of the system property.
      * @param def the default value

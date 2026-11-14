@@ -16,20 +16,20 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-/**
- */
-class ToStringBug extends GroovyTestCase {
+final class ToStringBug {
 
+    @Test
     void testBug() {
         def value = toString()
         assert value != null
     }
 
+    @Override
     String toString() {
-        return super.toString() + "[hey]"
+        return super.toString() + '[hey]'
     }
 }

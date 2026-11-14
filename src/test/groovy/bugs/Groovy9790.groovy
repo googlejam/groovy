@@ -16,10 +16,10 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
 import groovy.transform.CompileStatic
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 import static groovy.test.GroovyAssert.assertScript
 import static groovy.test.GroovyAssert.shouldFail
@@ -56,6 +56,20 @@ final class Groovy9790 {
     }
 
     @Test
+    void testLambdaWithNoExplicitType() {
+        assertScript '''
+            @groovy.transform.CompileStatic
+            void test() {
+                java.util.stream.IntStream.range(0, 2).forEach(
+                    i -> { assert i >= 0 && i < 2 }
+                )
+            }
+
+            test()
+        '''
+    }
+
+    @Test
     void testLambdaWithIncompatibleType() {
         def err = shouldFail '''
             @groovy.transform.CompileStatic
@@ -67,7 +81,6 @@ final class Groovy9790 {
 
             test()
         '''
-
-        assert err.toString().contains('The inferred type[int] is not compatible with the parameter type[java.lang.String]')
+        assert err.message =~ /Expected type int for lambda parameter: s/
     }
 }

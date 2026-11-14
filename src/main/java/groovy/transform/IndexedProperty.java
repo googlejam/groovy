@@ -20,6 +20,7 @@ package groovy.transform;
 
 import org.codehaus.groovy.transform.GroovyASTTransformationClass;
 
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -28,7 +29,8 @@ import java.lang.annotation.Target;
 /**
  * Field annotation used with properties to provide an indexed getter and setter for the property.
  * Groovy provides nice GPath syntax support for accessing indexed properties but Java tools
- * or frameworks may expect the JavaBean style setters and getters.
+ * or frameworks may expect the JavaBean style getters and setters.
+ * Only the getter is produced when an immutable field can be determined.
  * <p>
  * <em>Example usage:</em> suppose you have a class with the following properties:
  * <pre>
@@ -63,7 +65,7 @@ import java.lang.annotation.Target;
  * The normal Groovy property getters and setters will also be created.
  * <p>
  * <p>More examples:</p>
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * import groovy.transform.IndexedProperty
  *
  * class Group {
@@ -98,9 +100,12 @@ import java.lang.annotation.Target;
  *
  * @since 1.7.3
  */
-@java.lang.annotation.Documented
+@Documented
 @Retention(RetentionPolicy.SOURCE)
-@Target({ElementType.FIELD})
-@GroovyASTTransformationClass("org.codehaus.groovy.transform.IndexedPropertyASTTransformation")
+@Target(ElementType.FIELD)
+@GroovyASTTransformationClass({
+        "org.codehaus.groovy.transform.IndexedPropertyASTStubber",
+        "org.codehaus.groovy.transform.IndexedPropertyASTTransformation"
+})
 public @interface IndexedProperty {
 }

@@ -31,6 +31,7 @@ import org.codehaus.groovy.control.SourceUnit;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.net.URL;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -42,6 +43,14 @@ public class JavaStubCompilationUnit extends CompilationUnit {
 
     private int stubCount;
 
+    /**
+     * Creates a compilation unit that generates Java stubs into the supplied
+     * destination directory.
+     *
+     * @param config the compiler configuration
+     * @param gcl the Groovy class loader to use
+     * @param destDir the destination directory for generated stubs
+     */
     public JavaStubCompilationUnit(final CompilerConfiguration config, final GroovyClassLoader gcl, File destDir) {
         super(config, null, gcl);
 
@@ -49,9 +58,8 @@ public class JavaStubCompilationUnit extends CompilationUnit {
             Map<String, Object> options = configuration.getJointCompilationOptions();
             destDir = (File) options.get("stubDir");
         }
-        boolean useJava5 = CompilerConfiguration.isPostJDK5(configuration.getTargetBytecode());
         String encoding = configuration.getSourceEncoding();
-        stubGenerator = new JavaStubGenerator(destDir, false, useJava5, encoding);
+        stubGenerator = new JavaStubGenerator(destDir, false, encoding);
 
         addPhaseOperation((final SourceUnit source, final GeneratorContext context, final ClassNode classNode) -> {
             new VariableScopeVisitor(source).visitClass(classNode);
@@ -68,20 +76,43 @@ public class JavaStubCompilationUnit extends CompilationUnit {
         }, Phases.CONVERSION);
     }
 
+    /**
+     * Creates a compilation unit that generates Java stubs into the configured
+     * stub directory.
+     *
+     * @param config the compiler configuration
+     * @param gcl the Groovy class loader to use
+     */
     public JavaStubCompilationUnit(final CompilerConfiguration config, final GroovyClassLoader gcl) {
         this(config, gcl, null);
     }
 
+    /**
+     * Returns the number of stubs generated during the last compilation run.
+     *
+     * @return the generated stub count
+     */
     public int getStubCount() {
         return stubCount;
     }
 
+    /**
+     * Compiles sources through the conversion phase to generate stubs only.
+     *
+     * @throws CompilationFailedException if stub generation fails
+     */
     @Override
     public void compile() throws CompilationFailedException {
         stubCount = 0;
         super.compile(Phases.CONVERSION);
     }
 
+    /**
+     * Configures the compilation unit and makes the target directory visible to
+     * the Groovy class loader.
+     *
+     * @param config the compiler configuration to apply
+     */
     @Override
     public void configure(final CompilerConfiguration config) {
         super.configure(config);
@@ -93,6 +124,13 @@ public class JavaStubCompilationUnit extends CompilationUnit {
         }
     }
 
+    /**
+     * Adds a source file when its extension is accepted for stub generation.
+     *
+     * @param file the source file to add
+     * @return the created source unit, or {@code null} if the extension is not
+     * accepted
+     */
     @Override
     public SourceUnit addSource(final File file) {
         if (hasAcceptedFileExtension(file.getName())) {
@@ -101,6 +139,13 @@ public class JavaStubCompilationUnit extends CompilationUnit {
         return null;
     }
 
+    /**
+     * Adds a source URL when its extension is accepted for stub generation.
+     *
+     * @param url the source URL to add
+     * @return the created source unit, or {@code null} if the extension is not
+     * accepted
+     */
     @Override
     public SourceUnit addSource(URL url) {
         if (hasAcceptedFileExtension(url.getPath())) {
@@ -110,11 +155,8 @@ public class JavaStubCompilationUnit extends CompilationUnit {
     }
 
     private boolean hasAcceptedFileExtension(String name) {
-        String lowerCasedName = name.toLowerCase();
-        for (String extension : configuration.getScriptExtensions()) {
-            if (lowerCasedName.endsWith(extension))
-                return true;
-        }
-        return false;
+        String lowerCasedName = name.toLowerCase(Locale.ROOT);
+        String extension = lowerCasedName.substring(lowerCasedName.lastIndexOf('.') + 1);
+        return configuration.getScriptExtensions().contains(extension);
     }
 }

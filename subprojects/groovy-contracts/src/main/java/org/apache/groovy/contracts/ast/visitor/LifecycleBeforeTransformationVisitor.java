@@ -18,6 +18,7 @@
  */
 package org.apache.groovy.contracts.ast.visitor;
 
+import org.apache.groovy.contracts.common.spi.AnnotationProcessor;
 import org.apache.groovy.contracts.common.spi.Lifecycle;
 import org.apache.groovy.contracts.common.spi.ProcessingContextInformation;
 import org.apache.groovy.contracts.util.LifecycleImplementationLoader;
@@ -31,7 +32,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * <p>AST transformation visitor which is triggered before applying {@link org.apache.groovy.contracts.common.spi.AnnotationProcessor}
+ * <p>AST transformation visitor which is triggered before applying {@link AnnotationProcessor}
  * related transformations.</p>
  *
  * @see AnnotationProcessorVisitor
@@ -40,6 +41,13 @@ public class LifecycleBeforeTransformationVisitor extends BaseVisitor {
 
     private final ProcessingContextInformation pci;
 
+    /**
+     * Creates a visitor that runs lifecycle hooks before annotation processors are applied.
+     *
+     * @param sourceUnit the source unit currently being transformed
+     * @param source the reader source backing the source unit
+     * @param pci per-class processing context shared across the contracts pipeline
+     */
     public LifecycleBeforeTransformationVisitor(SourceUnit sourceUnit, ReaderSource source, final ProcessingContextInformation pci) {
         super(sourceUnit, source);
 
@@ -47,6 +55,11 @@ public class LifecycleBeforeTransformationVisitor extends BaseVisitor {
         this.pci = pci;
     }
 
+    /**
+     * Invokes all registered pre-processing lifecycle hooks for the class, its constructors, and its methods.
+     *
+     * @param node the class being visited
+     */
     @Override
     public void visitClass(ClassNode node) {
         super.visitClass(node);

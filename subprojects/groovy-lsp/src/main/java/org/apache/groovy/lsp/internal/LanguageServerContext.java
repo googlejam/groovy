@@ -1,0 +1,818 @@
+/*
+ *  Licensed to the Apache Software Foundation (ASF) under one
+ *  or more contributor license agreements.  See the NOTICE file
+ *  distributed with this work for additional information
+ *  regarding copyright ownership.  The ASF licenses this file
+ *  to you under the Apache License, Version 2.0 (the
+ *  "License"); you may not use this file except in compliance
+ *  with the License.  You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing,
+ *  software distributed under the License is distributed on an
+ *  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *  KIND, either express or implied.  See the License for the
+ *  specific language governing permissions and limitations
+ *  under the License.
+ */
+package org.apache.groovy.lsp.internal;
+
+import org.apache.groovy.lsp.internal.compile.CompilationSnapshot;
+import org.apache.groovy.lsp.internal.compile.CompiledDocument;
+import org.apache.groovy.lsp.internal.compile.CompilerSettings;
+import org.apache.groovy.lsp.internal.compile.GroovyCompiler;
+import org.apache.groovy.lsp.internal.compile.ImportSupport;
+import org.apache.groovy.lsp.internal.compile.WorkspaceLayout;
+import org.apache.groovy.lsp.internal.compile.WorkspaceScanner;
+import org.apache.groovy.lsp.internal.diagnostic.DiagnosticConverter;
+import org.apache.groovy.lsp.internal.position.PositionEncoding;
+import org.apache.groovy.lsp.internal.protocol.ClientFeatures;
+import org.apache.groovy.lsp.internal.util.Uris;
+import org.apache.groovy.lsp.internal.workspace.DocumentStore;
+import org.apache.groovy.lsp.internal.workspace.TextDocument;
+import org.codehaus.groovy.control.CompilerConfiguration;
+import org.codehaus.groovy.control.customizers.CompilationCustomizer;
+
+import org.eclipse.lsp4j.ApplyWorkspaceEditParams;
+import org.eclipse.lsp4j.ClientCapabilities;
+import org.eclipse.lsp4j.Diagnostic;
+import org.eclipse.lsp4j.ProgressParams;
+import org.eclipse.lsp4j.PublishDiagnosticsParams;
+import org.eclipse.lsp4j.WorkDoneProgressBegin;
+import org.eclipse.lsp4j.WorkDoneProgressCreateParams;
+import org.eclipse.lsp4j.WorkDoneProgressEnd;
+import org.eclipse.lsp4j.WorkspaceEdit;
+import org.eclipse.lsp4j.jsonrpc.messages.Either;
+import org.eclipse.lsp4j.services.LanguageClient;
+
+import java.net.URI;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
+/**
+ * Mutable session state for one language-server process.
+ */
+public final class LanguageServerContext {
+
+    private final DocumentStore documents = new DocumentStore();
+    private final GroovyCompiler compiler = new GroovyCompiler();
+    private final WorkspaceScanner scanner = new WorkspaceScanner();
+    private final DiagnosticConverter diagnostics = new DiagnosticConverter();
+    private final Object compileLock = new Object();
+    /** Serializes publishing so notifications reach the client in snapshot order. */
+    private final Object publishLock = new Object();
+
+    private final AtomicReference<LanguageClient> client = new AtomicReference<>();
+    private final AtomicReference<ClientCapabilities> clientCapabilities = new AtomicReference<>();
+    private final AtomicReference<PositionEncoding> positionEncoding = new AtomicReference<>(PositionEncoding.UTF16);
+    private final AtomicReference<CompilerSettings> settings = new AtomicReference<>(CompilerSettings.defaults());
+    private final AtomicReference<CompilationSnapshot> snapshot = new AtomicReference<>(CompilationSnapshot.EMPTY);
+    private final AtomicReference<ClassLoader> parentLoader = new AtomicReference<>();
+    private final AtomicReference<CompilerConfiguration> hostConfiguration = new AtomicReference<>();
+    private volatile boolean initialized;
+    private volatile boolean shutdown;
+    private volatile Integer exitCode;
+    private final Set<URI> workspaceFolders = Collections.synchronizedSet(new LinkedHashSet<>());
+    private final Set<URI> publishedDiagnosticUris = new LinkedHashSet<>();
+
+    private final ScheduledExecutorService debounce = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread thread = new Thread(r, "groovy-lsp-compile");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private ScheduledFuture<?> pendingCompile;
+    private long compileGeneration;
+    private long compileEpoch;
+    private String compileFingerprint;
+
+    /**
+     * Creates a session.
+     */
+    public LanguageServerContext() {
+        // Fields are initialized at declaration; the constructor exists so tests can build a session directly.
+    }
+
+    /**
+     * Compiles open documents plus workspace sources and publishes diagnostics.
+     * Unchanged inputs reuse the last snapshot. A debounced compile that has
+     * already started yields to this call and does not publish after it.
+     */
+    public CompilationSnapshot recompile() {
+        final long epoch;
+        synchronized (this) {
+            if (shutdown) {
+                return snapshot.get();
+            }
+            epoch = claimCompile();
+        }
+        return compileAndPublish(epoch, true);
+    }
+
+    /**
+     * Schedules a recompile after {@code delayMs} of quiet.
+     *
+     * @param delayMs debounce delay
+     */
+    public synchronized void scheduleRecompile(final long delayMs) {
+        if (shutdown || debounce.isShutdown()) {
+            return;
+        }
+        // A highlighter client sets groovy.compile=false so didChange stays
+        // a lexer-only update and does not start a second compiler.
+        if ("false".equals(settings.get().getExtra().get("compile"))) {
+            return;
+        }
+        long epoch = claimCompile();
+        pendingCompile = debounce.schedule(() -> compileAndPublish(epoch, false), delayMs, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * Caller holds {@code this}. Cancels a not-yet-started debounce and
+     * advances the epoch so a debounce already waiting on {@code compileLock}
+     * does not publish afterwards.
+     *
+     * @return the epoch this caller owns
+     */
+    private long claimCompile() {
+        if (pendingCompile != null) {
+            pendingCompile.cancel(false);
+            pendingCompile = null;
+        }
+        return ++compileEpoch;
+    }
+
+    private CompilationSnapshot compileAndPublish(final long epoch, final boolean authoritative) {
+        synchronized (compileLock) {
+            final long generation;
+            final CompilerSettings effective;
+            final List<Path> extra;
+            final Collection<TextDocument> open;
+            final ClassLoader loader;
+            final String fingerprint;
+            final boolean reuse;
+            synchronized (this) {
+                if (shutdown || (!authoritative && epoch != compileEpoch)) {
+                    return snapshot.get();
+                }
+                List<URI> folders;
+                synchronized (workspaceFolders) {
+                    folders = new ArrayList<>(workspaceFolders);
+                }
+                effective = WorkspaceLayout.withInferred(settings.get(), folders);
+                extra = scanner.scan(folders, effective.getSourcePaths(), effective.getIgnoredDirectories());
+                open = documents.snapshot();
+                loader = compileParentLoader();
+                fingerprint = fingerprint(open, extra, effective, loader, hostConfiguration.get());
+                if (fingerprint.equals(compileFingerprint) && snapshot.get() != CompilationSnapshot.EMPTY) {
+                    // Another compile already committed this snapshot but may
+                    // not have published yet. Fall through to publishDiagnostics.
+                    reuse = true;
+                    generation = compileGeneration;
+                } else {
+                    reuse = false;
+                    generation = ++compileGeneration;
+                }
+            }
+            if (!reuse) {
+                String token = "groovy-compile-" + generation;
+                beginProgress(token, "Compiling Groovy");
+                CompilationSnapshot compiled;
+                try {
+                    compiled = compiler.compile(open, extra, effective, loader, hostConfiguration.get());
+                } finally {
+                    endProgress(token);
+                }
+                synchronized (this) {
+                    if (generation == compileGeneration) {
+                        compileFingerprint = fingerprint;
+                        snapshot.set(compiled);
+                    }
+                }
+            }
+            // Publish before releasing compileLock, so a waiter cannot
+            // observe the snapshot and then race this publication.
+            publishDiagnostics();
+        }
+        return snapshot.get();
+    }
+
+    /**
+     * Publishes diagnostics for every compiled document and clears
+     * diagnostics for URIs that dropped out of the snapshot.
+     * <p>
+     * Concurrent callers are serialized, from reading the snapshot to the last
+     * notification, so a caller returns only once the diagnostics of the
+     * current snapshot have been sent, whichever caller sent them, and an
+     * older snapshot's diagnostics never arrive after a newer one's.
+     * {@link #compileAndPublish} calls this while holding {@code compileLock}.
+     * Lock order: {@code compileLock}, then {@code publishLock}, then this.
+     * {@code publishLock} is never taken while holding this.
+     */
+    public void publishDiagnostics() {
+        LanguageClient languageClient = client.get();
+        if (languageClient == null) {
+            return;
+        }
+        synchronized (publishLock) {
+            List<CompiledDocument> documents;
+            Set<URI> dropped;
+            synchronized (this) {
+                CompilationSnapshot committed = snapshot.get();
+                if (committed == null) {
+                    return;
+                }
+                documents = List.copyOf(committed.documents());
+                Set<URI> currentUris = new LinkedHashSet<>();
+                for (CompiledDocument document : documents) {
+                    if (document.getUri() != null) {
+                        currentUris.add(document.getUri());
+                    }
+                }
+                dropped = new LinkedHashSet<>(publishedDiagnosticUris);
+                dropped.removeAll(currentUris);
+                publishedDiagnosticUris.clear();
+                publishedDiagnosticUris.addAll(currentUris);
+            }
+            for (URI uri : dropped) {
+                languageClient.publishDiagnostics(new PublishDiagnosticsParams(uri.toString(), List.of()));
+            }
+            for (CompiledDocument document : documents) {
+                languageClient.publishDiagnostics(paramsFor(document));
+            }
+        }
+    }
+
+    private PublishDiagnosticsParams paramsFor(final CompiledDocument document) {
+        PublishDiagnosticsParams params = new PublishDiagnosticsParams(
+                document.getUri().toString(), diagnosticsFor(document));
+        if (document.getVersion() >= 0) {
+            params.setVersion(document.getVersion());
+        }
+        return params;
+    }
+
+    /**
+     * Compiler and unused-import diagnostics for one document.
+     * Used by both push and pull diagnostic paths.
+     *
+     * @param document compiled document
+     * @return diagnostics, never {@code null}
+     */
+    public List<Diagnostic> diagnosticsFor(final CompiledDocument document) {
+        if (document == null) {
+            return List.of();
+        }
+        PositionEncoding encoding = positionEncoding.get();
+        List<Diagnostic> converted = new ArrayList<>(diagnostics.convert(document, encoding));
+        converted.addAll(ImportSupport.unusedDiagnostics(document, encoding));
+        return converted;
+    }
+
+    /**
+     * Sends {@code workspace/applyEdit} when a client is connected,
+     * {@code edit} is non-null, and the client advertises apply-edit
+     * support.
+     *
+     * @param edit workspace edit to send
+     */
+    public void applyEdit(final WorkspaceEdit edit) {
+        LanguageClient languageClient = client.get();
+        if (languageClient == null || edit == null
+                || !ClientFeatures.applyEdit(clientCapabilities.get())) {
+            return;
+        }
+        languageClient.applyEdit(new ApplyWorkspaceEditParams(edit));
+    }
+
+    /**
+     * Text of the open buffer for {@code uri}, or the last compiled text
+     * when that file is not open.
+     *
+     * @param uri document URI
+     * @return the text, or {@code null} when {@code uri} is null or unknown
+     */
+    public String documentText(final URI uri) {
+        if (uri == null) {
+            return null;
+        }
+        TextDocument open = documents.get(uri);
+        if (open != null) {
+            return open.getText();
+        }
+        CompiledDocument compiled = snapshot.get().get(uri);
+        return compiled == null ? null : compiled.getText();
+    }
+
+    /**
+     * Workspace folder URIs currently held by the session.
+     *
+     * @return a copy of the folder set
+     */
+    public List<URI> workspaceFolders() {
+        synchronized (workspaceFolders) {
+            return List.copyOf(workspaceFolders);
+        }
+    }
+
+    /**
+     * Classpath entries from the current {@link CompilerSettings}.
+     *
+     * @return the classpath
+     */
+    public List<String> classpath() {
+        return settings.get().getClasspath();
+    }
+
+    /**
+     * Source paths from the current {@link CompilerSettings}.
+     *
+     * @return the source paths
+     */
+    public List<String> sourcePaths() {
+        return settings.get().getSourcePaths();
+    }
+
+    /**
+     * Extra {@code groovy.*} settings from the current compiler settings.
+     *
+     * @return the extra map
+     */
+    public Map<String, String> extraSettings() {
+        return settings.get().getExtra();
+    }
+
+    /**
+     * One extra {@code groovy.*} setting from workspace configuration.
+     *
+     * @param key setting name without the {@code groovy.} prefix
+     * @return the value, or {@code null}
+     */
+    public String extraSetting(final String key) {
+        return key == null ? null : extraSettings().get(key);
+    }
+
+    /**
+     * Protocol name of this session's {@link PositionEncoding}.
+     *
+     * @return the {@code PositionEncodingKind} string
+     */
+    public String positionEncoding() {
+        return positionEncoding.get().protocolName();
+    }
+
+    private void beginProgress(final String token, final String title) {
+        LanguageClient languageClient = client.get();
+        if (languageClient == null || !ClientFeatures.workDoneProgress(clientCapabilities.get())) {
+            return;
+        }
+        try {
+            WorkDoneProgressBegin begin = new WorkDoneProgressBegin();
+            begin.setTitle(title);
+            begin.setCancellable(false);
+            languageClient.createProgress(new WorkDoneProgressCreateParams(Either.forLeft(token)));
+            languageClient.notifyProgress(new ProgressParams(Either.forLeft(token), Either.forLeft(begin)));
+        } catch (RuntimeException ignored) {
+            // progress is optional
+        }
+    }
+
+    private void endProgress(final String token) {
+        LanguageClient languageClient = client.get();
+        if (languageClient == null || !ClientFeatures.workDoneProgress(clientCapabilities.get())) {
+            return;
+        }
+        try {
+            languageClient.notifyProgress(new ProgressParams(Either.forLeft(token),
+                    Either.forLeft(new WorkDoneProgressEnd())));
+        } catch (RuntimeException ignored) {
+            // progress is optional
+        }
+    }
+
+    /**
+     * Releases background threads after the in-progress compile finishes.
+     * Lock order matches {@link #recompile()}: {@code compileLock}, then this.
+     */
+    public void close() {
+        synchronized (compileLock) {
+            synchronized (this) {
+                shutdown = true;
+                if (pendingCompile != null) {
+                    pendingCompile.cancel(false);
+                    pendingCompile = null;
+                }
+                debounce.shutdownNow();
+                compiler.close();
+                documents.clear();
+            }
+        }
+    }
+
+    /**
+     * Open buffers for this session.
+     *
+     * @return the document store
+     */
+    public DocumentStore getDocuments() {
+        return documents;
+    }
+
+    /**
+     * Open buffer for {@code uri}, or a snapshot of the last compiled text
+     * when the file is not open.
+     *
+     * @param uri document URI
+     * @return the document, or {@code null}
+     */
+    public TextDocument documentFor(final String uri) {
+        TextDocument document = documents.get(uri);
+        if (document != null) {
+            return document;
+        }
+        CompiledDocument compiled = snapshot.get().get(uri);
+        return compiled == null ? null : compiled.toTextDocument();
+    }
+
+    /**
+     * Compiler {@link #recompile()} uses for open documents and workspace
+     * sources.
+     *
+     * @return the session compiler
+     */
+    public GroovyCompiler getCompiler() {
+        return compiler;
+    }
+
+    /**
+     * Scanner that finds Groovy and Java sources for the next compile.
+     *
+     * @return the workspace scanner
+     */
+    public WorkspaceScanner getScanner() {
+        return scanner;
+    }
+
+    /**
+     * Maps compiler messages onto {@link Diagnostic}s.
+     *
+     * @return the diagnostic converter
+     */
+    public DiagnosticConverter getDiagnostics() {
+        return diagnostics;
+    }
+
+    /**
+     * Client that receives diagnostics, progress, and edits.
+     *
+     * @return the client, or {@code null} when none is connected
+     */
+    public LanguageClient getClient() {
+        return client.get();
+    }
+
+    /**
+     * Records the language client for this session.
+     *
+     * @param client connected client, or {@code null}
+     */
+    public void setClient(final LanguageClient client) {
+        this.client.set(client);
+    }
+
+    /**
+     * Client capabilities recorded for this session, normally from
+     * {@code initialize}.
+     *
+     * @return the capabilities, or {@code null} when unset
+     */
+    public ClientCapabilities getClientCapabilities() {
+        return clientCapabilities.get();
+    }
+
+    /**
+     * Records client capabilities supplied by {@code initialize}.
+     *
+     * @param clientCapabilities capabilities, or {@code null}
+     */
+    public void setClientCapabilities(final ClientCapabilities clientCapabilities) {
+        this.clientCapabilities.set(clientCapabilities);
+    }
+
+    /**
+     * Position encoding for this session. The value starts as UTF-16
+     * until {@code initialize} negotiates one.
+     *
+     * @return the encoding
+     */
+    public PositionEncoding getPositionEncoding() {
+        return positionEncoding.get();
+    }
+
+    /**
+     * Records the position encoding negotiated during {@code initialize}.
+     *
+     * @param positionEncoding encoding to use
+     */
+    public void setPositionEncoding(final PositionEncoding positionEncoding) {
+        this.positionEncoding.set(positionEncoding);
+    }
+
+    /**
+     * Compiler settings for the next compile.
+     *
+     * @return the current settings
+     */
+    public synchronized CompilerSettings getSettings() {
+        return settings.get();
+    }
+
+    /**
+     * Replaces the compiler settings and clears the compile fingerprint
+     * so the next compile builds a fresh snapshot.
+     *
+     * @param settings replacement settings
+     */
+    public synchronized void setSettings(final CompilerSettings settings) {
+        this.settings.set(settings);
+        compileFingerprint = null;
+    }
+
+    /**
+     * Parent loader for the next compile. {@code null} uses this class's loader.
+     * The compile fingerprint is cleared when the loader identity changes.
+     * In-place {@code URLClassLoader#addURL} is visible on the next compile
+     * because the fingerprint includes that loader's URLs.
+     *
+     * @param parentLoader parent loader, or {@code null}
+     */
+    public synchronized void setParentLoader(final ClassLoader parentLoader) {
+        ClassLoader previous = this.parentLoader.getAndSet(parentLoader);
+        if (previous != parentLoader) {
+            compileFingerprint = null;
+        }
+    }
+
+    /**
+     * @return the parent loader, or {@code null} when the session default is used
+     */
+    public synchronized ClassLoader getParentLoader() {
+        return parentLoader.get();
+    }
+
+    /**
+     * Compiler configuration from Console or groovysh. {@code null} uses
+     * a fresh tooling configuration. Every call drops the cached compile,
+     * including a repeat with the same instance, so an in-place customizer
+     * edit is visible on the next compile. Callers that query in a loop
+     * invoke this only when the configuration was replaced or edited.
+     *
+     * @param configuration host configuration, or {@code null}
+     */
+    public synchronized void setHostConfiguration(final CompilerConfiguration configuration) {
+        this.hostConfiguration.set(configuration);
+        compileFingerprint = null;
+    }
+
+    /**
+     * @return the host configuration, or {@code null}
+     */
+    public synchronized CompilerConfiguration getHostConfiguration() {
+        return hostConfiguration.get();
+    }
+
+    private ClassLoader compileParentLoader() {
+        ClassLoader loader = parentLoader.get();
+        return loader == null ? getClass().getClassLoader() : loader;
+    }
+
+    /**
+     * Latest compilation result. The initial value is empty.
+     *
+     * @return the current snapshot
+     */
+    public CompilationSnapshot getSnapshot() {
+        return snapshot.get();
+    }
+
+    /**
+     * Stores a compilation snapshot for later requests.
+     *
+     * @param snapshot replacement snapshot
+     */
+    public void setSnapshot(final CompilationSnapshot snapshot) {
+        this.snapshot.set(snapshot);
+    }
+
+    /**
+     * Whether the {@code initialized} notification has been recorded.
+     *
+     * @return the flag
+     */
+    public boolean isInitialized() {
+        return initialized;
+    }
+
+    /**
+     * Records whether the {@code initialized} notification has been handled.
+     *
+     * @param initialized new flag
+     */
+    public void setInitialized(final boolean initialized) {
+        this.initialized = initialized;
+    }
+
+    /**
+     * Whether this session has been shut down.
+     *
+     * @return the flag
+     */
+    public boolean isShutdown() {
+        return shutdown;
+    }
+
+    /**
+     * Records the shutdown flag. {@link #close()} also sets it.
+     *
+     * @param shutdown new flag
+     */
+    public void setShutdown(final boolean shutdown) {
+        this.shutdown = shutdown;
+    }
+
+    /**
+     * Process exit code stored for this session.
+     *
+     * @return the code, or {@code null} when unset
+     */
+    public Integer getExitCode() {
+        return exitCode;
+    }
+
+    /**
+     * Records the process exit code from {@code exit}.
+     *
+     * @param exitCode code to report, or {@code null}
+     */
+    public void setExitCode(final Integer exitCode) {
+        this.exitCode = exitCode;
+    }
+
+    /**
+     * Live set of workspace folder URIs held by the session.
+     *
+     * @return the synchronized folder set; {@link #workspaceFolders()} is a copy
+     */
+    public Set<URI> getWorkspaceFolders() {
+        return workspaceFolders;
+    }
+
+    /**
+     * Adds a workspace folder after normalizing {@code file:} drive letters.
+     *
+     * @param uri folder URI
+     */
+    public void addWorkspaceFolder(final URI uri) {
+        if (uri != null) {
+            workspaceFolders.add(Uris.normalize(uri));
+        }
+    }
+
+    /**
+     * Removes a workspace folder using the same normalization as add.
+     *
+     * @param uri folder URI
+     */
+    public void removeWorkspaceFolder(final URI uri) {
+        if (uri != null) {
+            workspaceFolders.remove(Uris.normalize(uri));
+        }
+    }
+
+    /**
+     * Stable key for the current compile inputs. Equal keys skip recompilation.
+     *
+     * @param open open documents
+     * @param extra workspace files
+     * @param settings effective settings
+     * @return a fingerprint
+     */
+    public static String fingerprint(final Collection<TextDocument> open, final Collection<Path> extra,
+                                     final CompilerSettings settings) {
+        return fingerprint(open, extra, settings, null);
+    }
+
+    /**
+     * Stable key including the parent loader identity and, for a
+     * {@link URLClassLoader}, its URL list so in-place {@code addURL} is
+     * visible.
+     *
+     * @param open open documents
+     * @param extra workspace files
+     * @param settings effective settings
+     * @param parentLoader compile parent loader
+     * @return a fingerprint
+     */
+    public static String fingerprint(final Collection<TextDocument> open, final Collection<Path> extra,
+                                     final CompilerSettings settings, final ClassLoader parentLoader) {
+        return fingerprint(open, extra, settings, parentLoader, null);
+    }
+
+    /**
+     * Stable key of the settings, parent-loader identity,
+     * {@code URLClassLoader} URLs, host {@link CompilerConfiguration}
+     * identity, script base class, and each compilation customizer's class
+     * and identity. Editing a customizer in place does not change this key.
+     * {@link #setHostConfiguration} drops the cached compile so that edit
+     * is picked up.
+     *
+     * @param hostConfiguration console or groovysh configuration, or {@code null}
+     * @return a fingerprint
+     */
+    public static String fingerprint(final Collection<TextDocument> open, final Collection<Path> extra,
+                                     final CompilerSettings settings, final ClassLoader parentLoader,
+                                     final CompilerConfiguration hostConfiguration) {
+        StringBuilder builder = new StringBuilder();
+        builder.append(settings.getClasspath()).append('|')
+                .append(settings.getSourcePaths()).append('|')
+                .append(settings.getIgnoredDirectories()).append('|')
+                .append(settings.isGrapeEnabled()).append('|')
+                .append(settings.isAstTestEnabled()).append('|')
+                .append(settings.getThroughPhase()).append('|')
+                .append(settings.getExtra()).append('|')
+                .append(System.identityHashCode(parentLoader)).append('|');
+        appendHostConfiguration(builder, hostConfiguration);
+        appendLoaderUrls(builder, parentLoader);
+        appendOpenDocuments(builder, open);
+        appendExtraFiles(builder, extra);
+        return builder.toString();
+    }
+
+    private static void appendLoaderUrls(final StringBuilder builder, final ClassLoader parentLoader) {
+        if (parentLoader instanceof URLClassLoader urls) {
+            URL[] listed = urls.getURLs();
+            if (listed != null) {
+                for (URL url : listed) {
+                    builder.append('|').append(url == null ? "" : url.toExternalForm());
+                }
+            }
+        }
+    }
+
+    private static void appendOpenDocuments(final StringBuilder builder, final Collection<TextDocument> open) {
+        if (open == null) {
+            return;
+        }
+        for (TextDocument document : open) {
+            builder.append('\n').append(document.getUri()).append(':')
+                    .append(document.getVersion()).append(':')
+                    .append(document.getText().hashCode());
+        }
+    }
+
+    private static void appendExtraFiles(final StringBuilder builder, final Collection<Path> extra) {
+        if (extra == null) {
+            return;
+        }
+        for (Path path : extra) {
+            long mtime = 0L;
+            long size = 0L;
+            try {
+                mtime = Files.getLastModifiedTime(path).toMillis();
+                size = Files.size(path);
+            } catch (Exception ignored) {
+                // missing files still participate as a zero stamp
+            }
+            builder.append('\n').append(path).append(':').append(mtime).append(':').append(size);
+        }
+    }
+
+    private static void appendHostConfiguration(final StringBuilder builder,
+                                                final CompilerConfiguration host) {
+        if (host == null) {
+            builder.append('0');
+            return;
+        }
+        builder.append(System.identityHashCode(host)).append('|')
+                .append(Objects.toString(host.getScriptBaseClass(), ""));
+        for (CompilationCustomizer customizer : host.getCompilationCustomizers()) {
+            builder.append('|').append(customizer.getClass().getName())
+                    .append('@').append(System.identityHashCode(customizer));
+        }
+    }
+}

@@ -16,11 +16,10 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
 /**
  * A base class for testing constructors
- * 
  */
 
  class TestDerived extends TestBase {
@@ -28,7 +27,7 @@ package groovy.bugs
      TestDerived(String aFoo) {
          super(aFoo)
      }
-     
+
      def doSomething() {
          "TestDerived" + super.doSomething()
      }

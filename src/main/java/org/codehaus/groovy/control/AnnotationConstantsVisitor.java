@@ -19,116 +19,60 @@
 package org.codehaus.groovy.control;
 
 import org.codehaus.groovy.ast.ClassCodeVisitorSupport;
-import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.MethodNode;
-import org.codehaus.groovy.ast.expr.CastExpression;
-import org.codehaus.groovy.ast.expr.ConstantExpression;
-import org.codehaus.groovy.ast.expr.Expression;
 import org.codehaus.groovy.ast.stmt.ExpressionStatement;
 import org.codehaus.groovy.ast.stmt.ReturnStatement;
 import org.codehaus.groovy.ast.stmt.Statement;
-import org.codehaus.groovy.classgen.Verifier;
-
-import java.math.BigDecimal;
 
 import static org.apache.groovy.ast.tools.ExpressionUtils.transformInlineConstants;
 
 /**
- * Visitor to resolve constants in annotation definitions.
+ * Resolves constants in annotation definitions.
  */
 public class AnnotationConstantsVisitor extends ClassCodeVisitorSupport {
-    private SourceUnit source;
-    private boolean inAnnotationDef;
 
-    public void visitClass(ClassNode node, SourceUnit source) {
-        this.source = source;
-        this.inAnnotationDef = node.isAnnotationDefinition();
-        super.visitClass(node);
-        this.inAnnotationDef = false;
-    }
+    private boolean annotationDef;
+    private SourceUnit sourceUnit;
 
-    @Override
-    protected void visitConstructorOrMethod(MethodNode node, boolean isConstructor) {
-        if (!inAnnotationDef) return;
-        visitStatement(node.getFirstStatement(), node.getReturnType());
-    }
-
-    private static void visitStatement(Statement statement, ClassNode returnType) {
-        if (statement instanceof ReturnStatement) {
-            // normal path
-            ReturnStatement rs = (ReturnStatement) statement;
-            rs.setExpression(transformConstantExpression(rs.getExpression(), returnType));
-        } else if (statement instanceof ExpressionStatement) {
-            // path for JavaStubGenerator
-            ExpressionStatement es = (ExpressionStatement) statement;
-            es.setExpression(transformConstantExpression(es.getExpression(), returnType));
-        }
-    }
-
-    private static Expression transformConstantExpression(Expression val, ClassNode returnType) {
-        ClassNode returnWrapperType = ClassHelper.getWrapper(returnType);
-        if (val instanceof ConstantExpression) {
-            Expression result = revertType(val, returnWrapperType);
-            if (result != null) {
-                return result;
-            }
-            return val;
-        }
-        if (val instanceof CastExpression) {
-            CastExpression castExp = (CastExpression) val;
-            Expression castee = castExp.getExpression();
-            if (castee instanceof ConstantExpression) {
-                if (ClassHelper.getWrapper(castee.getType()).isDerivedFrom(returnWrapperType)) {
-                    return castee;
-                }
-                Expression result = revertType(castee, returnWrapperType);
-                if (result != null) {
-                    return result;
-                }
-                return castee;
-            }
-        }
-        return transformInlineConstants(val, returnType);
-    }
-
-    private static Expression revertType(Expression val, ClassNode returnWrapperType) {
-        ConstantExpression ce = (ConstantExpression) val;
-        if (ClassHelper.Character_TYPE.equals(returnWrapperType) && ClassHelper.STRING_TYPE.equals(val.getType())) {
-            return configure(val, Verifier.transformToPrimitiveConstantIfPossible((ConstantExpression) val));
-        }
-        ClassNode valWrapperType = ClassHelper.getWrapper(val.getType());
-        if (ClassHelper.Integer_TYPE.equals(valWrapperType)) {
-            Integer i = (Integer) ce.getValue();
-            if (ClassHelper.Character_TYPE.equals(returnWrapperType)) {
-                return configure(val, new ConstantExpression((char) i.intValue(), true));
-            }
-            if (ClassHelper.Short_TYPE.equals(returnWrapperType)) {
-                return configure(val, new ConstantExpression(i.shortValue(), true));
-            }
-            if (ClassHelper.Byte_TYPE.equals(returnWrapperType)) {
-                return configure(val, new ConstantExpression(i.byteValue(), true));
-            }
-        }
-        if (ClassHelper.BigDecimal_TYPE.equals(valWrapperType)) {
-            BigDecimal bd = (BigDecimal) ce.getValue();
-            if (ClassHelper.Float_TYPE.equals(returnWrapperType)) {
-                return configure(val, new ConstantExpression(bd.floatValue(), true));
-            }
-            if (ClassHelper.Double_TYPE.equals(returnWrapperType)) {
-                return configure(val, new ConstantExpression(bd.doubleValue(), true));
-            }
-        }
-        return null;
-    }
-
-    private static Expression configure(Expression orig, Expression result) {
-        result.setSourcePosition(orig);
-        return result;
-    }
-
+    /**
+     * Returns the source unit currently being visited.
+     *
+     * @return the active source unit
+     */
     @Override
     protected SourceUnit getSourceUnit() {
-        return source;
+        return sourceUnit;
+    }
+
+    /**
+     * Visits an annotation definition and inlines constant values in its members.
+     *
+     * @param classNode the annotation class to inspect
+     * @param sourceUnit the owning source unit
+     */
+    public void visitClass(final ClassNode classNode, final SourceUnit sourceUnit) {
+        this.sourceUnit = sourceUnit;
+        this.annotationDef = classNode.isAnnotationDefinition();
+        super.visitClass(classNode);
+        this.annotationDef = false;
+    }
+
+    /**
+     * Rewrites annotation member bodies so constant expressions are resolved eagerly.
+     *
+     * @param node the constructor or method to inspect
+     * @param isConstructor whether {@code node} is a constructor
+     */
+    @Override
+    protected void visitConstructorOrMethod(final MethodNode node, final boolean isConstructor) {
+        if (annotationDef) {
+            Statement statement = node.getFirstStatement();
+            if (statement instanceof ReturnStatement rs) {
+                rs.setExpression(transformInlineConstants(rs.getExpression(), node.getReturnType()));
+            } else if (statement instanceof ExpressionStatement es) {
+                es.setExpression(transformInlineConstants(es.getExpression(), node.getReturnType()));
+            }
+        }
     }
 }

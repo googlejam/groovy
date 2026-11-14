@@ -16,28 +16,33 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy7031Bug extends GroovyTestCase {
 
+import static groovy.test.GroovyAssert.assertScript
+
+
+class Groovy7031Bug {
+
+    @Test
     void test() {
         assertScript """
         @groovy.transform.CompileStatic
         class StaticClass {
             StringHolder holder = new StringHolder()
             String str
-        
+
             StaticClass(String s) {
                 str = holder.str = s
             }
         }
-        
+
         class StringHolder {
             String str
         }
-        
+
         def s = new StaticClass('test')
         assert s.holder.str == 'test'
         assert s.str == 'test'

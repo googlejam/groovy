@@ -18,6 +18,9 @@
  */
 package org.codehaus.groovy.classgen
 
+/**
+ * Emits the numeric helper source used by {@code NumberMathModificationInfo}.
+ */
 def ops = [
         'plus',
         'minus',
@@ -27,12 +30,15 @@ def ops = [
         'and',
         'xor',
         'intdiv',
-        'mod',
+        'remainder',
         'leftShift',
         'rightShift',
         'rightShiftUnsigned'
 ]
 
+/**
+ * Maps boxed numeric type names to their primitive counterparts.
+ */
 def numbers = ['Byte':'byte', 'Short':'short', 'Integer':'int', 'Long':'long', 'Float':'float', 'Double':'double']
 
 ops.each { op ->
@@ -77,14 +83,33 @@ ops.each { op ->
     }
 }
 
+/**
+ * Determines whether the supplied boxed number type is floating point.
+ *
+ * @param number the boxed number type name
+ * @return {@code true} for {@code Double} or {@code Float}
+ */
 def isFloatingPoint(number) {
     number == 'Double' || number == 'Float'
 }
 
+/**
+ * Determines whether the supplied boxed number type is {@code Long}.
+ *
+ * @param number the boxed number type name
+ * @return {@code true} when the type is {@code Long}
+ */
 def isLong(number) {
     number == 'Long'
 }
 
+/**
+ * Returns the arithmetic operator metadata for the supplied boxed operand types.
+ *
+ * @param left the left operand type name
+ * @param right the right operand type name
+ * @return a map describing the result type and supported operators
+ */
 def getMath (left, right) {
     if (isFloatingPoint(left) || isFloatingPoint(right)) {
         return [
@@ -108,7 +133,7 @@ def getMath (left, right) {
                 and : '&',
                 xor : '^',
                 intdiv : '/',
-                mod : '%',
+                remainder : '%',
                 leftShift : '<<',
                 rightShift : '>>',
                 rightShiftUnsigned : '>>>'
@@ -125,7 +150,7 @@ def getMath (left, right) {
             and : '&',
             xor : '^',
             intdiv : '/',
-            mod : '%',
+            remainder : '%',
             leftShift : '<<',
             rightShift : '>>',
             rightShiftUnsigned : '>>>'

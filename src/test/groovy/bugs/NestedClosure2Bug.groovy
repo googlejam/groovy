@@ -16,14 +16,17 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-/**
- */
-class NestedClosure2Bug extends TestSupport {
-     
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.assertScript
+
+final class NestedClosure2Bug {
+
     Object f
-     
+
+    @Test
     void testFieldBug() {
         def closure = {
             return {
@@ -35,7 +38,8 @@ class NestedClosure2Bug extends TestSupport {
         value = value()
         assert f == 123
     }
-     
+
+    @Test
     void testBugOutsideOfScript() {
         def a = 123
         def b = 456
@@ -43,9 +47,9 @@ class NestedClosure2Bug extends TestSupport {
             def c = 999
             return {
                 f = 2222111
-                
+
                 def d = 678
-                return { 
+                return {
                     assert f == 2222111
                     return a
                 }
@@ -55,16 +59,17 @@ class NestedClosure2Bug extends TestSupport {
         def c3 = c2()
         def value = c3()
 
-        assert f == 2222111        
+        assert f == 2222111
         assert value == 123
     }
-    
+
+    @Test
     void testBug() {
-        assertScript """
+        assertScript '''
             def a = 123
             def closure = {
                 return {
-                    return { 
+                    return {
                         return a
                     }
                 }
@@ -72,8 +77,8 @@ class NestedClosure2Bug extends TestSupport {
             def c2 = closure()
             def c3 = c2()
             value = c3()
-            
+
             assert value == 123
-"""
+        '''
     }
 }

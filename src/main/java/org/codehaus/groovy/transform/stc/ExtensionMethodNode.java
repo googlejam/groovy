@@ -22,15 +22,31 @@ import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.MethodNode;
 import org.codehaus.groovy.ast.Parameter;
 import org.codehaus.groovy.ast.stmt.Statement;
+import org.codehaus.groovy.runtime.DefaultGroovyMethods;
 
 /**
  * Represents method nodes which are used by the static type checker to virtually add methods
- * coming from {@link org.codehaus.groovy.runtime.DefaultGroovyMethods DGM-like} methods.
+ * coming from {@link DefaultGroovyMethods DGM-like} methods.
  */
 public class ExtensionMethodNode extends MethodNode {
     private final MethodNode extensionMethodNode;
     private final boolean isStaticExtension; // true if it's a static method
-    
+
+    /**
+     * Builds a synthetic method the type checker can select in place of
+     * {@code extensionMethodNode}. The declaration passed here is what
+     * callers see; {@link #getExtensionMethodNode} keeps the original.
+     *
+     * @param extensionMethodNode original extension method
+     * @param name name presented to the type checker
+     * @param modifiers access flags of the synthetic method
+     * @param returnType return type presented to the type checker
+     * @param parameters parameters presented to the type checker
+     * @param exceptions exceptions presented to the type checker
+     * @param code method body forwarded to {@link MethodNode}
+     * @param isStaticExtension {@code true} when the original method is a
+     *        static extension
+     */
     public ExtensionMethodNode(
             MethodNode extensionMethodNode,
             String name, int modifiers, ClassNode returnType, Parameter[] parameters, ClassNode[] exceptions, Statement code, boolean isStaticExtension) {
@@ -39,16 +55,34 @@ public class ExtensionMethodNode extends MethodNode {
         this.isStaticExtension = isStaticExtension;
     }
 
+    /**
+     * Builds a non-static extension node by passing false as the
+     * static-extension flag to the other constructor.
+     *
+     * @param extensionMethodNode original extension method
+     * @param name name presented to the type checker
+     * @param modifiers access flags of the synthetic method
+     * @param returnType return type presented to the type checker
+     * @param parameters parameters presented to the type checker
+     * @param exceptions exceptions presented to the type checker
+     * @param code method body forwarded to {@link MethodNode}
+     */
     public ExtensionMethodNode(
             MethodNode extensionMethodNode,
             String name, int modifiers, ClassNode returnType, Parameter[] parameters, ClassNode[] exceptions, Statement code) {
         this(extensionMethodNode, name, modifiers, returnType, parameters, exceptions, code, false);
     }
 
+    /**
+     * Returns the original extension method represented by this synthetic node.
+     */
     public MethodNode getExtensionMethodNode() {
         return extensionMethodNode;
     }
 
+    /**
+     * Indicates whether this node models a static extension method.
+     */
     public boolean isStaticExtension() {
         return isStaticExtension;
     }

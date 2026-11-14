@@ -34,6 +34,7 @@ import org.codehaus.groovy.ast.stmt.ExpressionStatement;
 import org.codehaus.groovy.ast.stmt.Statement;
 import org.codehaus.groovy.control.io.ReaderSource;
 
+import static org.codehaus.groovy.ast.tools.GeneralUtils.block;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.boolX;
 
 /**
@@ -41,6 +42,11 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.boolX;
  */
 public class PreconditionGenerator extends BaseGenerator {
 
+    /**
+     * Creates a generator for precondition support code.
+     *
+     * @param source the reader source backing the current source unit
+     */
     public PreconditionGenerator(final ReaderSource source) {
         super(source);
     }
@@ -49,7 +55,7 @@ public class PreconditionGenerator extends BaseGenerator {
      * Injects a precondition assertion statement in the given <tt>method</tt>, based on the given <tt>annotation</tt> of
      * type {@link Requires}.
      *
-     * @param method       the {@link org.codehaus.groovy.ast.MethodNode} for assertion injection
+     * @param method       the {@link MethodNode} for assertion injection
      * @param precondition the {@link org.apache.groovy.contracts.domain.Precondition} the assertion statement should be generated from
      */
     public void generatePreconditionAssertionStatement(final MethodNode method, final org.apache.groovy.contracts.domain.Precondition precondition) {
@@ -58,11 +64,11 @@ public class PreconditionGenerator extends BaseGenerator {
         BlockStatement blockStatement;
 
         final BlockStatement originalBlockStatement = precondition.originalBlockStatement();
-        // if use execution tracker flag is found in the meta-data the annotation closure visitor discovered
+        // if useExecutionTracker flag is found in the meta-data the annotation closure visitor discovered
         // method calls which might be subject to cycling boolean expressions -> no inline mode possible
         final boolean useExecutionTracker = originalBlockStatement == null || Boolean.TRUE.equals(originalBlockStatement.getNodeMetaData(AnnotationClosureVisitor.META_DATA_USE_EXECUTION_TRACKER));
 
-        if (!useExecutionTracker && Boolean.TRUE.equals(method.getNodeMetaData(META_DATA_USE_INLINE_MODE))) {
+        if (!useExecutionTracker && Boolean.TRUE.equals(method.getNodeMetaData(inlineModeKey(Precondition.class)))) {
             blockStatement = getInlineModeBlockStatement(precondition.originalBlockStatement());
         } else {
             blockStatement = wrapAssertionBooleanExpression(method.getDeclaringClass(), method, preconditionBooleanExpression, "precondition");
@@ -72,19 +78,17 @@ public class PreconditionGenerator extends BaseGenerator {
     }
 
     /**
-     * Generates the default precondition statement for {@link org.codehaus.groovy.ast.MethodNode} instances with
-     * the {@link org.apache.groovy.contracts.annotations.meta.Precondition} annotation.
+     * Generates the default precondition statement for {@link MethodNode} instances with
+     * the {@link Precondition} annotation.
      *
-     * @param type       the current {@link org.codehaus.groovy.ast.ClassNode}
-     * @param methodNode the {@link org.codehaus.groovy.ast.MethodNode} with a {@link org.apache.groovy.contracts.annotations.meta.Precondition} annotation
+     * @param type       the current {@link ClassNode}
+     * @param methodNode the {@link MethodNode} with a {@link Precondition} annotation
      */
     public void generateDefaultPreconditionStatement(final ClassNode type, final MethodNode methodNode) {
+        boolean noPreconditionInHierarchy = AnnotationUtils.getAnnotationNodeInHierarchyWithMetaAnnotation(type.getSuperClass(), methodNode, ClassHelper.makeWithoutCaching(Precondition.class)).isEmpty();
+        if (noPreconditionInHierarchy) return;
 
-        // if another precondition is available we'll evaluate to false
-        boolean isAnotherPreconditionAvailable = AnnotationUtils.getAnnotationNodeInHierarchyWithMetaAnnotation(type.getSuperClass(), methodNode, ClassHelper.makeWithoutCaching(Precondition.class)).size() > 0;
-        if (!isAnotherPreconditionAvailable) return;
-
-        // if there is another preconditio up the inheritance path, we need a default precondition with FALSE
+        // if there is another precondition up the inheritance path, we need a default precondition with FALSE
         // e.g. C1 <no precondition> : C2 <item != null> == false || item != null
         BooleanExpression preconditionBooleanExpression = boolX(ConstantExpression.FALSE);
         preconditionBooleanExpression = addCallsToSuperMethodNodeAnnotationClosure(type, methodNode, Precondition.class, preconditionBooleanExpression, false);
@@ -98,12 +102,11 @@ public class PreconditionGenerator extends BaseGenerator {
     }
 
     private void addPrecondition(MethodNode method, BlockStatement blockStatement) {
-        final BlockStatement modifiedMethodCode = new BlockStatement();
+        final BlockStatement modifiedMethodCode = block();
         modifiedMethodCode.addStatements(blockStatement.getStatements());
 
-        if (method.getCode() instanceof BlockStatement) {
+        if (method.getCode() instanceof BlockStatement methodBlock) {
 
-            BlockStatement methodBlock = (BlockStatement) method.getCode();
             for (Statement statement : methodBlock.getStatements()) {
                 if (method instanceof ConstructorNode && statement instanceof ExpressionStatement && ((ExpressionStatement) statement).getExpression() instanceof ConstructorCallExpression) {
                     modifiedMethodCode.getStatements().add(0, statement);
@@ -111,7 +114,9 @@ public class PreconditionGenerator extends BaseGenerator {
                     modifiedMethodCode.getStatements().add(statement);
                 }
             }
-        } else {
+        } else if (method.getCode() != null) {
+            // guard against a null method body (e.g. a synthetic default
+            // constructor whose code is not yet populated) - GROOVY-12066
             modifiedMethodCode.addStatement(method.getCode());
         }
 

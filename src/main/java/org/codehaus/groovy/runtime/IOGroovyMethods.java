@@ -27,8 +27,9 @@ import groovy.transform.stc.FirstParam;
 import groovy.transform.stc.FromString;
 import groovy.transform.stc.PickFirstResolver;
 import groovy.transform.stc.SimpleType;
+import groovy.util.regex.RegexGuard;
 import org.apache.groovy.io.StringBuilderWriter;
-import org.codehaus.groovy.runtime.callsite.BooleanClosureWrapper;
+import org.codehaus.groovy.runtime.BooleanClosureWrapper;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -48,11 +49,14 @@ import java.io.PrintWriter;
 import java.io.Reader;
 import java.io.UnsupportedEncodingException;
 import java.io.Writer;
+import java.lang.reflect.Modifier;
+import java.lang.reflect.Proxy;
 import java.util.Arrays;
 import java.util.Formatter;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.logging.Logger;
 import java.util.regex.Pattern;
 
@@ -60,11 +64,11 @@ import static org.codehaus.groovy.ast.tools.ClosureUtils.hasSingleStringArg;
 import static org.codehaus.groovy.runtime.DefaultGroovyMethods.callClosureForLine;
 
 /**
- * This class defines new groovy methods for Files, URLs, URIs which appear
- * on normal JDK classes inside the Groovy environment.
+ * This class defines new groovy methods for Readers, Writers, InputStreams and
+ * OutputStreams which appear on normal JDK classes inside the Groovy environment.
  * Static methods are used with the first parameter being the destination class,
- * i.e. <code>public static long size(File self)</code>
- * provides a <code>size()</code> method for <code>File</code>.
+ * i.e. <code>public static T eachLine(InputStream self, Closure c)</code>
+ * provides a <code>eachLine(Closure c)</code> method for <code>InputStream</code>.
  * <p>
  * NOTE: While this class contains many 'public' static methods, it is
  * primarily regarded as an internal class (its internal package name
@@ -78,6 +82,11 @@ public class IOGroovyMethods extends DefaultGroovyMethodsSupport {
 
     private static final Logger LOG = Logger.getLogger(IOGroovyMethods.class.getName());
 
+    private static final Map<String, Class<?>> PRIMITIVE_CLASSES = Map.of(
+            "boolean", boolean.class, "byte", byte.class, "char", char.class, "short", short.class,
+            "int", int.class, "long", long.class, "float", float.class, "double", double.class,
+            "void", void.class);
+
     /**
      * Overloads the leftShift operator for Writer to allow an object to be written
      * using Groovy's default representation for the object.
@@ -89,7 +98,7 @@ public class IOGroovyMethods extends DefaultGroovyMethodsSupport {
      * @since 1.0
      */
     public static Writer leftShift(Writer self, Object value) throws IOException {
-        InvokerHelper.write(self, value);
+        FormatHelper.write(self, value);
         return self;
     }
 
@@ -104,7 +113,7 @@ public class IOGroovyMethods extends DefaultGroovyMethodsSupport {
      * @since 2.1.0
      */
     public static Appendable leftShift(Appendable self, Object value) throws IOException {
-        InvokerHelper.append(self, value);
+        FormatHelper.append(self, value);
         return self;
     }
 
@@ -269,6 +278,12 @@ public class IOGroovyMethods extends DefaultGroovyMethodsSupport {
 
     /**
      * Create an object input stream for this input stream using the given class loader.
+     * The class loader also resolves the interfaces of a serialized {@link Proxy}.
+     * <p>
+     * Classes named in the stream are resolved without running their static initializers,
+     * matching how {@link ObjectInputStream} resolves them itself. A class that is actually
+     * deserialized is still initialized when its instance is created. Primitive types
+     * such as {@code int.class} resolve as they do for {@link ObjectInputStream}.
      *
      * @param inputStream an input stream
      * @param classLoader the class loader to use when loading the class
@@ -279,11 +294,53 @@ public class IOGroovyMethods extends DefaultGroovyMethodsSupport {
     public static ObjectInputStream newObjectInputStream(InputStream inputStream, final ClassLoader classLoader) throws IOException {
         return new ObjectInputStream(inputStream) {
             @Override
-            protected Class<?> resolveClass(ObjectStreamClass desc) throws IOException, ClassNotFoundException {
-                return Class.forName(desc.getName(), true, classLoader);
+            protected Class<?> resolveProxyClass(String[] interfaces) throws IOException, ClassNotFoundException {
+                return loadProxyClass(interfaces, classLoader);
+            }
 
+            @Override
+            protected Class<?> resolveClass(ObjectStreamClass desc) throws IOException, ClassNotFoundException {
+                String name = desc.getName();
+                try {
+                    return Class.forName(name, false, classLoader);
+                } catch (ClassNotFoundException e) {
+                    // GROOVY-12676: Class.forName cannot load primitive types; ObjectInputStream maps them itself
+                    Class<?> primitive = PRIMITIVE_CLASSES.get(name);
+                    if (primitive == null) throw e;
+                    return primitive;
+                }
             }
         };
+    }
+
+    /**
+     * Mirrors {@link ObjectInputStream}'s own proxy class resolution, but loads the
+     * interfaces through the given class loader instead of the latest user-defined one.
+     */
+    private static Class<?> loadProxyClass(String[] interfaces, ClassLoader classLoader) throws ClassNotFoundException {
+        // GROOVY-12681: a proxy class must be defined where its non-public interfaces live
+        ClassLoader nonPublicLoader = null;
+        boolean hasNonPublicInterface = false;
+        Class<?>[] classes = new Class<?>[interfaces.length];
+        for (int i = 0; i < interfaces.length; i += 1) {
+            Class<?> c = Class.forName(interfaces[i], false, classLoader);
+            if (!Modifier.isPublic(c.getModifiers())) {
+                if (!hasNonPublicInterface) {
+                    nonPublicLoader = c.getClassLoader();
+                    hasNonPublicInterface = true;
+                } else if (nonPublicLoader != c.getClassLoader()) {
+                    throw new IllegalAccessError("conflicting non-public interface class loaders");
+                }
+            }
+            classes[i] = c;
+        }
+        try {
+            @SuppressWarnings("deprecation") // Proxy.getProxyClass is what ObjectInputStream itself uses
+            Class<?> proxyClass = Proxy.getProxyClass(hasNonPublicInterface ? nonPublicLoader : classLoader, classes);
+            return proxyClass;
+        } catch (IllegalArgumentException e) {
+            throw new ClassNotFoundException(null, e);
+        }
     }
 
     /**
@@ -316,7 +373,7 @@ public class IOGroovyMethods extends DefaultGroovyMethodsSupport {
     }
 
     /**
-     * Create a new ObjectInputStream for this file and pass it to the closure.
+     * Create a new ObjectInputStream for this input stream and pass it to the closure.
      * This method ensures the stream is closed after the closure returns.
      *
      * @param inputStream an input stream
@@ -331,7 +388,7 @@ public class IOGroovyMethods extends DefaultGroovyMethodsSupport {
     }
 
     /**
-     * Create a new ObjectInputStream for this file and pass it to the closure.
+     * Create a new ObjectInputStream for this input stream and pass it to the closure.
      * This method ensures the stream is closed after the closure returns.
      *
      * @param inputStream an input stream
@@ -539,7 +596,7 @@ public class IOGroovyMethods extends DefaultGroovyMethodsSupport {
                 if (line == null) {
                     break;
                 } else {
-                    List vals = Arrays.asList(pattern.split(line));
+                    List vals = Arrays.asList(pattern.split(RegexGuard.ambientGuard(line)));
                     result = closure.call(hasSingleStringArg(closure) ? vals.get(0) : vals);
                 }
             }
@@ -646,8 +703,7 @@ public class IOGroovyMethods extends DefaultGroovyMethodsSupport {
      * @since 1.0
      */
     public static String readLine(Reader self) throws IOException {
-        if (self instanceof BufferedReader) {
-            BufferedReader br = (BufferedReader) self;
+        if (self instanceof BufferedReader br) {
             return br.readLine();
         }
         if (self.markSupported()) {
@@ -854,7 +910,7 @@ public class IOGroovyMethods extends DefaultGroovyMethodsSupport {
      */
     public static String getText(BufferedReader reader) throws IOException {
         StringBuilder answer = new StringBuilder();
-        // reading the content of the file within a char buffer
+        // reading the content of the reader within a char buffer
         // allow to keep the correct line endings
         char[] charBuffer = new char[8192];
         int nbCharRead /* = 0*/;
@@ -883,7 +939,7 @@ public class IOGroovyMethods extends DefaultGroovyMethodsSupport {
      */
     public static byte[] getBytes(InputStream is) throws IOException {
         ByteArrayOutputStream answer = new ByteArrayOutputStream();
-        // reading the content of the file within a byte buffer
+        // reading the content of the stream within a byte buffer
         byte[] byteBuffer = new byte[8192];
         int nbByteRead /* = 0*/;
         try {
@@ -989,7 +1045,7 @@ public class IOGroovyMethods extends DefaultGroovyMethodsSupport {
     }
 
     /**
-     * Standard iterator for a input stream which iterates through the stream
+     * Standard iterator for an input stream which iterates through the stream
      * content in a byte-based fashion.
      *
      * @param self an InputStream object
@@ -1449,18 +1505,18 @@ public class IOGroovyMethods extends DefaultGroovyMethodsSupport {
      * according to a closure which returns true if the line should be included.
      * Both Reader and Writer are closed after the operation.
      *
-     * @param reader  a reader, closed after the call
-     * @param writer  a writer, closed after the call
-     * @param closure the closure which returns booleans
+     * @param reader    a reader, closed after the call
+     * @param writer    a writer, closed after the call
+     * @param predicate the closure which returns booleans
      * @throws IOException if an IOException occurs.
      * @since 1.0
      */
-    public static void filterLine(Reader reader, Writer writer, @ClosureParams(value=SimpleType.class, options="java.lang.String") Closure closure) throws IOException {
+    public static void filterLine(Reader reader, Writer writer, @ClosureParams(value=SimpleType.class, options="java.lang.String") Closure predicate) throws IOException {
         BufferedReader br = new BufferedReader(reader);
         BufferedWriter bw = new BufferedWriter(writer);
         String line;
         try {
-            BooleanClosureWrapper bcw = new BooleanClosureWrapper(closure);
+            BooleanClosureWrapper bcw = new BooleanClosureWrapper(predicate);
             while ((line = br.readLine()) != null) {
                 if (bcw.call(line)) {
                     bw.write(line);
@@ -1489,28 +1545,32 @@ public class IOGroovyMethods extends DefaultGroovyMethodsSupport {
      * used to stream the filtered lines to a destination.  The closure should
      * return <code>true</code> if the line should be passed to the writer.
      *
-     * @param reader  this reader
-     * @param closure a closure used for filtering
+     * @param reader    this reader
+     * @param predicate a closure used for filtering
      * @return a Writable which will use the closure to filter each line
      *         from the reader when the Writable#writeTo(Writer) is called.
      * @since 1.0
      */
-    public static Writable filterLine(Reader reader, @ClosureParams(value=SimpleType.class, options="java.lang.String") final Closure closure) {
-        final BufferedReader br = new BufferedReader(reader);
+    public static Writable filterLine(final Reader reader, @ClosureParams(value=SimpleType.class, options="java.lang.String") final Closure predicate) {
         return new Writable() {
             @Override
             public Writer writeTo(Writer out) throws IOException {
-                BufferedWriter bw = new BufferedWriter(out);
-                String line;
-                BooleanClosureWrapper bcw = new BooleanClosureWrapper(closure);
-                while ((line = br.readLine()) != null) {
-                    if (bcw.call(line)) {
-                        bw.write(line);
-                        bw.newLine();
+                final BufferedReader br = new BufferedReader(reader);
+                try {
+                    BufferedWriter bw = new BufferedWriter(out);
+                    String line;
+                    BooleanClosureWrapper bcw = new BooleanClosureWrapper(predicate);
+                    while ((line = br.readLine()) != null) {
+                        if (bcw.call(line)) {
+                            bw.write(line);
+                            bw.newLine();
+                        }
                     }
+                    bw.flush();
+                    return out;
+                } finally {
+                    closeWithWarning(br);
                 }
-                bw.flush();
-                return out;
             }
 
             @Override

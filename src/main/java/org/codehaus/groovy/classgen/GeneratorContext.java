@@ -24,9 +24,8 @@ import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.CompileUnit;
 import org.codehaus.groovy.ast.MethodNode;
 
-
 /**
- * A context shared across generations of a class and its inner classes
+ * A context shared across generations of a class and its inner classes.
  */
 public class GeneratorContext {
 
@@ -34,48 +33,93 @@ public class GeneratorContext {
     private int closureClassIdx = 1;
     private int syntheticMethodIdx = 0;
     private final CompileUnit compileUnit;
-    
-    public GeneratorContext(CompileUnit compileUnit) {
+
+    /**
+     * Creates a new generator context for the given compile unit.
+     *
+     * @param compileUnit the compile unit this context is associated with
+     */
+    public GeneratorContext(final CompileUnit compileUnit) {
         this.compileUnit = compileUnit;
     }
 
-    public GeneratorContext(CompileUnit compileUnit, int innerClassOffset) {
+    /**
+     * Creates a new generator context with a custom inner class index offset.
+     *
+     * @param compileUnit the compile unit this context is associated with
+     * @param innerClassOffset the starting index for inner class naming
+     */
+    public GeneratorContext(final CompileUnit compileUnit, final int innerClassOffset) {
         this.compileUnit = compileUnit;
         this.innerClassIdx = innerClassOffset;
     }
 
+    /**
+     * Returns the current closure class index without incrementing it.
+     *
+     * @return the current closure class index
+     */
+    int getClosureClassIndex() {
+        return closureClassIdx;
+    }
+
+    /**
+     * Returns and increments the inner class index for generating unique inner class names.
+     *
+     * @return the next available inner class index
+     */
     public int getNextInnerClassIdx() {
         return innerClassIdx++;
     }
 
+    /**
+     * Returns the compile unit associated with this context.
+     *
+     * @return the compile unit
+     */
     public CompileUnit getCompileUnit() {
         return compileUnit;
     }
 
-    public String getNextClosureInnerName(ClassNode owner, ClassNode enclosingClass, MethodNode enclosingMethod) {
-        return getNextInnerName(owner, enclosingClass, enclosingMethod, "closure");
+    /**
+     * Generates the next unique closure inner class name.
+     *
+     * @param owner the owner class (currently unused but kept for API compatibility)
+     * @param enclosingClass the class that encloses the closure
+     * @param enclosingMethod the method that encloses the closure, or null if at class level
+     * @return a unique name for the closure inner class
+     */
+    public String getNextClosureInnerName(final ClassNode owner, final ClassNode enclosingClass, final MethodNode enclosingMethod) {
+        return getNextInnerName(enclosingClass, enclosingMethod, "closure");
     }
 
-    public String getNextLambdaInnerName(ClassNode owner, ClassNode enclosingClass, MethodNode enclosingMethod) {
-        return getNextInnerName(owner, enclosingClass, enclosingMethod, "lambda");
+    /**
+     * Generates the next unique lambda inner class name.
+     *
+     * @param owner the owner class (currently unused but kept for API compatibility)
+     * @param enclosingClass the class that encloses the lambda
+     * @param enclosingMethod the method that encloses the lambda, or null if at class level
+     * @return a unique name for the lambda inner class
+     */
+    public String getNextLambdaInnerName(final ClassNode owner, final ClassNode enclosingClass, final MethodNode enclosingMethod) {
+        return getNextInnerName(enclosingClass, enclosingMethod, "lambda");
     }
 
-    private String getNextInnerName(ClassNode owner, ClassNode enclosingClass, MethodNode enclosingMethod, String classifier) {
-        String methodName = "";
-        if (enclosingMethod != null) {
-            methodName = enclosingMethod.getName();
-
-            if (enclosingClass.isDerivedFrom(ClassHelper.CLOSURE_TYPE)) {
-                methodName = "";
-            } else {
-                methodName = "_" + encodeAsValidClassName(methodName);
-            }
+    private String getNextInnerName(final ClassNode enclosingClass, final MethodNode enclosingMethod, final String classifier) {
+        String typeName = "_" + classifier + closureClassIdx++;
+        if (enclosingMethod != null && !ClassHelper.isGeneratedFunction(enclosingClass)) {
+            typeName = "_" + encodeAsValidClassName(enclosingMethod.getName()) + typeName;
         }
-
-        return methodName + "_" + classifier + closureClassIdx++;
+        return typeName;
     }
 
-    public String getNextConstructorReferenceSyntheticMethodName(MethodNode enclosingMethodNode) {
+    /**
+     * Generates a unique synthetic method name for a constructor reference.
+     *
+     * @param enclosingMethodNode the method that contains the constructor reference, or null if at class level
+     * @return a unique synthetic method name for the constructor reference
+     */
+    public String getNextConstructorReferenceSyntheticMethodName(final MethodNode enclosingMethodNode) {
         return "ctorRef$"
                 + (null == enclosingMethodNode
                         ? ""
@@ -83,33 +127,39 @@ public class GeneratorContext {
                 + syntheticMethodIdx++;
     }
 
-    private static final int MIN_ENCODING = ' ';
-    private static final int MAX_ENCODING = ']';
-    private static final boolean[] CHARACTERS_TO_ENCODE = new boolean[MAX_ENCODING-MIN_ENCODING+1];
+    private static final boolean[] CHARACTERS_TO_ENCODE;
+    private static final int MIN_ENCODING, MAX_ENCODING;
     static {
-        CHARACTERS_TO_ENCODE[' '-MIN_ENCODING] = true;
-        CHARACTERS_TO_ENCODE['!'-MIN_ENCODING] = true;
-        CHARACTERS_TO_ENCODE['/'-MIN_ENCODING] = true;
-        CHARACTERS_TO_ENCODE['.'-MIN_ENCODING] = true;
-        CHARACTERS_TO_ENCODE[';'-MIN_ENCODING] = true;
-        CHARACTERS_TO_ENCODE['$'-MIN_ENCODING] = true;
-        CHARACTERS_TO_ENCODE['<'-MIN_ENCODING] = true;
-        CHARACTERS_TO_ENCODE['>'-MIN_ENCODING] = true;
-        CHARACTERS_TO_ENCODE['['-MIN_ENCODING] = true;
-        CHARACTERS_TO_ENCODE[']'-MIN_ENCODING] = true;
-        CHARACTERS_TO_ENCODE[':'-MIN_ENCODING] = true;
-        CHARACTERS_TO_ENCODE['\\'-MIN_ENCODING] = true;
+        char[] chars = {' ', '!', '"', '#', '$', '&', '\'', '(', ')', '*', '+', ',', '-', '.', '/', ':', ';', '<', '=', '>', '@', '[', '\\', ']', '^', '{', '}', '~'};
+
+        MIN_ENCODING = chars[0];
+        MAX_ENCODING = chars[chars.length - 1];
+        CHARACTERS_TO_ENCODE = new boolean[MAX_ENCODING - MIN_ENCODING + 1];
+
+        for (char c : chars) {
+            CHARACTERS_TO_ENCODE[c - MIN_ENCODING] = true;
+        }
     }
 
-    public static String encodeAsValidClassName(String name) {
-        final int l = name.length();
-        StringBuilder b = null;
+    /**
+     * Encodes a name to be a valid Java class name by replacing special characters with underscores.
+     * Characters such as operators, punctuation, and other invalid class name characters are encoded.
+     * The special names "module-info" and "package-info" are preserved unchanged.
+     *
+     * @param name the name to encode
+     * @return the encoded class name safe for use as a Java identifier
+     */
+    public static String encodeAsValidClassName(final String name) {
+        if ("module-info".equals(name) || "package-info".equals(name)) return name;
+
         int lastEscape = -1;
-        for(int i = 0; i < l; ++i) {
-            final int encodeIndex = name.charAt(i) - MIN_ENCODING;
+        StringBuilder b = null;
+        final int n = name.length();
+        for (int i = 0; i < n; i += 1) {
+            int encodeIndex = name.charAt(i) - MIN_ENCODING;
             if (encodeIndex >= 0 && encodeIndex < CHARACTERS_TO_ENCODE.length) {
                 if (CHARACTERS_TO_ENCODE[encodeIndex]) {
-                    if(b == null) {
+                    if (b == null) {
                         b = new StringBuilder(name.length() + 3);
                         b.append(name, 0, i);
                     } else {
@@ -120,9 +170,9 @@ public class GeneratorContext {
                 }
             }
         }
-        if(b == null) return name;
-        if (lastEscape == -1) throw new GroovyBugError("unexpected escape char control flow in "+name);
-        b.append(name, lastEscape + 1, l);
+        if (b == null) return name;
+        if (lastEscape == -1) throw new GroovyBugError("unexpected escape char control flow in " + name);
+        b.append(name, lastEscape + 1, n);
         return b.toString();
     }
 }

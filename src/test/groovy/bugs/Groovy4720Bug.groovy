@@ -16,17 +16,21 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
+
+import java.io.Serializable
+
 
 /**
  * Groovy-4720: Method overriding with ExpandoMetaClass is partially broken
  */
-class Groovy4720Bug extends GroovyTestCase {
+class Groovy4720Bug {
 
+    @Test
     void testBug() {
-        def instanceMethods = [DummyApi1.getMethod('test', java.io.Serializable), DummyApi2.getMethod('test', java.io.Serializable)]
+        def instanceMethods = [DummyApi1.getMethod('test', Serializable), DummyApi2.getMethod('test', Serializable)]
 
         Dummy4720.metaClass {
             for (method in instanceMethods) {

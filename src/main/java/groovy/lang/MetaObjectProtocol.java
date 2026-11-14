@@ -22,27 +22,27 @@ import java.util.List;
 
 /**
  * <p>An interface that defines the API usable by clients of Groovy's Meta Object Protocol (MOP). These methods are
- * implemented by the reference implementation of the {@link groovy.lang.MetaClass} interface.
+ * implemented by the reference implementation of the {@link MetaClass} interface.
  *
  * @see MetaClassImpl
  */
 public interface MetaObjectProtocol {
 
     /**
-     * Obtain a list of all meta properties available on this meta class
+     * Obtain a list of all meta properties available on this metaclass
      *
      * @see groovy.lang.MetaProperty
      * @return A list of MetaProperty instances
      */
     List<MetaProperty> getProperties();
     /**
-     * Obtain a list of all the meta methods available on this meta class
+     * Obtain a list of all the meta methods available on this metaclass
      *
      * @see groovy.lang.MetaMethod
      * @return A list of MetaMethod instances
      */
     List<MetaMethod> getMethods();
-    
+
     /**
      * <p>Returns an object satisfying Groovy truth if the implementing MetaClass responds to
      * a method with the given name and arguments types.
@@ -105,13 +105,12 @@ public interface MetaObjectProtocol {
      */
     MetaMethod getStaticMetaMethod(String name, Object[] args);
 
-
     /**
      * Retrieves an instance MetaMethod for the given name and argument values, using the types of the
      * argument values to establish the chosen MetaMethod
      *
      * @param name The name of the MetaMethod
-     * @param args Array containing - 1) the argument values (using which their types are then inferred), or 2) the corresponding argument types  
+     * @param args Array containing - 1) the argument values (using which their types are then inferred), or 2) the corresponding argument types
      * @return A MetaMethod or null if it doesn't exist
      */
     MetaMethod getMetaMethod(String name, Object[] args);

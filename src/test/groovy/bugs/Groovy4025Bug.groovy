@@ -16,12 +16,15 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
 import gls.CompilableTestSupport
+import org.junit.jupiter.api.Test
 
-class Groovy4025Bug extends CompilableTestSupport {
-    public void testAMethodWithBodyInAnInterface() {
+final class Groovy4025Bug extends CompilableTestSupport {
+
+    @Test
+    void testAMethodWithBodyInAnInterface() {
         shouldNotCompile """
             interface ITest {
                 def foo(a, b) {
@@ -29,8 +32,10 @@ class Groovy4025Bug extends CompilableTestSupport {
                 }
             }
         """
-    }    
-    public void testAbstractMethodInAClass() {
+    }
+
+    @Test
+    void testAbstractMethodInAClass() {
         shouldNotCompile """
             abstract class Test {
                 abstract foo(a, b) {
@@ -38,5 +43,5 @@ class Groovy4025Bug extends CompilableTestSupport {
                 }
             }
         """
-    }    
+    }
 }

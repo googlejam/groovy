@@ -16,14 +16,18 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.assertScript
+
 
 /**
  * Tests that 6821 is fixed using an explicit Outer.this notation if not using @CompileStatic
  */
-class Groovy6821Bug extends GroovyTestCase {
+class Groovy6821Bug {
+    @Test
     void testShouldAccessOuterClassMethodFromSpecialConstructorCall() {
         assertScript '''
 class Parent {
@@ -43,6 +47,7 @@ class Parent {
     assert o.test() == 'ok'
 '''
     }
+    @Test
     void testShouldAccessOuterClassMethodFromSpecialConstructorCallUsingPropertyAccess() {
         assertScript '''
 class Parent {

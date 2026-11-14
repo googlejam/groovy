@@ -16,14 +16,16 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
+
 
 /**
  * Test to fix the issue GROOVY-843.
  */
-class PropertyNameBug extends GroovyTestCase {
+class PropertyNameBug {
+    @Test
     void testNonJavaIdentifierChacactersWithJavaSyntax() {
         Map map = new HashMap()
         map.put("foo.bar", "FooBar")
@@ -31,6 +33,7 @@ class PropertyNameBug extends GroovyTestCase {
         map.put("foo.=;&|^*-+-/\\'?.*:arbitrary()[]{}%#@!", "Any character")
     }
 
+    @Test
     void testNonJavaIdentifierChacactersWithGroovySyntax() {
         def map = [:]
         map."foo.bar" = "FooBar"

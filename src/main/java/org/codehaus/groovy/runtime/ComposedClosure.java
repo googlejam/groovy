@@ -20,6 +20,8 @@ package org.codehaus.groovy.runtime;
 
 import groovy.lang.Closure;
 
+import java.io.ObjectStreamException;
+import java.io.Serial;
 import java.util.List;
 
 /**
@@ -28,7 +30,7 @@ import java.util.List;
  * <code>leftShift()</code> methods on <code>Closure</code>.
  * <p>
  * Typical usages:
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * def twice = { a {@code ->} a * 2 }
  * def inc = { b {@code ->} b + 1 }
  * def f = { x {@code ->} twice(inc(x)) } // longhand
@@ -57,10 +59,17 @@ import java.util.List;
  */
 public final class ComposedClosure<V> extends Closure<V> {
 
-    private static final long serialVersionUID = -4816724431590921285L;
+    @Serial private static final long serialVersionUID = -4816724431590921285L;
     private Closure first;
     private Closure<V> second;
 
+    /**
+     * Constructs a composed closure by chaining two closures.
+     * The first closure's output becomes the second closure's input.
+     *
+     * @param first the first closure to apply
+     * @param second the second closure to apply to the result of the first
+     */
     public ComposedClosure(Closure first, Closure<V> second) {
         super(first.clone());
         this.first = (Closure) getOwner();
@@ -91,8 +100,31 @@ public final class ComposedClosure<V> extends Closure<V> {
     }
 
     @Override
+    public Object getThisObject() {
+        return ((Closure) getOwner()).getThisObject();
+    }
+
+    @Override
     public Object clone() {
         return new ComposedClosure<V>(first, second);
+    }
+
+    /**
+     * Dehydrates both composed closures and composes the copies: a composed closure calls
+     * through them rather than through its own owner, delegate and this object.
+     */
+    @Override
+    public Closure<V> dehydrate() {
+        return new ComposedClosure<V>(first.dehydrate(), second.dehydrate());
+    }
+
+    /**
+     * Rehydrates both composed closures and composes the copies: a composed closure calls
+     * through them rather than through its own owner, delegate and this object.
+     */
+    @Override
+    public Closure<V> rehydrate(Object delegate, Object owner, Object thisObject) {
+        return new ComposedClosure<V>(first.rehydrate(delegate, owner, thisObject), second.rehydrate(delegate, owner, thisObject));
     }
 
     @Override
@@ -100,6 +132,13 @@ public final class ComposedClosure<V> extends Closure<V> {
         return first.getParameterTypes();
     }
 
+    /**
+     * Invokes this composition. Equivalent to {@link #call(Object[])}: the first closure
+     * is called with {@code args}, and its result is passed to the second.
+     *
+     * @param args arguments passed to the first closure
+     * @return the value returned by the second closure
+     */
     public Object doCall(Object... args) {
         return call(args);
     }
@@ -109,5 +148,24 @@ public final class ComposedClosure<V> extends Closure<V> {
         Object temp = first.call(args);
         if (temp instanceof List && second.getParameterTypes().length > 1) temp = ((List) temp).toArray();
         return temp instanceof Object[] ? second.call((Object[]) temp) : second.call(temp);
+    }
+
+    /**
+     * Rejects a deserialized closure whose owner/delegate/thisObject references form a cycle, which would
+     * otherwise recurse indefinitely on invocation. See {@link Closure#checkForReferenceCycle}.
+     */
+    @Serial
+    private Object readResolve() throws ObjectStreamException {
+        Closure.checkForReferenceCycle(this);
+        return this;
+    }
+
+    /**
+     * A composed closure calls through {@code first} and then {@code second}, so those are
+     * recursion edges in addition to the three the cycle check walks by default.
+     */
+    @Override
+    protected Object[] additionalReferences() {
+        return new Object[]{first, second};
     }
 }

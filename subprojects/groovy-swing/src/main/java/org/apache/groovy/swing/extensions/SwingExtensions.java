@@ -19,6 +19,7 @@
 package org.apache.groovy.swing.extensions;
 
 import groovy.lang.GString;
+import org.codehaus.groovy.runtime.ArrayGroovyMethods;
 import org.codehaus.groovy.runtime.DefaultGroovyMethods;
 import org.codehaus.groovy.runtime.typehandling.ShortTypeHandling;
 
@@ -80,14 +81,14 @@ public class SwingExtensions {
     }
 
     /**
-     * Returns an {@link java.util.Iterator} which traverses the Container one Component at a time.
+     * Returns an {@link Iterator} which traverses the Container one Component at a time.
      *
      * @param self a Container
      * @return an Iterator for a Container
      * @since 1.6.4
      */
     public static Iterator<Component> iterator(Container self) {
-        return DefaultGroovyMethods.iterator(self.getComponents());
+        return ArrayGroovyMethods.iterator(self.getComponents());
     }
 
     /**
@@ -145,7 +146,7 @@ public class SwingExtensions {
     }
 
     /**
-     * Returns an {@link java.util.Iterator} which traverses the ButtonGroup one AbstractButton at a time.
+     * Returns an {@link Iterator} which traverses the ButtonGroup one AbstractButton at a time.
      *
      * @param self a ButtonGroup
      * @return an Iterator for a ButtonGroup
@@ -179,7 +180,7 @@ public class SwingExtensions {
     }
 
     /**
-     * Returns an {@link java.util.Iterator} which traverses the ListModel one element at a time.
+     * Returns an {@link Iterator} which traverses the ListModel one element at a time.
      *
      * @param self a ListModel
      * @return an Iterator for a ListModel
@@ -189,16 +190,29 @@ public class SwingExtensions {
         return new Iterator<Object>() {
             private int index = 0;
 
+            /**
+             * Returns whether the cursor is still before the end of the model.
+             *
+             * @return {@code true} when {@code index} is less than the model size
+             */
             @Override
             public boolean hasNext() {
                 return index < self.getSize();
             }
 
+            /**
+             * Returns the element at the cursor and advances the cursor by one.
+             *
+             * @return that element
+             */
             @Override
             public Object next() {
                 return self.getElementAt(index++);
             }
 
+            /**
+             * Refuses removal. A {@code ListModel} is not modified through this iterator.
+             */
             @Override
             public void remove() {
                 throw new UnsupportedOperationException("ListModel is immutable.");
@@ -227,8 +241,8 @@ public class SwingExtensions {
      * increasing the size of the model by 1.
      *
      * @param self  a DefaultListModel
-     * @param index an index
-     * @param e     the element to insert at the given index
+     * @param index the index of the element to replace
+     * @param e     the element to store at the given index
      * @since 1.6.4
      */
     public static void putAt(DefaultListModel<Object> self, int index, Object e) {
@@ -246,7 +260,7 @@ public class SwingExtensions {
     }
 
     /**
-     * Returns an {@link java.util.Iterator} which traverses the DefaultListModel one element at a time.
+     * Returns an {@link Iterator} which traverses the DefaultListModel one element at a time.
      *
      * @param self a DefaultListModel
      * @return an Iterator for a DefaultListModel
@@ -256,16 +270,30 @@ public class SwingExtensions {
         return new Iterator<Object>() {
             private int index = 0;
 
+            /**
+             * Returns whether the cursor is non-negative and still inside the model.
+             *
+             * @return {@code true} when another element can be read or removed
+             */
             @Override
             public boolean hasNext() {
                 return index > -1 && index < self.getSize();
             }
 
+            /**
+             * Returns the element at the cursor and advances the cursor by one.
+             *
+             * @return that element
+             */
             @Override
             public Object next() {
                 return self.getElementAt(index++);
             }
 
+            /**
+             * When the cursor is still inside the model, removes the element at that
+             * index and moves the cursor back one position.
+             */
             @Override
             public void remove() {
                 if (hasNext()) self.removeElementAt(index--);
@@ -280,6 +308,7 @@ public class SwingExtensions {
      * @return the item count of the comboBox
      * @since 1.6.4
      */
+    @SuppressWarnings("rawtypes")
     public static int size(JComboBox self) {
         return self.getItemCount();
     }
@@ -292,6 +321,7 @@ public class SwingExtensions {
      * @return the tem at the given index
      * @since 1.6.4
      */
+    @SuppressWarnings("rawtypes")
     public static Object getAt(JComboBox self, int index) {
         return self.getItemAt(index);
     }
@@ -321,7 +351,7 @@ public class SwingExtensions {
     }
 
     /**
-     * Returns an {@link java.util.Iterator} which traverses the ComboBox one item at a time.
+     * Returns an {@link Iterator} which traverses the ComboBox one item at a time.
      *
      * @param self a ComboBox
      * @return an Iterator for a ComboBox
@@ -361,7 +391,7 @@ public class SwingExtensions {
     }
 
     /**
-     * Returns an {@link java.util.Iterator} which traverses the MutableComboBoxModel one item at a time.
+     * Returns an {@link Iterator} which traverses the MutableComboBoxModel one item at a time.
      *
      * @param self a MutableComboBoxModel
      * @return an Iterator for a MutableComboBoxModel
@@ -371,16 +401,30 @@ public class SwingExtensions {
         return new Iterator<Object>() {
             private int index = 0;
 
+            /**
+             * Returns whether the cursor is non-negative and still inside the model.
+             *
+             * @return {@code true} when another item can be read or removed
+             */
             @Override
             public boolean hasNext() {
                 return index > -1 && index < self.getSize();
             }
 
+            /**
+             * Returns the item at the cursor and advances the cursor by one.
+             *
+             * @return that item
+             */
             @Override
             public Object next() {
                 return self.getElementAt(index++);
             }
 
+            /**
+             * When the cursor is still inside the model, removes the item at that
+             * index and moves the cursor back one position.
+             */
             @Override
             public void remove() {
                 if (hasNext()) self.removeElementAt(index--);
@@ -427,7 +471,7 @@ public class SwingExtensions {
     }
 
     /**
-     * Returns an {@link java.util.Iterator} which traverses the TableModel one row at a time.
+     * Returns an {@link Iterator} which traverses the TableModel one row at a time.
      *
      * @param self a TableModel
      * @return an Iterator for a TableModel
@@ -437,11 +481,21 @@ public class SwingExtensions {
         return new Iterator<Object>() {
             private int row = 0;
 
+            /**
+             * Returns whether the cursor is still before the last row.
+             *
+             * @return {@code true} when {@code row} is less than the row count
+             */
             @Override
             public boolean hasNext() {
                 return row < self.getRowCount();
             }
 
+            /**
+             * Copies every cell of the current row, then advances to the next row.
+             *
+             * @return the copied row
+             */
             @Override
             public Object next() {
                 int cols = self.getColumnCount();
@@ -453,6 +507,9 @@ public class SwingExtensions {
                 return rowData;
             }
 
+            /**
+             * Refuses removal. A {@link TableModel} is not modified through this iterator.
+             */
             @Override
             public void remove() {
                 throw new UnsupportedOperationException("TableModel is immutable.");
@@ -516,7 +573,7 @@ public class SwingExtensions {
     }
 
     /**
-     * Returns an {@link java.util.Iterator} which traverses the DefaultTableModel one item at a time.
+     * Returns an {@link Iterator} which traverses the DefaultTableModel one item at a time.
      *
      * @param self a DefaultTableModel
      * @return an Iterator for a DefaultTableModel
@@ -526,11 +583,21 @@ public class SwingExtensions {
         return new Iterator<Object>() {
             private int row = 0;
 
+            /**
+             * Returns whether the cursor is non-negative and still inside the model.
+             *
+             * @return {@code true} when another row can be read or removed
+             */
             @Override
             public boolean hasNext() {
                 return row > -1 && row < self.getRowCount();
             }
 
+            /**
+             * Copies every cell of the current row, then advances to the next row.
+             *
+             * @return the copied row
+             */
             @Override
             public Object next() {
                 int cols = self.getColumnCount();
@@ -542,6 +609,10 @@ public class SwingExtensions {
                 return rowData;
             }
 
+            /**
+             * When the cursor is still inside the model, removes the row at that
+             * index and moves the cursor back one position.
+             */
             @Override
             public void remove() {
                 if (hasNext()) self.removeRow(row--);
@@ -573,7 +644,7 @@ public class SwingExtensions {
     }
 
     /**
-     * Returns an {@link java.util.Iterator} which traverses the TableColumnModel one TableColumn at a time.
+     * Returns an {@link Iterator} which traverses the TableColumnModel one TableColumn at a time.
      *
      * @param self a TableColumnModel
      * @return an Iterator for a TableColumnModel
@@ -583,16 +654,30 @@ public class SwingExtensions {
         return new Iterator<TableColumn>() {
             private int index = 0;
 
+            /**
+             * Returns whether the cursor is non-negative and still inside the model.
+             *
+             * @return {@code true} when another column can be read or removed
+             */
             @Override
             public boolean hasNext() {
                 return index > -1 && index < self.getColumnCount();
             }
 
+            /**
+             * Returns the column at the cursor and advances the cursor by one.
+             *
+             * @return that column
+             */
             @Override
             public TableColumn next() {
                 return self.getColumn(index++);
             }
 
+            /**
+             * When the cursor is still inside the model, removes the column at that
+             * index and moves the cursor back one position.
+             */
             @Override
             public void remove() {
                 if (hasNext()) self.removeColumn(self.getColumn(index--));
@@ -638,13 +723,12 @@ public class SwingExtensions {
     }
 
     /**
-     * Overloads the left shift operator to provide an easy way to add
-     * paths to a treePath.<p>
-     * <b>WARNING:</b> this operation returns a new TreePath, not the original one.<p>
+     * Overloads the left shift operator to create a new {@code TreePath}
+     * with an additional child element.
      *
      * @param self a TreePath
-     * @param p    an object to be added to the treePath.
-     * @return same treePath, after the value was added to it.
+     * @param p    the child path element to append
+     * @return a new TreePath containing the original path plus {@code p}
      * @since 1.6.4
      */
     public static TreePath leftShift(TreePath self, Object p) {
@@ -652,14 +736,14 @@ public class SwingExtensions {
     }
 
     /**
-     * Returns an {@link java.util.Iterator} which traverses the TreePath one path at a time.
+     * Returns an {@link Iterator} which traverses the TreePath one path at a time.
      *
      * @param self a TreePath
      * @return an Iterator for a TreePath
      * @since 1.6.4
      */
     public static Iterator<?> iterator(TreePath self) {
-        return DefaultGroovyMethods.iterator(self.getPath());
+        return ArrayGroovyMethods.iterator(self.getPath());
     }
 
     /**
@@ -686,7 +770,7 @@ public class SwingExtensions {
     }
 
     /**
-     * Returns an {@link java.util.Iterator} which traverses the TreeNode one node at a time.
+     * Returns an {@link Iterator} which traverses the TreeNode one node at a time.
      *
      * @param self a TreeNode
      * @return an Iterator for a TreeNode
@@ -845,14 +929,14 @@ public class SwingExtensions {
     }
 
     /**
-     * Returns an {@link java.util.Iterator} which traverses the JMenu one component at a time.
+     * Returns an {@link Iterator} which traverses the JMenu one component at a time.
      *
      * @param self a JMenu
      * @return an Iterator for a JMenu
      * @since 1.6.4
      */
     public static Iterator<Component> iterator(JMenu self) {
-        return DefaultGroovyMethods.iterator(self.getMenuComponents());
+        return ArrayGroovyMethods.iterator(self.getMenuComponents());
     }
 
     /**
@@ -893,14 +977,14 @@ public class SwingExtensions {
     }
 
     /**
-     * Returns an {@link java.util.Iterator} which traverses the JMenuBar one menu at a time.
+     * Returns an {@link Iterator} which traverses the JMenuBar one menu at a time.
      *
      * @param self a JMenuBar
      * @return an Iterator for a JMenuBar
      * @since 1.6.4
      */
     public static Iterator<MenuElement> iterator(JMenuBar self) {
-        return DefaultGroovyMethods.iterator(self.getSubElements());
+        return ArrayGroovyMethods.iterator(self.getSubElements());
     }
 
     /**
@@ -974,14 +1058,14 @@ public class SwingExtensions {
     }
 
     /**
-     * Returns an {@link java.util.Iterator} which traverses the JPopupMenu one MenuElement at a time.
+     * Returns an {@link Iterator} which traverses the JPopupMenu one MenuElement at a time.
      *
      * @param self a JPopupMenu
      * @return an Iterator for a JPopupMenu
      * @since 1.6.4
      */
     public static Iterator<MenuElement> iterator(JPopupMenu self) {
-        return DefaultGroovyMethods.iterator(self.getSubElements());
+        return ArrayGroovyMethods.iterator(self.getSubElements());
     }
 
     /**
@@ -1018,7 +1102,7 @@ public class SwingExtensions {
     }
 
     /**
-     * Returns an {@link java.util.Iterator} which traverses the JTabbedPane one Component tab at a time.
+     * Returns an {@link Iterator} which traverses the JTabbedPane one Component tab at a time.
      *
      * @param self a JTabbedPane
      * @return an Iterator for a JTabbedPane
@@ -1028,16 +1112,30 @@ public class SwingExtensions {
         return new Iterator<Component>() {
             private int index = 0;
 
+            /**
+             * Returns whether the cursor is non-negative and still inside the tab count.
+             *
+             * @return {@code true} when another tab can be read or removed
+             */
             @Override
             public boolean hasNext() {
                 return index > -1 && index < self.getTabCount();
             }
 
+            /**
+             * Returns the tab component at the cursor and advances the cursor by one.
+             *
+             * @return that component
+             */
             @Override
             public Component next() {
                 return self.getComponentAt(index++);
             }
 
+            /**
+             * When the cursor is still inside the tab count, removes the tab at that
+             * index and moves the cursor back one position.
+             */
             @Override
             public void remove() {
                 if (hasNext()) self.removeTabAt(index--);
@@ -1063,8 +1161,8 @@ public class SwingExtensions {
      * Support the subscript operator for JToolBar.
      *
      * @param self  a JToolBar
-     * @param index the index of the tab component to get
-     * @return the tab component at the given index
+     * @param index the index of the component to get
+     * @return the component at the given index
      * @since 1.6.4
      */
     public static Component getAt(JToolBar self, int index) {
@@ -1072,9 +1170,10 @@ public class SwingExtensions {
     }
 
     /**
-     * Allows the usage of a one-element string for a mnemonic
-     * @param button a AbstractButton
-     * @param mnemonic the String
+     * Supports assigning a button mnemonic from a single-character String.
+     *
+     * @param button   an AbstractButton
+     * @param mnemonic the mnemonic text to coerce to a character
      * @since 2.3.7
      */
     public static void setMnemonic(AbstractButton button, String mnemonic) {

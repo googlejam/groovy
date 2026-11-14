@@ -18,28 +18,41 @@
  */
 package org.codehaus.groovy.vmplugin.v10;
 
+import org.codehaus.groovy.vmplugin.v17.Java17;
 import org.codehaus.groovy.vmplugin.v9.Java9;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
+import java.util.Arrays;
 
 /**
- * Additional Java 10 based functions will be added here as needed.
+ * @deprecated Use {@link Java17} instead. Groovy 6.0 requires JDK 17+.
  */
+@Deprecated(since = "6.0.0", forRemoval = true)
+@SuppressWarnings("removal")
 public class Java10 extends Java9 {
-    private final Class<?>[] PLUGIN_DGM;
 
-    public Java10() {
-        super();
-        List<Class<?>> dgmClasses = new ArrayList<>();
-        Collections.addAll(dgmClasses, super.getPluginDefaultGroovyMethods());
-        dgmClasses.add(PluginDefaultGroovyMethods.class);
-        PLUGIN_DGM = dgmClasses.toArray(new Class<?>[0]);
+    /**
+     * Returns the Java feature version handled by this plugin.
+     *
+     * @return {@code 10}
+     */
+    @Override
+    public int getVersion() {
+        return 10;
     }
 
+    /**
+     * Returns the default Groovy method extensions available on Java 10.
+     *
+     * @return the plugin default Groovy method classes
+     */
     @Override
     public Class<?>[] getPluginDefaultGroovyMethods() {
-        return PLUGIN_DGM;
+        Class<?>[] answer = super.getPluginDefaultGroovyMethods();
+
+        final int n = answer.length;
+        answer = Arrays.copyOf(answer, n + 1);
+        answer[n] = PluginDefaultGroovyMethods.class;
+
+        return answer;
     }
 }

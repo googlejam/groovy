@@ -16,12 +16,14 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class MorgansBug extends GroovyTestCase {
 
+class MorgansBug {
+
+    @Test
     void testBug() {
         def result = 4 + "x"
         assert result == "4x"

@@ -16,12 +16,13 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class BadScriptNameBug extends GroovyTestCase {
+final class BadScriptNameBug {
 
+    @Test
     void testBug() {
         GroovyClassLoader cl = new GroovyClassLoader();
         cl.parseClass("println 'oops!'", "/script.groovy");

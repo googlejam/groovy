@@ -19,23 +19,23 @@
 package org.apache.groovy.contracts.tests.doc
 
 import org.apache.groovy.contracts.tests.basic.BaseTestClass
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
-import static org.junit.Assert.assertTrue
+import static org.junit.jupiter.api.Assertions.assertTrue
 
 class DocumentationExampleTests extends BaseTestClass {
 
     def example_person = '''
     @Contracted
     package tests
-    
+
     import groovy.contracts.*
-    
+
     @Invariant({ firstName != null && lastName != null })
     class Person {
         String firstName
         String lastName
-    
+
         @Requires ({ delimiter in ['.', ',', ' '] })
         @Ensures({ result -> result == (firstName + delimiter + lastName) })
         def String getName(String delimiter) {
@@ -101,7 +101,7 @@ class DocumentationExampleTests extends BaseTestClass {
         def remove()  {
             elements.pop()
         }
-    }    
+    }
     '''
 
 

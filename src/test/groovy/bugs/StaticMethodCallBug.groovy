@@ -16,21 +16,22 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import groovy.bugs.TestSupport
+import org.junit.jupiter.api.Test
 
-/** 
- */
-class StaticMethodCallBug extends GroovyTestCase {
+final class StaticMethodCallBug {
 
+    @Test
     void testBug() {
         def value = TestSupport.mockStaticMethod()
-        assert value == "cheese"
+        assert value == 'cheese'
     }
-    
+
+    @Test
     void testStaticProperty() {
         def value = TestSupport.mockStaticProperty
-        assert value == "cheese"
+        assert value == 'cheese'
     }
 }

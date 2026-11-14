@@ -18,15 +18,18 @@
  */
 package groovy.xml
 
-import groovy.test.GroovyTestCase
+import groovy.xml.slurpersupport.GPathResult
+import org.junit.jupiter.api.Test
 
 import static groovy.xml.XmlUtil.serialize
+import static org.junit.jupiter.api.Assertions.assertEquals
 
-class XmlSlurperTest extends GroovyTestCase {
+final class XmlSlurperTest {
 
-    def getRoot = { xml -> new XmlSlurper().parseText(xml) }
+    final Closure<GPathResult> getRoot = { String xml -> new XmlSlurper().parseText(xml) }
 
-    void testWsdl() {
+    @Test
+    void wsdl() {
         def wsdl = '''
             <definitions name="AgencyManagementService"
                          xmlns:ns1="http://www.example.org/NS1"
@@ -54,7 +57,8 @@ class XmlSlurperTest extends GroovyTestCase {
         xml.message.findAll { true }.each { assert it.name() == "message"}
     }
 
-    void testElement() {
+    @Test
+    void element() {
         // can't update value directly with XmlSlurper, use replaceNode instead
         // GpathSyntaxTestSupport.checkUpdateElementValue(getRoot)
         GpathSyntaxTestSupport.checkElement(getRoot)
@@ -65,40 +69,69 @@ class XmlSlurperTest extends GroovyTestCase {
         GpathSyntaxTestSupport.checkCDataText(getRoot)
     }
 
-    void testAttribute() {
+    @Test
+    void attribute() {
         GpathSyntaxTestSupport.checkAttribute(getRoot)
         GpathSyntaxTestSupport.checkAttributes(getRoot)
         GpathSyntaxTestSupport.checkAttributeTruth(getRoot)
     }
 
-    void testNavigation() {
+    // GROOVY-11667
+    @Test
+    void attribute2() {
+        def xml = '''
+            <person>
+                <name>John Doe</name>
+            </person>
+        '''
+        def path = getRoot(xml)
+        def text = path.@id.text() ?: null
+
+        assert text == null
+        assert new Inner(path).@id == null
+    }
+
+    static class Inner {
+        protected id
+        Inner(GPathResult gpath) {
+            this.@id = gpath.@id.text() ?: null
+        }
+    }
+
+    @Test
+    void navigation() {
         GpathSyntaxTestSupport.checkChildren(getRoot)
         GpathSyntaxTestSupport.checkParent(getRoot)
         GpathSyntaxTestSupport.checkNestedSizeExpressions(getRoot)
     }
 
-    void testTraversal() {
+    @Test
+    void traversal() {
         TraversalTestSupport.checkDepthFirst(getRoot)
         TraversalTestSupport.checkBreadthFirst(getRoot)
     }
 
-    void testIndices() {
+    @Test
+    void indices() {
         GpathSyntaxTestSupport.checkNegativeIndices(getRoot)
         GpathSyntaxTestSupport.checkRangeIndex(getRoot)
     }
 
-    void testReplacementsAndAdditions() {
+    @Test
+    void replacementsAndAdditions() {
         GpathSyntaxTestSupport.checkReplaceNode(getRoot)
         GpathSyntaxTestSupport.checkReplaceMultipleNodes(getRoot)
         GpathSyntaxTestSupport.checkPlus(getRoot)
     }
 
-    void testMixedMarkup() {
+    @Test
+    void mixedMarkup() {
         MixedMarkupTestSupport.checkMixedMarkup(getRoot)
         MixedMarkupTestSupport.checkMixedMarkupText(getRoot)
     }
 
-    void testReplace() {
+    @Test
+    void replace() {
         def input = "<doc><sec>Hello<p>World</p></sec></doc>"
         def replaceSlurper = new XmlSlurper().parseText(input)
         replaceSlurper.sec.replaceNode { node ->
@@ -109,7 +142,8 @@ class XmlSlurperTest extends GroovyTestCase {
         assert output == "<doc><t>Hello<p>World</p></t></doc>"
     }
 
-    void testNamespacedName() {
+    @Test
+    void namespacedName() {
         def wsdl = '''
         <definitions name="AgencyManagementService"
             xmlns:ns1="http://www.example.org/NS1"
@@ -130,7 +164,8 @@ class XmlSlurperTest extends GroovyTestCase {
     }
 
     // GROOVY-4637
-    void testNamespacedAttributes() {
+    @Test
+    void namespacedAttributes() {
         def xml = """
         <RootElement xmlns="http://www.ivan.com/ns1" xmlns:two="http://www.ivan.com/ns2">
             <ChildElement ItemId="FirstItemId" two:ItemId="SecondItemId">Child element data</ChildElement>
@@ -144,7 +179,8 @@ class XmlSlurperTest extends GroovyTestCase {
     }
 
     // GROOVY-6255
-    void testXmlNamespacedAttributes() {
+    @Test
+    void xmlNamespacedAttributes() {
         def xml = '''
         <appendix version="5.0" xmlns="http://docbook.org/ns/docbook" xmlns:xml="http://www.w3.org/XML/1998/namespace">
             <section xml:id="a"/>
@@ -157,7 +193,8 @@ class XmlSlurperTest extends GroovyTestCase {
     }
 
     // GROOVY-6356
-    void testSetAndRemoveAttributesWithNamespace() {
+    @Test
+    void setAndRemoveAttributesWithNamespace() {
         def xmlSource = '''<bob:root
                 xmlns:bob="stuff"
                 xmlns:gmi="http://www.isotc211.org/2005/gmi"
@@ -179,7 +216,8 @@ class XmlSlurperTest extends GroovyTestCase {
     }
 
     // GROOVY-6356
-    void testSetAndRemoveAttributesNamespaceUnaware() {
+    @Test
+    void setAndRemoveAttributesNamespaceUnaware() {
         def xmlSource = '''<bob:root
                 xmlns:bob="stuff"
                 xmlns:gmi="http://www.isotc211.org/2005/gmi"
@@ -198,11 +236,13 @@ class XmlSlurperTest extends GroovyTestCase {
     }
 
     // GROOVY-5931
-    void testIterableGPathResult() {
-        def xml = """
-        <RootElement>
-            <ChildElement ItemId="FirstItemId">Child element data</ChildElement>
-        </RootElement>"""
+    @Test
+    void iterableGPathResult() {
+        def xml = '''
+            <RootElement>
+                <ChildElement ItemId="FirstItemId">Child element data</ChildElement>
+            </RootElement>
+        '''
 
         def root = new XmlSlurper().parseText(xml)
 
@@ -215,11 +255,12 @@ class XmlSlurperTest extends GroovyTestCase {
     }
 
     // GROOVY-7781
-    void testNamespacedAttributesAccessedWithDifferentPrefix() {
+    @Test
+    void namespacedAttributesAccessedWithDifferentPrefix() {
         def xml = '''
-        <x:root xmlns:x="blah">
-            <x:child x:id="1">c</x:child>
-        </x:root>
+            <x:root xmlns:x="blah">
+                <x:child x:id="1">c</x:child>
+            </x:root>
         '''
 
         def root = new XmlSlurper(false, true).parseText(xml).declareNamespace(t: 'blah')
@@ -227,9 +268,9 @@ class XmlSlurperTest extends GroovyTestCase {
         assert root.'t:child'.@'t:id' == '1'
     }
 
-    void testParsePath() {
-
-        def file = File.createTempFile('test','xml')
+    @Test
+    void parsePath() {
+        File file = File.createTempFile('test','xml')
         file.deleteOnExit()
         file.text = '''
             <definitions name="AgencyManagementService"
@@ -257,6 +298,31 @@ class XmlSlurperTest extends GroovyTestCase {
         assert xml.message.part.lookupNamespace("") == "http://schemas.xmlsoap.org/wsdl/"
         assert xml.message.part.lookupNamespace("undefinedPrefix") == null
         xml.message.findAll { true }.each { assert it.name() == "message"}
+    }
 
+    @Test
+    void namedParameterConstruction() {
+        def xml = '<root><item name="test">value</item></root>'
+
+        // named parameters via setters
+        def slurper = new XmlSlurper(namespaceAware: false, keepIgnorableWhitespace: true)
+        def result = slurper.parseText(xml)
+        assert result.item.text() == 'value'
+        assert result.item.@name == 'test'
+
+        // setter after boolean constructor, before first parse
+        def slurper2 = new XmlSlurper(false, false)
+        slurper2.allowDocTypeDeclaration = true
+        assert slurper2.parseText(xml).item.text() == 'value'
+
+        // setter after parse should fail
+        def slurper3 = new XmlSlurper()
+        slurper3.parseText(xml)
+        try {
+            slurper3.namespaceAware = false
+            assert false, 'should have thrown'
+        } catch (IllegalStateException e) {
+            assert e.message.contains('must be set before parsing')
+        }
     }
 }

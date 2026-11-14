@@ -16,9 +16,9 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 import static groovy.test.GroovyAssert.shouldFail
 
@@ -26,11 +26,9 @@ final class Groovy3719 {
 
     @Test
     void testScriptThrowingNoSuchMethodException() {
-        def err = shouldFail '''
+        shouldFail NoSuchMethodException, '''
             println "YES I CAN!"
             throw new NoSuchMethodException()
         '''
-
-        assert err instanceof NoSuchMethodException
     }
 }

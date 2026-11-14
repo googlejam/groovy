@@ -26,26 +26,37 @@ import javax.swing.text.AttributeSet
 import javax.swing.text.SimpleAttributeSet
 import java.awt.event.ActionEvent
 
+/**
+ * Inserts a newline that preserves the indentation of the current line.
+ */
 @CompileStatic
 class AutoIndentAction extends AbstractAction {
+    private static final long serialVersionUID = -2680684287296849370L
+
+    /**
+     * Attributes used for inserted text.
+     */
     AttributeSet simpleAttributeSet = new SimpleAttributeSet()
 
+    /**
+     * Inserts a newline and copies the leading whitespace of the current line.
+     *
+     * @param evt the action event providing the target text pane
+     */
     void actionPerformed(ActionEvent evt) {
         JTextPane inputArea = (JTextPane) evt.source
         def rootElement = inputArea.document.defaultRootElement
         def cursorPos = inputArea.getCaretPosition()
         int rowNum = rootElement.getElementIndex(cursorPos)
         def rowElement = rootElement.getElement(rowNum)
-        int startOffset = rowElement.getStartOffset()
-        int endOffset = rowElement.getEndOffset()
-        String rowContent = inputArea.document.getText(startOffset, endOffset - startOffset);
-        String contentBeforeCursor = inputArea.document.getText(startOffset, cursorPos - startOffset);
+        int startOffset = rowElement.startOffset, endOffset = rowElement.endOffset
+        String rowContent = inputArea.document.getText(startOffset, endOffset - startOffset)
+        String contentBeforeCursor = inputArea.document.getText(startOffset, cursorPos - startOffset)
+
         String whitespaceStr = ''
-        def matcher = (rowContent =~ /(?m)^(\s*).*\n$/)
-        matcher.each { all, ws ->
+        rowContent.eachMatch(~/(?m)^(\s*).*\n$/) { all, ws ->
             whitespaceStr = ws
         }
-
         if (contentBeforeCursor ==~ /(\s)*/) {
             whitespaceStr = contentBeforeCursor
         }

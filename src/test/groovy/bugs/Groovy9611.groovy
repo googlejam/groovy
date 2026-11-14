@@ -16,26 +16,31 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 import static groovy.test.GroovyAssert.assertScript
 
 final class Groovy9611 {
+
     @Test
     void testAccessFieldWithinAICUsingReflection() {
         assertScript '''
-            import java.lang.reflect.Field
             class C {
-              int method() {
-                for (Field f : getClass().fields)
-                  if (f.name == 'i') return f.get(this)
-                return -1
-              }
+                @groovy.transform.CompileStatic
+                def m() {
+                    for (def f : getClass().getFields()) {
+                        if (f.name == 'i') return f.get(this)
+                    }
+                    return -1
+                }
             }
-            def c = new C() { public int i = 42 }
-            assert c.method() == 42
+
+            def c = new C() {
+                public final int i = 42
+            }
+            assert c.m() == 42
         '''
     }
 }

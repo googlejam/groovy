@@ -46,10 +46,17 @@ import static org.objectweb.asm.Opcodes.IFNE;
  * Base class for writing primitive typed operations
  */
 public abstract class BinaryExpressionWriter {
-    
+
     private final WriterController controller;
     private MethodCaller arraySet, arrayGet;
 
+    /**
+     * Creates a primitive-operation writer.
+     *
+     * @param controller the active writer controller
+     * @param arraySet the helper used for array stores
+     * @param arrayGet the helper used for array loads
+     */
     public BinaryExpressionWriter(WriterController controller, MethodCaller arraySet, MethodCaller arrayGet) {
         this.controller = controller;
         this.arraySet = arraySet;
@@ -63,10 +70,13 @@ public abstract class BinaryExpressionWriter {
     public WriterController getController() {
         return controller;
     }
-    
+
+    /**
+     * Jump opcodes used for primitive comparison results.
+     */
     protected static final int[] stdCompareCodes = {
         IFEQ,      // COMPARE_NOT_EQUAL            120
-        IFNE,      // COMPARE_IDENTICAL            121 
+        IFNE,      // COMPARE_IDENTICAL            121
         IFEQ,      // COMPARE_NOT_IDENTICAL        122
         IFNE,      // COMPARE_EQUAL                123
         IFGE,      // COMPARE_LESS_THAN            124
@@ -74,8 +84,23 @@ public abstract class BinaryExpressionWriter {
         IFLE,      // COMPARE_GREATER_THAN         126
         IFLT,      // COMPARE_GREATER_THAN_EQUAL   127
     };
-    
+
+    /**
+     * @return the ASM compare opcode used by this primitive type
+     */
     protected abstract int getCompareCode();
+
+    /**
+     * Returns the compare opcode for a comparison operator. The default is
+     * {@link #getCompareCode()}; a floating-point type overrides it so that a
+     * NaN operand makes the comparison false.
+     *
+     * @param type the token type of the comparison operator
+     * @return the ASM compare opcode
+     */
+    protected int getCompareCode(final int type) {
+        return getCompareCode();
+    }
 
     /**
      * writes some int standard operations for compares
@@ -83,6 +108,7 @@ public abstract class BinaryExpressionWriter {
      * @return true if a successful std operator write
      */
     protected boolean writeStdCompare(int type, boolean simulate) {
+        int compareCode = getCompareCode(type);
         type = type-COMPARE_NOT_EQUAL;
         // look if really compare
         if (type<0||type>7) return false;
@@ -92,7 +118,7 @@ public abstract class BinaryExpressionWriter {
             OperandStack operandStack = controller.getOperandStack();
             // operands are on the stack already
             int bytecode = stdCompareCodes[type];
-            mv.visitInsn(getCompareCode());
+            mv.visitInsn(compareCode);
             Label l1 = new Label();
             mv.visitJumpInsn(bytecode,l1);
             mv.visitInsn(ICONST_1);
@@ -105,19 +131,37 @@ public abstract class BinaryExpressionWriter {
         }
         return true;
     }
-    
+
+    /**
+     * Duplicates the two operands already on the operand stack.
+     *
+     * @param mv the current method visitor
+     */
     protected abstract void doubleTwoOperands(MethodVisitor mv);
+
+    /**
+     * Removes the two operands already on the operand stack.
+     *
+     * @param mv the current method visitor
+     */
     protected abstract void removeTwoOperands(MethodVisitor mv);
-    
+
+    /**
+     * Writes a spaceship comparison for the current primitive type.
+     *
+     * @param type the token type
+     * @param simulate whether to probe support without emitting bytecode
+     * @return {@code true} if the operation is supported
+     */
     protected boolean writeSpaceship(int type, boolean simulate) {
         if (type != COMPARE_TO) return false;
-        /*  
+        /*
            we will actually do
-         
+
           (x < y) ? -1 : ((x == y) ? 0 : 1)
           which is the essence of what the call with Number would do
           this compiles to something along
-          
+
               <x>
               <y>
               LCMP
@@ -134,13 +178,13 @@ public abstract class BinaryExpressionWriter {
           L3
               ICONST_1
           L2
-          
+
           since the operators are already on the stack and we don't want
           to load them again, we will instead duplicate them. This will
           require some pop actions in the branches!
-          
+
               DUP4          (operands: L1L2L1L2)
-              LCMP          
+              LCMP
               IFGE L1       (operands: L1L2)
               ICONST_M1     (operands: L1L2I)
               GOTO L2
@@ -156,9 +200,9 @@ public abstract class BinaryExpressionWriter {
           L2  
           - if jump from GOTO L2 we have LLI, but need only I
           - if from L3 branch we get only I
-          
+
           this means we have to pop of LL before loading -1
-          
+
           since there is no DUP4 we have to do this:
             DUP2_X1
             POP2
@@ -171,7 +215,7 @@ public abstract class BinaryExpressionWriter {
             MethodVisitor mv = controller.getMethodVisitor();
             // duplicate arguments
             doubleTwoOperands(mv);
-            
+
             Label l1 = new Label();
             mv.visitInsn(getCompareCode());
             mv.visitJumpInsn(IFGE,l1);
@@ -180,29 +224,46 @@ public abstract class BinaryExpressionWriter {
             mv.visitInsn(ICONST_M1);
             Label l2 = new Label();
             mv.visitJumpInsn(GOTO, l2);
-            
+
             mv.visitLabel(l1);
             Label l3 = new Label();
             mv.visitInsn(getCompareCode());
             mv.visitJumpInsn(IFNE,l3);
             mv.visitInsn(ICONST_0);
             mv.visitJumpInsn(GOTO,l2);
-            
+
             mv.visitLabel(l3);
             mv.visitInsn(ICONST_1);
-            
+
             controller.getOperandStack().replace(ClassHelper.int_TYPE, 2);
         }
         return true;
     }
 
+    /**
+     * @return the result type for normal arithmetic operations
+     */
     protected abstract ClassNode getNormalOpResultType();
+
+    /**
+     * Returns the arithmetic opcode for the supplied token.
+     *
+     * @param type the normalized token index
+     * @return the ASM opcode
+     */
     protected abstract int getStandardOperationBytecode(int type);
-    
+
+    /**
+     * Writes a standard arithmetic operator for the current primitive type.
+     *
+     * @param type the token type
+     * @param simulate whether to probe support without emitting bytecode
+     * @return {@code true} if the operation is supported
+     */
     protected boolean writeStdOperators(int type, boolean simulate) {
         type = type-PLUS;
         if (type<0 || type>5 || type == 3 /*DIV*/) return false;
-        
+
         if (!simulate) {
             int bytecode = getStandardOperationBytecode(type);
             controller.getMethodVisitor().visitInsn(bytecode);
@@ -210,7 +271,13 @@ public abstract class BinaryExpressionWriter {
         }
         return true;
     }
-    
+
+    /**
+     * Writes a division operation for the current primitive type.
+     *
+     * @param simulate whether to probe support without emitting bytecode
+     * @return {@code true} if division is supported
+     */
     protected boolean writeDivision(boolean simulate) {
         if (!supportsDivision()) return false;
         if (!simulate) {
@@ -220,15 +287,27 @@ public abstract class BinaryExpressionWriter {
         }
         return true;
     }
-    
+
+    /**
+     * @return whether this primitive helper supports division bytecode directly
+     */
     protected boolean supportsDivision() {
         return false;
     }
 
+    /**
+     * @return the result type for division operations
+     */
     protected abstract ClassNode getDevisionOpResultType();
 
+    /**
+     * Returns the bitwise opcode for the supplied token.
+     *
+     * @param type the normalized token index
+     * @return the ASM opcode
+     */
     protected abstract int getBitwiseOperationBytecode(int type);
-    
+
     /**
      * writes some the bitwise operations. type is one of BITWISE_OR, 
      * BITWISE_AND, BITWISE_XOR
@@ -246,9 +325,15 @@ public abstract class BinaryExpressionWriter {
         }
         return true;
     }
-    
+
+    /**
+     * Returns the shift opcode for the supplied token.
+     *
+     * @param type the normalized token index
+     * @return the ASM opcode
+     */
     protected abstract int getShiftOperationBytecode(int type);
-    
+
     /**
      * Write shifting operations.
      * Type is one of LEFT_SHIFT, RIGHT_SHIFT, or RIGHT_SHIFT_UNSIGNED
@@ -268,6 +353,13 @@ public abstract class BinaryExpressionWriter {
         return true;
     }
 
+    /**
+     * Attempts to write the supplied binary operation.
+     *
+     * @param operation the token type
+     * @param simulate whether to probe support without emitting bytecode
+     * @return {@code true} if the operation is supported
+     */
     public boolean write(int operation, boolean simulate) {
         return  writeStdCompare(operation, simulate)         ||
                 writeSpaceship(operation, simulate)          ||
@@ -275,33 +367,61 @@ public abstract class BinaryExpressionWriter {
                 writeBitwiseOp(operation, simulate)          ||
                 writeShiftOp(operation, simulate);
     }
-    
+
+    /**
+     * @return the helper used for primitive array loads
+     */
     protected MethodCaller getArrayGetCaller() {
         return arrayGet;
     }
 
+    /**
+     * @return the result type produced by {@link #getArrayGetCaller()}
+     */
     protected ClassNode getArrayGetResultType(){
         return getNormalOpResultType();
     }
-    
+
+    /**
+     * @return the helper used for primitive array stores
+     */
     protected MethodCaller getArraySetCaller() {
         return arraySet;
     }
 
+    /**
+     * Replaces the helpers used for primitive array access.
+     *
+     * @param arraySet the array-store helper
+     * @param arrayGet the array-load helper
+     */
     public void setArraySetAndGet(MethodCaller arraySet, MethodCaller arrayGet) {
         this.arraySet = arraySet;
         this.arrayGet = arrayGet;
     }
-    
+
+    /**
+     * Attempts to write an array-read operation.
+     *
+     * @param operation the token type
+     * @param simulate whether to probe support without emitting bytecode
+     * @return {@code true} if the operation is an array read
+     */
     public boolean arrayGet(int operation, boolean simulate) {
         if (operation!=LEFT_SQUARE_BRACKET) return false;
-        
+
         if (!simulate) {
             getArrayGetCaller().call(controller.getMethodVisitor());
         }
         return true;
     }
 
+    /**
+     * Writes an array-store operation.
+     *
+     * @param simulate whether to probe support without emitting bytecode
+     * @return always {@code true}
+     */
     public boolean arraySet(boolean simulate) {        
         if (!simulate) {
             getArraySetCaller().call(controller.getMethodVisitor());
@@ -309,6 +429,13 @@ public abstract class BinaryExpressionWriter {
         return true;
     }
 
+    /**
+     * Attempts to write a postfix or prefix increment/decrement operation.
+     *
+     * @param operation the token type
+     * @param simulate whether to probe support without emitting bytecode
+     * @return {@code true} if the operation is supported
+     */
     public boolean writePostOrPrefixMethod(int operation, boolean simulate) {
         if (operation!=PLUS_PLUS && operation!=MINUS_MINUS) return false;
         if (!simulate) {
@@ -322,6 +449,17 @@ public abstract class BinaryExpressionWriter {
         return true;
     }
 
+    /**
+     * Emits a prefix/postfix increment.
+     *
+     * @param mv the current method visitor
+     */
     protected abstract void writePlusPlus(MethodVisitor mv);
+
+    /**
+     * Emits a prefix/postfix decrement.
+     *
+     * @param mv the current method visitor
+     */
     protected abstract void writeMinusMinus(MethodVisitor mv);
 }

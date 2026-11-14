@@ -16,17 +16,15 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-/**
- */
-class FullyQualifiedVariableTypeBug extends GroovyTestCase {
+final class FullyQualifiedVariableTypeBug {
 
+    @Test
     void testBug() {
         java.lang.String s = "hey"
         assert s.length() == 3
     }
-
 }

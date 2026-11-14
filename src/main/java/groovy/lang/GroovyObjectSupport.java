@@ -21,7 +21,6 @@ package groovy.lang;
 import org.codehaus.groovy.runtime.InvokerHelper;
 
 import java.beans.Transient;
-import java.util.Optional;
 
 /**
  * Base class for Java objects wishing to be Groovy objects.
@@ -31,15 +30,17 @@ public abstract class GroovyObjectSupport implements GroovyObject {
     // never persist the MetaClass
     private transient MetaClass metaClass = getDefaultMetaClass();
 
+    /** {@inheritDoc} */
     @Override
     @Transient
     public MetaClass getMetaClass() {
         return this.metaClass;
     }
 
+    /** {@inheritDoc} */
     @Override
     public void setMetaClass(/*@Nullable*/ final MetaClass metaClass) {
-        this.metaClass = Optional.ofNullable(metaClass).orElseGet(this::getDefaultMetaClass);
+        this.metaClass = metaClass != null ? metaClass : getDefaultMetaClass();
     }
 
     private MetaClass getDefaultMetaClass() {

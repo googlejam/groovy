@@ -20,84 +20,97 @@ package org.codehaus.groovy.runtime;
 
 import groovy.lang.Closure;
 import groovy.lang.MetaMethod;
-import org.codehaus.groovy.reflection.CachedConstructor;
 import org.codehaus.groovy.reflection.ReflectionCache;
+import org.codehaus.groovy.runtime.wrappers.Wrapper;
 
 import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectStreamException;
+import java.io.Serial;
 import java.util.Arrays;
-import java.util.List;
+import java.util.BitSet;
 
 /**
- * Represents a method on an object using a closure which can be invoked
- * at any time
+ * Represents a method on an object using a closure, which can be invoked at any
+ * time.
  */
 public class MethodClosure extends Closure {
-    public static final String NEW = "new";
+
+    /**
+     * Enables flexible object serialization behavior for MethodClosure instances.
+     */
+    public static boolean ALLOW_RESOLVE; // choose readObject/readResolve return/throw
+
+    /**
+     * Property name indicating whether an instance method exists for this method closure.
+     */
     public static final String ANY_INSTANCE_METHOD_EXISTS = "anyInstanceMethodExists";
 
-    private static final long serialVersionUID = -2491254866810955844L;
-    public static boolean ALLOW_RESOLVE = false;
+    /**
+     * Method name constant for constructor invocations.
+     */
+    public static final String NEW = "new";
 
-    private static final Class[] EMPTY_CLASS_ARRAY = new Class[0];
+    //
+
+    @Serial private static final long serialVersionUID = -2491254866810955844L;
+
+    /**
+     * Indicates if this may be related to an instance method.
+     */
+    private boolean anyInstanceMethodExists;
+
     private final String method;
-    private final boolean anyInstanceMethodExists; // whether the method closure is related to instance method
 
-    public MethodClosure(Object owner, String method) {
+    //--------------------------------------------------------------------------
+
+    /**
+     * Constructs a MethodClosure wrapping a method of the given owner object.
+     *
+     * @param owner the object on which the method is invoked, or a Class for static methods
+     * @param method the name of the method to wrap, or "new" for constructor invocations
+     */
+    public MethodClosure(final Object owner, final String method) {
         super(owner);
         this.method = method;
-
-        final Class clazz = owner.getClass() == Class.class ? (Class) owner : owner.getClass();
-
         this.maximumNumberOfParameters = 0;
-        this.parameterTypes = EMPTY_CLASS_ARRAY;
+        this.parameterTypes = MetaClassHelper.EMPTY_TYPE_ARRAY;
 
-        List<MetaMethod> methods = InvokerHelper.getMetaClass(clazz).respondsTo(owner, method);
+        var ownerClass = getOwnerClass();
 
-        int instanceMethodCnt = 0;
-        for (MetaMethod m : methods) {
-            Class[] newParameterTypes = this.makeParameterTypes(owner, m);
-
-            this.setParameterTypesAndNumber(newParameterTypes);
-
-            if (!m.isStatic()) {
-                instanceMethodCnt++;
-            }
-        }
-
-        this.anyInstanceMethodExists = instanceMethodCnt > 0;
-
-        if (NEW.equals(method)) {
-            if (clazz.isArray()) {
-                Class[] sizeTypes = new Class[ArrayTypeUtils.dimension(clazz)];
+        if (method.equals(NEW)) {
+            if (ownerClass.isArray()) {
+                Class<?>[] sizeTypes = new Class[ArrayTypeUtils.dimension(ownerClass)];
                 Arrays.fill(sizeTypes, int.class);
-
-                this.setParameterTypesAndNumber(sizeTypes);
+                setParameterTypesAndNumber(sizeTypes);
             } else {
-                for (CachedConstructor c : ReflectionCache.getCachedClass(clazz).getConstructors()) {
-                    Class[] newParameterTypes = c.getNativeParameterTypes();
-
-                    this.setParameterTypesAndNumber(newParameterTypes);
+                for (var c : ReflectionCache.getCachedClass(ownerClass).getConstructors()) {
+                    setParameterTypesAndNumber(c.getNativeParameterTypes());
+                }
+            }
+        } else {
+            for (var m : InvokerHelper.getMetaClass(ownerClass).respondsTo(getOwner(), method)) {
+                setParameterTypesAndNumber(makeParameterTypes(getOwner(), m));
+                if (!m.isStatic()) {
+                    this.anyInstanceMethodExists = true;
                 }
             }
         }
     }
 
-    private void setParameterTypesAndNumber(Class[] newParameterTypes) {
-        if (!(newParameterTypes.length > this.maximumNumberOfParameters)) {
-            return;
+    private void setParameterTypesAndNumber(final Class[] parameterTypes) {
+        if (parameterTypes.length > this.maximumNumberOfParameters) {
+            this.maximumNumberOfParameters = parameterTypes.length;
+            this.parameterTypes = parameterTypes;
         }
-
-        this.maximumNumberOfParameters = newParameterTypes.length;
-        this.parameterTypes = newParameterTypes;
     }
 
     /*
-     * Create a new array of parameter type.
-     *
-     * If the owner is a class instance(e.g. String) and the method is instance method,
-     * we expand the original array of parameter type by inserting the owner at the first place of the expanded array
+     * Creates an array of parameter types. If the owner is a class instance (ex:
+     * String) and the method is instance method, we expand the original array of
+     * parameter type by inserting the owner at the first position of the array.
      */
-    private Class[] makeParameterTypes(Object owner, MetaMethod m) {
+    private static Class[] makeParameterTypes(final Object owner, final MetaMethod m) {
         Class[] newParameterTypes;
 
         if (owner instanceof Class && !m.isStatic()) {
@@ -112,36 +125,132 @@ public class MethodClosure extends Closure {
 
         return newParameterTypes;
     }
-    
+
+    //--------------------------------------------------------------------------
+
+    /**
+     * The method name this closure invokes, or {@code "new"} when it invokes a constructor.
+     *
+     * @return the name passed to the constructor
+     */
     public String getMethod() {
         return method;
     }
 
-    // TODO confirm: The "doCall" method seems to be never called..., because MetaClassImpl.invokeMethod will intercept calls and return the result
-    protected Object doCall(Object arguments) {
-        return InvokerHelper.invokeMethod(getOwner(), method, arguments);
-    }
-
-    private Object readResolve() {
-        if (ALLOW_RESOLVE) {
-            return this;
+    @Override
+    public Object getOwner() {
+        var owner = super.getOwner();
+        if (owner instanceof Wrapper) {
+            owner = ((Wrapper) owner).unwrap(); // GROOVY-5051
         }
-        throw new UnsupportedOperationException();
+        return owner;
     }
 
-    private void readObject(java.io.ObjectInputStream stream) throws IOException, ClassNotFoundException {
+    /**
+     * Returns the class of the owner object, unwrapping it if it's a Wrapper.
+     * If the owner is a Class, returns that Class; otherwise, returns the class of the owner.
+     *
+     * @return the class of the owner object
+     * @since 5.0.0
+     */
+    public Class<?> getOwnerClass() {
+        var owner = super.getOwner();
+        if (owner instanceof Wrapper) {
+            return ((Wrapper) owner).getType(); // GROOVY-5051
+        }
+        var theClass = owner.getClass();
+        return (theClass == Class.class ? (Class<?>) owner : theClass);
+    }
+
+    @Override
+    public Object getProperty(final String property) {
+        return switch (property) {
+            case "method" -> getMethod();
+            case ANY_INSTANCE_METHOD_EXISTS -> anyInstanceMethodExists;
+            default -> super.getProperty(property);
+        };
+    }
+
+    /**
+     * The numbers of arguments the methods of this closure's name accept, for the owner
+     * class they were found on. Worked out when first needed and again when the owner
+     * changes class (as {@link #rehydrate} may do), and not serialized, so the serial form
+     * is unchanged and a deserialized method closure works them out afresh.
+     */
+    private transient volatile ArgumentCounts argumentCounts;
+
+    private record ArgumentCounts(Class<?> ownerClass, BitSet counts, int varargsFrom) {
+        boolean accepts(final int n) {
+            return n >= varargsFrom || counts.get(n);
+        }
+    }
+
+    /**
+     * Tells whether a method of this closure's name can be called with {@code n} arguments,
+     * counting the receiver of a {@code Type::instanceMethod} reference. Answers
+     * {@code true} when that is not known, for instance once the closure is dehydrated.
+     */
+    boolean acceptsArgumentCount(final int n) {
+        Object owner = getOwner();
+        if (owner == null) return true;
+        Class<?> ownerClass = getOwnerClass();
+        ArgumentCounts known = argumentCounts;
+        if (known == null || known.ownerClass() != ownerClass) {
+            argumentCounts = known = findArgumentCounts(owner, ownerClass);
+        }
+        return known.accepts(n);
+    }
+
+    private ArgumentCounts findArgumentCounts(final Object owner, final Class<?> ownerClass) {
+        BitSet counts = new BitSet();
+        int varargsFrom = Integer.MAX_VALUE;
+        if (method.equals(NEW)) {
+            if (ownerClass.isArray()) {
+                counts.set(ArrayTypeUtils.dimension(ownerClass));
+            } else {
+                for (var c : ReflectionCache.getCachedClass(ownerClass).getConstructors()) {
+                    int count = c.getNativeParameterTypes().length;
+                    counts.set(count);
+                    if (c.isVargsMethod()) varargsFrom = Math.min(varargsFrom, count - 1);
+                }
+            }
+        } else {
+            for (var m : InvokerHelper.getMetaClass(ownerClass).respondsTo(owner, method)) {
+                int count = makeParameterTypes(owner, m).length;
+                counts.set(count);
+                if (m.isVargsMethod()) varargsFrom = Math.min(varargsFrom, count - 1);
+            }
+        }
+        if (counts.isEmpty()) varargsFrom = 0; // no method known: accept any count
+        return new ArgumentCounts(ownerClass, counts, varargsFrom);
+    }
+
+    // TODO: This method seems to be never called..., because MetaClassImpl.invokeMethod will intercept calls and return the result.
+    /**
+     * Invokes {@link #getMethod()} on {@link #getOwner()} with {@code arguments}.
+     *
+     * @param arguments the argument object passed to
+     *        {@link InvokerHelper#invokeMethod(Object, String, Object)}
+     * @return the object produced by invoking that method
+     */
+    protected Object doCall(final Object arguments) {
+        return InvokerHelper.invokeMethod(getOwner(), getMethod(), arguments);
+    }
+
+    @Serial
+    private void readObject(final ObjectInputStream stream) throws IOException, ClassNotFoundException {
         if (ALLOW_RESOLVE) {
             stream.defaultReadObject();
         }
         throw new UnsupportedOperationException();
     }
-    
-    @Override
-    public Object getProperty(String property) {
-        if ("method".equals(property)) {
-            return getMethod();
-        } else if (ANY_INSTANCE_METHOD_EXISTS.equals(property)) {
-            return this.anyInstanceMethodExists;
-        } else return super.getProperty(property);
+
+    @Serial
+    private Object readResolve() throws ObjectStreamException {
+        if (ALLOW_RESOLVE) {
+            Closure.checkForReferenceCycle(this);
+            return this;
+        }
+        throw new UnsupportedOperationException();
     }
 }

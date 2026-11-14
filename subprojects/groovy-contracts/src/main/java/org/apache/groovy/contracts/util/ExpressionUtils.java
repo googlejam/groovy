@@ -19,7 +19,6 @@
 package org.apache.groovy.contracts.util;
 
 import org.codehaus.groovy.ast.ClassCodeVisitorSupport;
-import org.codehaus.groovy.ast.expr.BinaryExpression;
 import org.codehaus.groovy.ast.expr.BooleanExpression;
 import org.codehaus.groovy.ast.expr.ClosureExpression;
 import org.codehaus.groovy.ast.expr.ConstantExpression;
@@ -29,16 +28,12 @@ import org.codehaus.groovy.ast.stmt.BlockStatement;
 import org.codehaus.groovy.ast.stmt.ExpressionStatement;
 import org.codehaus.groovy.ast.stmt.Statement;
 import org.codehaus.groovy.control.SourceUnit;
-import org.codehaus.groovy.syntax.Token;
-import org.codehaus.groovy.syntax.Types;
-import org.objectweb.asm.Opcodes;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-import static org.codehaus.groovy.ast.tools.GeneralUtils.AND;
-import static org.codehaus.groovy.ast.tools.GeneralUtils.binX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.andX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.boolX;
 
 /**
@@ -47,7 +42,8 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.boolX;
  * @see ClosureExpression
  * @see BooleanExpression
  */
-public class ExpressionUtils {
+public final class ExpressionUtils {
+    private ExpressionUtils() { }
 
     /**
      * Returns all {@link BooleanExpression} instances found in the given {@link ClosureExpression}.
@@ -65,25 +61,30 @@ public class ExpressionUtils {
     private static List<BooleanExpression> getBooleanExpressions(BlockStatement closureBlockStatement) {
         final List<Statement> statementList = closureBlockStatement.getStatements();
 
-        List<BooleanExpression> booleanExpressions = new ArrayList<BooleanExpression>();
+        List<BooleanExpression> booleanExpressions = new ArrayList<>();
 
         for (Statement stmt : statementList) {
             BooleanExpression tmp = null;
 
             if (stmt instanceof ExpressionStatement && ((ExpressionStatement) stmt).getExpression() instanceof BooleanExpression) {
                 tmp = (BooleanExpression) ((ExpressionStatement) stmt).getExpression();
-                tmp.setNodeMetaData("statementLabel", stmt.getStatementLabel());
+                saveLabel(tmp, stmt);
             } else if (stmt instanceof ExpressionStatement) {
                 Expression expression = ((ExpressionStatement) stmt).getExpression();
                 tmp = boolX(expression);
                 tmp.setSourcePosition(expression);
-                tmp.setNodeMetaData("statementLabel", stmt.getStatementLabel());
+                saveLabel(tmp, stmt);
             }
 
             booleanExpressions.add(tmp);
         }
 
         return booleanExpressions;
+    }
+
+    private static void saveLabel(BooleanExpression tmp, Statement stmt) {
+        List<String> labels = stmt.getStatementLabels();
+        tmp.setNodeMetaData("statementLabel", labels != null && !labels.isEmpty() ? labels.get(0) : null);
     }
 
     /**
@@ -96,7 +97,7 @@ public class ExpressionUtils {
         List<AssertStatement> assertStatements = collector.assertStatements;
         if (assertStatements.isEmpty()) return Collections.emptyList();
 
-        List<BooleanExpression> booleanExpressions = new ArrayList<BooleanExpression>();
+        List<BooleanExpression> booleanExpressions = new ArrayList<>();
         for (AssertStatement assertStatement : assertStatements) {
             booleanExpressions.add(assertStatement.getBooleanExpression());
         }
@@ -104,6 +105,12 @@ public class ExpressionUtils {
         return booleanExpressions;
     }
 
+    /**
+     * Collapses the supplied boolean expressions into a single expression combined with logical AND.
+     *
+     * @param booleanExpressions the expressions to combine
+     * @return the combined expression, or {@code true} if the input is empty
+     */
     public static BooleanExpression getBooleanExpression(List<BooleanExpression> booleanExpressions) {
         if (booleanExpressions == null || booleanExpressions.isEmpty())
             return boolX(ConstantExpression.TRUE);
@@ -113,22 +120,38 @@ public class ExpressionUtils {
             if (result == null) {
                 result = booleanExpression;
             } else {
-                result = boolX(binX(result, AND, booleanExpression));
+                result = boolX(andX(result, booleanExpression));
             }
         }
 
         return result;
     }
 
+    /**
+     * Collects assert statements from a block without descending into nested compilation units.
+     */
     static class AssertStatementCollector extends ClassCodeVisitorSupport {
 
-        public List<AssertStatement> assertStatements = new ArrayList<AssertStatement>();
+        /**
+         * Collected assert statements in visitation order.
+         */
+        public List<AssertStatement> assertStatements = new ArrayList<>();
 
+        /**
+         * Records one visited assert statement.
+         *
+         * @param statement the assert statement to collect
+         */
         @Override
         public void visitAssertStatement(AssertStatement statement) {
             assertStatements.add(statement);
         }
 
+        /**
+         * This collector is source-independent.
+         *
+         * @return {@code null}
+         */
         @Override
         protected SourceUnit getSourceUnit() {
             return null;

@@ -16,11 +16,16 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
 
-class Groovy5396Bug extends GroovyTestCase {
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.assertScript
+
+
+class Groovy5396Bug {
+    @Test
     void testClassAccessToPackageLocalPropertyInSuper() {
         assertScript """
             class GroovyBase extends AbstractBase {

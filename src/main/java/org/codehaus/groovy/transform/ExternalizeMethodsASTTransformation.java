@@ -25,6 +25,7 @@ import org.codehaus.groovy.ast.AnnotationNode;
 import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.FieldNode;
+import org.codehaus.groovy.ast.MethodNode;
 import org.codehaus.groovy.ast.Parameter;
 import org.codehaus.groovy.ast.expr.MethodCallExpression;
 import org.codehaus.groovy.ast.stmt.BlockStatement;
@@ -39,6 +40,13 @@ import java.io.ObjectOutput;
 import java.util.List;
 
 import static org.apache.groovy.ast.tools.ClassNodeUtils.addGeneratedMethod;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveBoolean;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveByte;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveDouble;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveFloat;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveInt;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveLong;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveShort;
 import static org.codehaus.groovy.ast.ClassHelper.make;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.assignS;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.callX;
@@ -71,8 +79,7 @@ public class ExternalizeMethodsASTTransformation extends AbstractASTTransformati
         AnnotationNode anno = (AnnotationNode) nodes[0];
         if (!MY_TYPE.equals(anno.getClassNode())) return;
 
-        if (parent instanceof ClassNode) {
-            ClassNode cNode = (ClassNode) parent;
+        if (parent instanceof ClassNode cNode) {
             if (!checkNotInterface(cNode, MY_TYPE_NAME)) return;
             cNode.addInterface(EXTERNALIZABLE_TYPE);
             boolean includeFields = memberHasValue(anno, "includeFields", true);
@@ -98,7 +105,15 @@ public class ExternalizeMethodsASTTransformation extends AbstractASTTransformati
             body.addStatement(stmt(writeObject));
         }
         ClassNode[] exceptions = {make(IOException.class)};
-        addGeneratedMethod(cNode, "writeExternal", ACC_PUBLIC, ClassHelper.VOID_TYPE, params(out), exceptions, body);
+        // GEP-21 Shape C: replace the stubber's placeholder body if present.
+        Parameter[] writeParams = params(out);
+        MethodNode existing = cNode.getDeclaredMethod("writeExternal", writeParams);
+        if (StubberSupport.isStub(existing)) {
+            existing.setCode(body);
+            StubberSupport.clearStub(existing);
+        } else {
+            addGeneratedMethod(cNode, "writeExternal", ACC_PUBLIC, ClassHelper.VOID_TYPE, writeParams, exceptions, body);
+        }
     }
 
     private static void createReadExternal(ClassNode cNode, List<String> excludes, List<FieldNode> list) {
@@ -110,22 +125,30 @@ public class ExternalizeMethodsASTTransformation extends AbstractASTTransformati
             String suffix = suffixForField(fNode);
             MethodCallExpression readObject = callX(varX(oin), "read" + suffix);
             readObject.setImplicitThis(false);
-            body.addStatement(assignS(varX(fNode), suffix.equals("Object") ? castX(GenericsUtils.nonGeneric(fNode.getType()), readObject) : readObject));
+            body.addStatement(assignS(varX(fNode), "Object".equals(suffix) ? castX(GenericsUtils.nonGeneric(fNode.getType()), readObject) : readObject));
         }
-        addGeneratedMethod(cNode, "readExternal", ACC_PUBLIC, ClassHelper.VOID_TYPE, params(oin), ClassNode.EMPTY_ARRAY, body);
+        // GEP-21 Shape C: replace the stubber's placeholder body if present.
+        Parameter[] readParams = params(oin);
+        MethodNode existing = cNode.getDeclaredMethod("readExternal", readParams);
+        if (StubberSupport.isStub(existing)) {
+            existing.setCode(body);
+            StubberSupport.clearStub(existing);
+        } else {
+            addGeneratedMethod(cNode, "readExternal", ACC_PUBLIC, ClassHelper.VOID_TYPE, readParams, ClassNode.EMPTY_ARRAY, body);
+        }
     }
 
     private static String suffixForField(FieldNode fNode) {
         // use primitives for efficiency
-        if (fNode.getType() == ClassHelper.int_TYPE) return "Int";
-        if (fNode.getType() == ClassHelper.boolean_TYPE) return "Boolean";
+        if (isPrimitiveInt(fNode.getType())) return "Int";
+        if (isPrimitiveBoolean(fNode.getType())) return "Boolean";
 //        currently char isn't found due to a bug, so go with Object
-//        if (fNode.getType() == ClassHelper.char_TYPE) return "Char";
-        if (fNode.getType() == ClassHelper.long_TYPE) return "Long";
-        if (fNode.getType() == ClassHelper.short_TYPE) return "Short";
-        if (fNode.getType() == ClassHelper.byte_TYPE) return "Byte";
-        if (fNode.getType() == ClassHelper.float_TYPE) return "Float";
-        if (fNode.getType() == ClassHelper.double_TYPE) return "Double";
+//        if (isPrimitiveChar(fNode.getType())) return "Character";
+        if (isPrimitiveLong(fNode.getType())) return "Long";
+        if (isPrimitiveShort(fNode.getType())) return "Short";
+        if (isPrimitiveByte(fNode.getType())) return "Byte";
+        if (isPrimitiveFloat(fNode.getType())) return "Float";
+        if (isPrimitiveDouble(fNode.getType())) return "Double";
         return "Object";
     }
 }

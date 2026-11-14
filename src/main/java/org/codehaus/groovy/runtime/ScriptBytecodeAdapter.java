@@ -23,7 +23,6 @@ import groovy.lang.EmptyRange;
 import groovy.lang.GroovyInterceptable;
 import groovy.lang.GroovyObject;
 import groovy.lang.GroovyRuntimeException;
-import groovy.lang.GroovySystem;
 import groovy.lang.IntRange;
 import groovy.lang.MetaClass;
 import groovy.lang.MissingMethodException;
@@ -31,6 +30,8 @@ import groovy.lang.MissingPropertyException;
 import groovy.lang.NumberRange;
 import groovy.lang.ObjectRange;
 import groovy.lang.Tuple;
+import org.apache.groovy.internal.metaclass.GroovyObjectOverrides;
+import org.apache.groovy.lang.annotation.GroovyABI;
 import org.codehaus.groovy.runtime.metaclass.MissingMethodExceptionNoStack;
 import org.codehaus.groovy.runtime.metaclass.MissingMethodExecutionFailed;
 import org.codehaus.groovy.runtime.metaclass.MissingPropertyExceptionNoStack;
@@ -39,34 +40,49 @@ import org.codehaus.groovy.runtime.wrappers.GroovyObjectWrapper;
 import org.codehaus.groovy.runtime.wrappers.PojoWrapper;
 import org.codehaus.groovy.runtime.wrappers.Wrapper;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.BaseStream;
 
 /**
  * A static helper class to interface bytecode and runtime
  */
+@GroovyABI(since = "1.0.0")
 public class ScriptBytecodeAdapter {
+
+    /**
+     * An empty Object array constant.
+     */
     public static final Object[] EMPTY_ARGS = {};
+    private static final Integer ONE = 1;
     private static final Integer ZERO = 0;
     private static final Integer MINUS_ONE = -1;
-    private static final Integer ONE = 1;
 
     //  --------------------------------------------------------
     //                   exception handling
     //  --------------------------------------------------------
+
+    /**
+     * Unwraps a GroovyRuntimeException, extracting the actual cause if present.
+     * Converts GroovyRuntimeException instances that wrap actual exceptions to those exceptions.
+     *
+     * @param gre the GroovyRuntimeException to unwrap
+     * @return the unwrapped Throwable
+     */
     public static Throwable unwrap(GroovyRuntimeException gre) {
-        if (gre.getCause()==null) {
-            if (gre instanceof MissingPropertyExceptionNoStack) {
-                MissingPropertyExceptionNoStack noStack = (MissingPropertyExceptionNoStack) gre;
+        if (gre.getCause() == null) {
+            if (gre instanceof MissingPropertyExceptionNoStack noStack) {
                 return new MissingPropertyException(noStack.getProperty(), noStack.getType());
             }
 
-            if (gre instanceof MissingMethodExceptionNoStack) {
-                MissingMethodExceptionNoStack noStack = (MissingMethodExceptionNoStack) gre;
+            if (gre instanceof MissingMethodExceptionNoStack noStack) {
                 return new MissingMethodException(noStack.getMethod(), noStack.getType(), noStack.getArguments(), noStack.isStatic());
             }
         }
@@ -80,25 +96,44 @@ public class ScriptBytecodeAdapter {
     //  --------------------------------------------------------
     //                       methods for this
     //  --------------------------------------------------------
+    /**
+     * Invokes {@code messageName} on a {@link GroovyObject} from inside the receiver.
+     * <p>
+     * A {@link GroovyInterceptable} receiver is dispatched with
+     * {@link GroovyObject#invokeMethod(String, Object)}. Any other receiver is dispatched
+     * through its metaclass
+     * {@link MetaClass#invokeMethod(Class, Object, String, Object[], boolean, boolean)}, with
+     * {@code isCallToSuper} false and {@code fromInsideClass} true.
+     * <p>
+     * A {@link MissingMethodExecutionFailed} is rethrown as its {@link MissingMethodException}
+     * cause and then unwrapped. Any other {@link MissingMethodException} whose type is the
+     * receiver's class and whose method name equals {@code messageName} falls back to
+     * {@link GroovyObject#invokeMethod(String, Object)} when the receiver is not intercepting. A
+     * {@link GroovyRuntimeException} is passed to {@link #unwrap} and rethrown.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the method name
+     * @param messageArguments the arguments to pass
+     * @return the value returned by the invocation
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeMethodOnCurrentN(Class senderClass, GroovyObject receiver, String messageName, Object[] messageArguments) throws Throwable {
-        Object result = null;
-        boolean intercepting = receiver instanceof GroovyInterceptable;
         try {
+            boolean intercepting = (receiver instanceof GroovyInterceptable);
             try {
-                // if it's a pure interceptable object (even intercepting toString(), clone(), ...)
                 if (intercepting) {
-                    result = receiver.invokeMethod(messageName, messageArguments);
-                }
-                //else if there's a statically typed method or a GDK method
-                else {
-                    result = receiver.getMetaClass().invokeMethod(senderClass, receiver, messageName, messageArguments, false, true);
+                    return receiver.invokeMethod(messageName, messageArguments);
+                } else {
+                    return receiver.getMetaClass().invokeMethod(senderClass, receiver, messageName, messageArguments, false, true);
                 }
             } catch (MissingMethodException e) {
                 if (e instanceof MissingMethodExecutionFailed) {
-                    throw (MissingMethodException)e.getCause();
+                    throw (MissingMethodException) e.getCause();
                 } else if (!intercepting && receiver.getClass() == e.getType() && e.getMethod().equals(messageName)) {
                     // in case there's nothing else, invoke the object's own invokeMethod()
-                    result = receiver.invokeMethod(messageName, messageArguments);
+                    return receiver.invokeMethod(messageName, messageArguments);
                 } else {
                     throw e;
                 }
@@ -106,29 +141,89 @@ public class ScriptBytecodeAdapter {
         } catch (GroovyRuntimeException gre) {
             throw unwrap(gre);
         }
-        return result;
     }
 
+    /**
+     * Forwards to {@link #invokeMethodOnCurrentN} with the same arguments. A null
+     * {@code receiver} is passed through on that call.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the method name
+     * @param messageArguments the arguments to pass
+     * @return the value returned by {@link #invokeMethodOnCurrentN}
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeMethodOnCurrentNSafe(Class senderClass, GroovyObject receiver, String messageName, Object[] messageArguments) throws Throwable {
         return invokeMethodOnCurrentN(senderClass, receiver, messageName, messageArguments);
     }
 
+    /**
+     * Invokes {@code messageName} on each element of {@code receiver} and returns the results.
+     * {@code InvokerHelper.asIterator} walks {@code receiver} with no null test. Each element is
+     * invoked with {@link #invokeMethodNSafe}, so a null element contributes null, and the
+     * results are collected into a {@link List}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the method name
+     * @param messageArguments the arguments to pass
+     * @return a {@link List} of per-element results
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeMethodOnCurrentNSpreadSafe(Class senderClass, GroovyObject receiver, String messageName, Object[] messageArguments) throws Throwable {
-        List answer = new ArrayList();
-        for (Iterator it = InvokerHelper.asIterator(receiver); it.hasNext();) {
+        List<Object> answer = new ArrayList<>();
+        for (Iterator<?> it = InvokerHelper.asIterator(receiver); it.hasNext();) {
             answer.add(invokeMethodNSafe(senderClass, it.next(), messageName, messageArguments));
         }
         return answer;
     }
 
+    /**
+     * Invokes {@code messageName} with no arguments. The call is {@link #invokeMethodOnCurrentN}
+     * with {@link #EMPTY_ARGS}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the method name
+     * @return the value returned by {@link #invokeMethodOnCurrentN}
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeMethodOnCurrent0(Class senderClass, GroovyObject receiver, String messageName) throws Throwable {
         return invokeMethodOnCurrentN(senderClass, receiver, messageName, EMPTY_ARGS);
     }
 
+    /**
+     * Invokes {@code messageName} with no arguments. {@code messageArguments} is ignored and
+     * {@link #EMPTY_ARGS} is passed to {@link #invokeMethodOnCurrentNSafe}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the method name
+     * @param messageArguments ignored; {@link #EMPTY_ARGS} is passed instead
+     * @return the value returned by {@link #invokeMethodOnCurrentNSafe}
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeMethodOnCurrent0Safe(Class senderClass, GroovyObject receiver, String messageName, Object[] messageArguments) throws Throwable {
         return invokeMethodOnCurrentNSafe(senderClass, receiver, messageName, EMPTY_ARGS);
     }
 
+    /**
+     * Spread-invokes {@code messageName} with no arguments. {@code messageArguments} is ignored
+     * and {@link #EMPTY_ARGS} is passed to {@link #invokeMethodOnCurrentNSpreadSafe}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the method name
+     * @param messageArguments ignored; {@link #EMPTY_ARGS} is passed instead
+     * @return the {@link List} returned by {@link #invokeMethodOnCurrentNSpreadSafe}
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeMethodOnCurrent0SpreadSafe(Class senderClass, GroovyObject receiver, String messageName, Object[] messageArguments) throws Throwable {
         return invokeMethodOnCurrentNSpreadSafe(senderClass, receiver, messageName, EMPTY_ARGS);
     }
@@ -136,10 +231,27 @@ public class ScriptBytecodeAdapter {
     //  --------------------------------------------------------
     //                       methods for super
     //  --------------------------------------------------------
+    /**
+     * Invokes {@code messageName} on the super class of a {@link GroovyObject}.
+     * <p>
+     * The receiver's metaclass is called directly, with no {@link GroovyInterceptable} dispatch
+     * and no missing-method fallback.
+     * {@link MetaClass#invokeMethod(Class, Object, String, Object[], boolean, boolean)} is
+     * passed {@code isCallToSuper} true and {@code fromInsideClass} true. A
+     * {@link GroovyRuntimeException} is passed to {@link #unwrap} and rethrown.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the method name
+     * @param messageArguments the arguments to pass
+     * @return the value returned by the super call
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeMethodOnSuperN(Class senderClass, GroovyObject receiver, String messageName, Object[] messageArguments) throws Throwable {
         MetaClass metaClass = receiver.getMetaClass();
         // ignore interception and missing method fallback
-        Object result = null;
+        Object result;
         try {
             result = metaClass.invokeMethod(senderClass, receiver, messageName, messageArguments, true, true);
         } catch (GroovyRuntimeException gre) {
@@ -148,26 +260,87 @@ public class ScriptBytecodeAdapter {
         return result;
     }
 
+    /**
+     * Forwards to {@link #invokeMethodOnSuperN} with the same arguments. A null {@code receiver}
+     * is passed through on that call.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the method name
+     * @param messageArguments the arguments to pass
+     * @return the value returned by {@link #invokeMethodOnSuperN}
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeMethodOnSuperNSafe(Class senderClass, GroovyObject receiver, String messageName, Object[] messageArguments) throws Throwable {
         return invokeMethodOnSuperN(senderClass, receiver, messageName, messageArguments);
     }
 
+    /**
+     * Invokes {@code messageName} on each element of {@code receiver} and returns the results.
+     * {@code InvokerHelper.asIterator} walks {@code receiver} with no null test. Each element is
+     * invoked with {@link #invokeMethodNSafe}, so a null element contributes null, and the
+     * results are collected into a {@link List}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the method name
+     * @param messageArguments the arguments to pass
+     * @return a {@link List} of per-element results
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeMethodOnSuperNSpreadSafe(Class senderClass, GroovyObject receiver, String messageName, Object[] messageArguments) throws Throwable {
-        List answer = new ArrayList();
-        for (Iterator it = InvokerHelper.asIterator(receiver); it.hasNext();) {
+        List<Object> answer = new ArrayList<>();
+        for (Iterator<?> it = InvokerHelper.asIterator(receiver); it.hasNext();) {
             answer.add(invokeMethodNSafe(senderClass, it.next(), messageName, messageArguments));
         }
         return answer;
     }
 
+    /**
+     * Invokes {@code messageName} on the super class with no arguments. The call is
+     * {@link #invokeMethodOnSuperN} with {@link #EMPTY_ARGS}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the method name
+     * @return the value returned by {@link #invokeMethodOnSuperN}
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeMethodOnSuper0(Class senderClass, GroovyObject receiver, String messageName) throws Throwable {
         return invokeMethodOnSuperN(senderClass, receiver, messageName, EMPTY_ARGS);
     }
 
+    /**
+     * Invokes {@code messageName} on the super class with no arguments. {@code messageArguments}
+     * is ignored and {@link #EMPTY_ARGS} is passed to {@link #invokeMethodOnSuperNSafe}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the method name
+     * @param messageArguments ignored; {@link #EMPTY_ARGS} is passed instead
+     * @return the value returned by {@link #invokeMethodOnSuperNSafe}
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeMethodOnSuper0Safe(Class senderClass, GroovyObject receiver, String messageName, Object[] messageArguments) throws Throwable {
         return invokeMethodOnSuperNSafe(senderClass, receiver, messageName, EMPTY_ARGS);
     }
 
+    /**
+     * Spread-invokes {@code messageName} with no arguments. {@code messageArguments} is ignored
+     * and {@link #EMPTY_ARGS} is passed to {@link #invokeMethodOnSuperNSpreadSafe}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the method name
+     * @param messageArguments ignored; {@link #EMPTY_ARGS} is passed instead
+     * @return the {@link List} returned by {@link #invokeMethodOnSuperNSpreadSafe}
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeMethodOnSuper0SpreadSafe(Class senderClass, GroovyObject receiver, String messageName, Object[] messageArguments) throws Throwable {
         return invokeMethodOnSuperNSpreadSafe(senderClass, receiver, messageName, EMPTY_ARGS);
     }
@@ -175,37 +348,113 @@ public class ScriptBytecodeAdapter {
     //  --------------------------------------------------------
     //              normal method invocation
     //  --------------------------------------------------------
+    /**
+     * Invokes {@code messageName} on {@code receiver} by calling
+     * {@code InvokerHelper.invokeMethod}. The helper replaces a null receiver with
+     * {@code NullObject}. A receiver that is a {@code Class} is dispatched as a static call. A
+     * {@link GroovyRuntimeException} is passed to {@link #unwrap} and rethrown.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the method name
+     * @param messageArguments the arguments to pass
+     * @return the value returned by {@code InvokerHelper.invokeMethod}
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeMethodN(Class senderClass, Object receiver, String messageName, Object[] messageArguments) throws Throwable {
-        try {    
+        try {
             return InvokerHelper.invokeMethod(receiver, messageName, messageArguments);
         } catch (GroovyRuntimeException gre) {
             throw unwrap(gre);
         }
     }
 
+    /**
+     * Invokes {@code messageName} on {@code receiver}, returning null when {@code receiver} is
+     * null. A non-null receiver is forwarded to {@link #invokeMethodN}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the method name
+     * @param messageArguments the arguments to pass
+     * @return null when {@code receiver} is null; otherwise the result of {@link #invokeMethodN}
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeMethodNSafe(Class senderClass, Object receiver, String messageName, Object[] messageArguments) throws Throwable {
         if (receiver == null) return null;
         return invokeMethodN(senderClass, receiver, messageName, messageArguments);
     }
 
+    /**
+     * Invokes {@code messageName} on each element of {@code receiver} and returns the results. A
+     * null receiver returns null. Otherwise {@code InvokerHelper.asIterator} walks the receiver,
+     * each element is invoked with {@link #invokeMethodNSafe}, and the results are collected
+     * into a {@link List}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the method name
+     * @param messageArguments the arguments to pass
+     * @return null when {@code receiver} is null; otherwise a {@link List} of per-element
+     *     results
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeMethodNSpreadSafe(Class senderClass, Object receiver, String messageName, Object[] messageArguments) throws Throwable {
         if (receiver == null) return null;
-        List answer = new ArrayList();
-        for (Iterator it = InvokerHelper.asIterator(receiver); it.hasNext();) {
+        List<Object> answer = new ArrayList<>();
+        for (Iterator<?> it = InvokerHelper.asIterator(receiver); it.hasNext();) {
             answer.add(invokeMethodNSafe(senderClass, it.next(), messageName, messageArguments));
         }
         return answer;
     }
 
+    /**
+     * Invokes {@code messageName} with no arguments. The call is {@link #invokeMethodN} with
+     * {@link #EMPTY_ARGS}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the method name
+     * @return the value returned by {@link #invokeMethodN}
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeMethod0(Class senderClass, Object receiver, String messageName) throws Throwable {
         return invokeMethodN(senderClass, receiver, messageName, EMPTY_ARGS);
     }
 
+    /**
+     * Invokes {@code messageName} with no arguments, returning null when {@code receiver} is
+     * null. A non-null receiver is forwarded to {@link #invokeMethodNSafe} with
+     * {@link #EMPTY_ARGS}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the method name
+     * @return null when {@code receiver} is null; otherwise the result of
+     *     {@link #invokeMethodNSafe}
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeMethod0Safe(Class senderClass, Object receiver, String messageName) throws Throwable {
         if (receiver == null) return null;
         return invokeMethodNSafe(senderClass, receiver, messageName, EMPTY_ARGS);
     }
 
+    /**
+     * Spread-invokes {@code messageName} with no arguments. The call is
+     * {@link #invokeMethodNSpreadSafe} with {@link #EMPTY_ARGS}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the method name
+     * @return the value returned by {@link #invokeMethodNSpreadSafe}
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeMethod0SpreadSafe(Class senderClass, Object receiver, String messageName) throws Throwable {
         return invokeMethodNSpreadSafe(senderClass, receiver, messageName, EMPTY_ARGS);
     }
@@ -213,6 +462,19 @@ public class ScriptBytecodeAdapter {
     //  --------------------------------------------------------
     //                static normal method invocation
     //  --------------------------------------------------------
+    /**
+     * Invokes the static method {@code messageName} on {@code receiver} by calling
+     * {@code InvokerHelper.invokeStaticMethod}. A {@link GroovyRuntimeException} is passed to
+     * {@link #unwrap} and rethrown.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the class that holds the static method
+     * @param messageName the method name
+     * @param messageArguments the arguments to pass
+     * @return the value returned by the static call
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeStaticMethodN(Class senderClass, Class receiver, String messageName, Object[] messageArguments) throws Throwable {
         try {
             return InvokerHelper.invokeStaticMethod(receiver, messageName, messageArguments);
@@ -221,6 +483,17 @@ public class ScriptBytecodeAdapter {
         }
     }
 
+    /**
+     * Invokes the static method {@code messageName} with no arguments. The call is
+     * {@link #invokeStaticMethodN} with {@link #EMPTY_ARGS}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the class that holds the static method
+     * @param messageName the method name
+     * @return the value returned by {@link #invokeStaticMethodN}
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeStaticMethod0(Class senderClass, Class receiver, String messageName) throws Throwable {
         return invokeStaticMethodN(senderClass, receiver, messageName, EMPTY_ARGS);
     }
@@ -228,6 +501,20 @@ public class ScriptBytecodeAdapter {
     //  --------------------------------------------------------
     //              normal constructor invocation (via new)
     //  --------------------------------------------------------
+    /**
+     * Constructs an instance of {@code receiver} by calling
+     * {@code InvokerHelper.invokeConstructorOf}. The helper treats a null {@code arguments}
+     * value as no arguments, passes an object array through, and wraps any other object as the
+     * sole argument. A {@link GroovyRuntimeException} is passed to {@link #unwrap} and rethrown.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the class to instantiate
+     * @param arguments the constructor arguments, as interpreted by
+     *     {@code InvokerHelper.invokeConstructorOf}
+     * @return the new instance
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeNewN(Class senderClass, Class receiver, Object arguments) throws Throwable {
         try {
             return InvokerHelper.invokeConstructorOf(receiver, arguments);
@@ -236,6 +523,16 @@ public class ScriptBytecodeAdapter {
         }
     }
 
+    /**
+     * Constructs an instance of {@code receiver} with no arguments. The call is
+     * {@link #invokeNewN} with {@link #EMPTY_ARGS}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the class to instantiate
+     * @return the new instance
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeNew0(Class senderClass, Class receiver) throws Throwable {
         return invokeNewN(senderClass, receiver, EMPTY_ARGS);
     }
@@ -244,9 +541,22 @@ public class ScriptBytecodeAdapter {
     //       special constructor invocation (via this/super)
     //  --------------------------------------------------------
 
+    /**
+     * Selects a constructor of {@code which} and transforms {@code arguments}. The metaclass is
+     * {@code InvokerHelper.getMetaClass(which)}, and
+     * {@link MetaClass#selectConstructorAndTransformArguments(int, Object[])} performs the
+     * selection. A {@link GroovyRuntimeException} is passed to {@link #unwrap} and rethrown.
+     *
+     * @param arguments the constructor arguments transformed by the metaclass
+     * @param numberOfConstructors the constructor count supplied by the caller
+     * @param which the class whose constructor is selected
+     * @return the selection result returned by the metaclass
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static int selectConstructorAndTransformArguments(Object[] arguments, int numberOfConstructors, Class which) throws Throwable {
-        MetaClass metaClass = GroovySystem.getMetaClassRegistry().getMetaClass(which);
         try {
+            MetaClass metaClass = InvokerHelper.getMetaClass(which);
             return metaClass.selectConstructorAndTransformArguments(numberOfConstructors, arguments);
         } catch (GroovyRuntimeException gre) {
             throw unwrap(gre);
@@ -257,6 +567,22 @@ public class ScriptBytecodeAdapter {
     //              field handling super: get
     //  --------------------------------------------------------
 
+    /**
+     * Reads the field named {@code messageName}, using the super-class attribute unless
+     * {@code receiver} is a {@code Class}.
+     * <p>
+     * When {@code receiver} is a {@code Class}, the read is {@code InvokerHelper.getAttribute}.
+     * Any other receiver is cast to {@link GroovyObject} and read with
+     * {@link MetaClass#getAttribute(Class, Object, String, boolean)} passing {@code useSuper}
+     * true. A {@link GroovyRuntimeException} is passed to {@link #unwrap} and rethrown.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the field name
+     * @return the field value
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object getFieldOnSuper(Class senderClass, Object receiver, String messageName) throws Throwable {
         try {
             if (receiver instanceof Class) {
@@ -270,13 +596,36 @@ public class ScriptBytecodeAdapter {
         }
     }
 
+    /**
+     * Forwards to {@link #getFieldOnSuper} with the same arguments. A null {@code receiver} is
+     * passed through on that call.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the field name
+     * @return the value returned by {@link #getFieldOnSuper}
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object getFieldOnSuperSafe(Class senderClass, Object receiver, String messageName) throws Throwable {
         return getFieldOnSuper(senderClass, receiver, messageName);
     }
 
+    /**
+     * Reads the field named {@code messageName} from each element of {@code receiver}.
+     * {@code InvokerHelper.asIterator} walks {@code receiver} with no null test. Each element is
+     * read with {@link #getFieldOnSuper}, and the values are collected into a {@link List}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the field name
+     * @return a {@link List} of per-element field values
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object getFieldOnSuperSpreadSafe(Class senderClass, Object receiver, String messageName) throws Throwable {
-        List answer = new ArrayList();
-        for (Iterator it = InvokerHelper.asIterator(receiver); it.hasNext();) {
+        List<Object> answer = new ArrayList<>();
+        for (Iterator<?> it = InvokerHelper.asIterator(receiver); it.hasNext();) {
             answer.add(getFieldOnSuper(senderClass, it.next(), messageName));
         }
         return answer;
@@ -286,6 +635,23 @@ public class ScriptBytecodeAdapter {
     //              field handling super: set
     //  --------------------------------------------------------
 
+    /**
+     * Writes the field named {@code messageName}, using the super-class attribute unless
+     * {@code receiver} is a {@code Class}.
+     * <p>
+     * When {@code receiver} is a {@code Class}, the write is {@code InvokerHelper.setAttribute}.
+     * Any other receiver is cast to {@link GroovyObject} and written with
+     * {@link MetaClass#setAttribute(Class, Object, String, Object, boolean, boolean)}, passing
+     * {@code useSuper} true and {@code fromInsideClass} true. A {@link GroovyRuntimeException}
+     * is passed to {@link #unwrap} and rethrown.
+     *
+     * @param messageArgument the value to write
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the field name
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static void setFieldOnSuper(Object messageArgument, Class senderClass, Object receiver, String messageName) throws Throwable {
         try {
             if (receiver instanceof Class) {
@@ -299,12 +665,35 @@ public class ScriptBytecodeAdapter {
         }
     }
 
+    /**
+     * Forwards to {@link #setFieldOnSuper} with the same arguments. A null {@code receiver} is
+     * passed through on that call.
+     *
+     * @param messageArgument the value to write
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the field name
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static void setFieldOnSuperSafe(Object messageArgument, Class senderClass, Object receiver, String messageName) throws Throwable {
         setFieldOnSuper(messageArgument, senderClass, receiver, messageName);
     }
 
+    /**
+     * Writes the field named {@code messageName} on each element of {@code receiver}.
+     * {@code InvokerHelper.asIterator} walks {@code receiver} with no null test, and each
+     * element is written with {@link #setFieldOnSuper}.
+     *
+     * @param messageArgument the value to write
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the field name
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static void setFieldOnSuperSpreadSafe(Object messageArgument, Class senderClass, Object receiver, String messageName) throws Throwable {
-        for (Iterator it = InvokerHelper.asIterator(receiver); it.hasNext();) {
+        for (Iterator<?> it = InvokerHelper.asIterator(receiver); it.hasNext();) {
             setFieldOnSuper(messageArgument, senderClass, it.next(), messageName);
         }
     }
@@ -313,23 +702,59 @@ public class ScriptBytecodeAdapter {
     //              normal field handling : get
     //  --------------------------------------------------------
 
+    /**
+     * Reads the field named {@code messageName} by calling {@code InvokerHelper.getAttribute}.
+     * The helper replaces a null receiver with {@code NullObject}. A
+     * {@link GroovyRuntimeException} is passed to {@link #unwrap} and rethrown.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the field name
+     * @return the field value
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object getField(Class senderClass, Object receiver, String messageName) throws Throwable {
         try {
             return InvokerHelper.getAttribute(receiver, messageName);
         } catch (GroovyRuntimeException gre) {
             throw unwrap(gre);
-        }    
+        }
     }
 
+    /**
+     * Reads the field named {@code messageName}, returning null when {@code receiver} is null. A
+     * non-null receiver is read with {@link #getField}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the field name
+     * @return null when {@code receiver} is null; otherwise the field value
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object getFieldSafe(Class senderClass, Object receiver, String messageName) throws Throwable {
         if (receiver == null) return null;
         return getField(senderClass, receiver, messageName);
     }
 
+    /**
+     * Reads the field named {@code messageName} from each element of {@code receiver}. A null
+     * receiver returns null. Otherwise {@code InvokerHelper.asIterator} walks the receiver, each
+     * element is read with {@link #getFieldSafe}, and the values are collected into a
+     * {@link List}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the field name
+     * @return null when {@code receiver} is null; otherwise a {@link List} of field values
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object getFieldSpreadSafe(Class senderClass, Object receiver, String messageName) throws Throwable {
         if (receiver == null) return null;
-        List answer = new ArrayList();
-        for (Iterator it = InvokerHelper.asIterator(receiver); it.hasNext();) {
+        List<Object> answer = new ArrayList<>();
+        for (Iterator<?> it = InvokerHelper.asIterator(receiver); it.hasNext();) {
             answer.add(getFieldSafe(senderClass, it.next(), messageName));
         }
         return answer;
@@ -339,6 +764,18 @@ public class ScriptBytecodeAdapter {
     //              normal field handling : set
     //  --------------------------------------------------------
 
+    /**
+     * Writes the field named {@code messageName} by calling {@code InvokerHelper.setAttribute}.
+     * The helper replaces a null receiver with {@code NullObject}. A
+     * {@link GroovyRuntimeException} is passed to {@link #unwrap} and rethrown.
+     *
+     * @param messageArgument the value to write
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the field name
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static void setField(Object messageArgument, Class senderClass, Object receiver, String messageName) throws Throwable {
         try {
             InvokerHelper.setAttribute(receiver, messageName, messageArgument);
@@ -347,14 +784,37 @@ public class ScriptBytecodeAdapter {
         }
     }
 
+    /**
+     * Writes the field named {@code messageName}, doing nothing when {@code receiver} is null. A
+     * non-null receiver is written with {@link #setField}.
+     *
+     * @param messageArgument the value to write
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the field name
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static void setFieldSafe(Object messageArgument, Class senderClass, Object receiver, String messageName) throws Throwable {
         if (receiver == null) return;
         setField(messageArgument, senderClass, receiver, messageName);
     }
 
+    /**
+     * Writes the field named {@code messageName} on each element of {@code receiver}. A null
+     * receiver returns without writing. Otherwise {@code InvokerHelper.asIterator} walks the
+     * receiver and each element is written with {@link #setFieldSafe}.
+     *
+     * @param messageArgument the value to write
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the field name
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static void setFieldSpreadSafe(Object messageArgument, Class senderClass, Object receiver, String messageName) throws Throwable {
         if (receiver == null) return;
-        for (Iterator it = InvokerHelper.asIterator(receiver); it.hasNext();) {
+        for (Iterator<?> it = InvokerHelper.asIterator(receiver); it.hasNext();) {
             setFieldSafe(messageArgument, senderClass, it.next(), messageName);
         }
     }
@@ -363,27 +823,66 @@ public class ScriptBytecodeAdapter {
     //              normal GroovyObject field handling : get
     //  --------------------------------------------------------
 
+    /**
+     * Reads the field named {@code messageName} from a {@link GroovyObject} through its
+     * metaclass. {@link MetaClass#getAttribute(Class, Object, String, boolean)} is called with
+     * {@code useSuper} false. A {@link GroovyRuntimeException} is passed to {@link #unwrap} and
+     * rethrown.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the field name
+     * @return the field value
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object getGroovyObjectField(Class senderClass, GroovyObject receiver, String messageName) throws Throwable {
-        try  {
-            return receiver.getMetaClass().getAttribute(receiver, messageName);
+        try {
+            return receiver.getMetaClass().getAttribute(senderClass, receiver, messageName, false);
         } catch (GroovyRuntimeException gre) {
             throw unwrap(gre);
         }
     }
 
+    /**
+     * Reads the field named {@code messageName}, returning null when {@code receiver} is null. A
+     * non-null receiver is read through its metaclass
+     * {@link MetaClass#getAttribute(Class, Object, String, boolean)} with {@code useSuper}
+     * false. A {@link GroovyRuntimeException} is passed to {@link #unwrap} and rethrown.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the field name
+     * @return null when {@code receiver} is null; otherwise the field value
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object getGroovyObjectFieldSafe(Class senderClass, GroovyObject receiver, String messageName) throws Throwable {
         if (receiver == null) return null;
         try {
-            return receiver.getMetaClass().getAttribute(receiver, messageName);
+            return receiver.getMetaClass().getAttribute(senderClass, receiver, messageName, false);
         } catch (GroovyRuntimeException gre) {
             throw unwrap(gre);
         }
     }
 
+    /**
+     * Reads the field named {@code messageName} from each element of {@code receiver}. A null
+     * receiver returns null. Otherwise {@code InvokerHelper.asIterator} walks the receiver, each
+     * element is read with {@link #getFieldSafe}, and the values are collected into a
+     * {@link List}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the field name
+     * @return null when {@code receiver} is null; otherwise a {@link List} of field values
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object getGroovyObjectFieldSpreadSafe(Class senderClass, GroovyObject receiver, String messageName) throws Throwable {
         if (receiver == null) return null;
-        List answer = new ArrayList();
-        for (Iterator it = InvokerHelper.asIterator(receiver); it.hasNext();) {
+        List<Object> answer = new ArrayList<>();
+        for (Iterator<?> it = InvokerHelper.asIterator(receiver); it.hasNext();) {
             answer.add(getFieldSafe(senderClass, it.next(), messageName));
         }
         return answer;
@@ -393,14 +892,41 @@ public class ScriptBytecodeAdapter {
     //              normal field handling : set
     //  --------------------------------------------------------
 
+    /**
+     * Writes the field named {@code messageName} on a {@link GroovyObject} through its
+     * metaclass. {@link MetaClass#setAttribute(Class, Object, String, Object, boolean, boolean)}
+     * is called with {@code useSuper} false and {@code fromInsideClass} false. A
+     * {@link GroovyRuntimeException} is passed to {@link #unwrap} and rethrown.
+     *
+     * @param messageArgument the value to write
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the field name
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static void setGroovyObjectField(Object messageArgument, Class senderClass, GroovyObject receiver, String messageName) throws Throwable {
         try {
-            receiver.getMetaClass().setAttribute(receiver, messageName, messageArgument);
+            receiver.getMetaClass().setAttribute(senderClass, receiver, messageName, messageArgument, false, false);
         } catch (GroovyRuntimeException gre) {
             throw unwrap(gre);
         }
     }
 
+    /**
+     * Writes the field named {@code messageName}, doing nothing when {@code receiver} is null. A
+     * non-null receiver is written with the metaclass method
+     * {@code setAttribute(Object, String, Object)}, passing the receiver, the field name, and
+     * {@code messageArgument}. A {@link GroovyRuntimeException} is passed to {@link #unwrap} and
+     * rethrown.
+     *
+     * @param messageArgument the value to write
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the field name
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static void setGroovyObjectFieldSafe(Object messageArgument, Class senderClass, GroovyObject receiver, String messageName) throws Throwable {
         if (receiver == null) return;
         try {
@@ -410,9 +936,21 @@ public class ScriptBytecodeAdapter {
         }
     }
 
+    /**
+     * Writes the field named {@code messageName} on each element of {@code receiver}. A null
+     * receiver returns without writing. Otherwise {@code InvokerHelper.asIterator} walks the
+     * receiver and each element is written with {@link #setFieldSafe}.
+     *
+     * @param messageArgument the value to write
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the field name
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static void setGroovyObjectFieldSpreadSafe(Object messageArgument, Class senderClass, GroovyObject receiver, String messageName) throws Throwable {
         if (receiver == null) return;
-        for (Iterator it = InvokerHelper.asIterator(receiver); it.hasNext();) {
+        for (Iterator<?> it = InvokerHelper.asIterator(receiver); it.hasNext();) {
             setFieldSafe(messageArgument, senderClass, it.next(), messageName);
         }
     }
@@ -421,17 +959,58 @@ public class ScriptBytecodeAdapter {
     //              Property handling super: get
     //  --------------------------------------------------------
 
+    /**
+     * Reads the property named {@code messageName} from the super class of a
+     * {@link GroovyObject}. The receiver's metaclass
+     * {@link MetaClass#getProperty(Class, Object, String, boolean, boolean)} is called with
+     * {@code isCallToSuper} true and {@code fromInsideClass} false. A
+     * {@link GroovyRuntimeException} is passed to {@link #unwrap} and rethrown.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the property name
+     * @return the property value
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object getPropertyOnSuper(Class senderClass, GroovyObject receiver, String messageName) throws Throwable {
-        return invokeMethodOnSuperN(senderClass, receiver, "getProperty", new Object[]{messageName});
+        try {
+            return receiver.getMetaClass().getProperty(senderClass, receiver, messageName, true, false);
+        } catch (GroovyRuntimeException gre) {
+            throw unwrap(gre);
+        }
     }
 
+    /**
+     * Forwards to {@link #getPropertyOnSuper} with the same arguments. A null {@code receiver}
+     * is passed through on that call.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the property name
+     * @return the value returned by {@link #getPropertyOnSuper}
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object getPropertyOnSuperSafe(Class senderClass, GroovyObject receiver, String messageName) throws Throwable {
         return getPropertyOnSuper(senderClass, receiver, messageName);
     }
 
+    /**
+     * Reads the property named {@code messageName} from each element of {@code receiver}.
+     * {@code InvokerHelper.asIterator} walks {@code receiver} with no null test. Each element is
+     * read with {@link #getPropertySafe}, and the values are collected into a {@link List}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the property name
+     * @return a {@link List} of per-element property values
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object getPropertyOnSuperSpreadSafe(Class senderClass, GroovyObject receiver, String messageName) throws Throwable {
-        List answer = new ArrayList();
-        for (Iterator it = InvokerHelper.asIterator(receiver); it.hasNext();) {
+        List<Object> answer = new ArrayList<>();
+        for (Iterator<?> it = InvokerHelper.asIterator(receiver); it.hasNext();) {
             answer.add(getPropertySafe(senderClass, it.next(), messageName));
         }
         return answer;
@@ -441,20 +1020,57 @@ public class ScriptBytecodeAdapter {
     //              Property handling super: set
     //  --------------------------------------------------------
 
+    /**
+     * Writes the property named {@code messageName} on the super class of a
+     * {@link GroovyObject}. The receiver's metaclass
+     * {@link MetaClass#setProperty(Class, Object, String, Object, boolean, boolean)} is called
+     * with {@code isCallToSuper} true and {@code fromInsideClass} false. A
+     * {@link GroovyRuntimeException} is passed to {@link #unwrap} and rethrown.
+     *
+     * @param messageArgument the value to write
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the property name
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static void setPropertyOnSuper(Object messageArgument, Class senderClass, GroovyObject receiver, String messageName) throws Throwable {
         try {
-            InvokerHelper.setAttribute(receiver, messageName, messageArgument);
+            receiver.getMetaClass().setProperty(senderClass, receiver, messageName, messageArgument, true, false);
         } catch (GroovyRuntimeException gre) {
             throw unwrap(gre);
         }
     }
 
+    /**
+     * Forwards to {@link #setPropertyOnSuper} with the same arguments. A null {@code receiver}
+     * is passed through on that call.
+     *
+     * @param messageArgument the value to write
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the property name
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static void setPropertyOnSuperSafe(Object messageArgument, Class senderClass, GroovyObject receiver, String messageName) throws Throwable {
         setPropertyOnSuper(messageArgument, senderClass, receiver, messageName);
     }
 
+    /**
+     * Writes the property named {@code messageName} on each element of {@code receiver}.
+     * {@code InvokerHelper.asIterator} walks {@code receiver} with no null test, and each
+     * element is written with {@link #setPropertySafe}.
+     *
+     * @param messageArgument the value to write
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the property name
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static void setPropertyOnSuperSpreadSafe(Object messageArgument, Class senderClass, GroovyObject receiver, String messageName) throws Throwable {
-        for (Iterator it = InvokerHelper.asIterator(receiver); it.hasNext();) {
+        for (Iterator<?> it = InvokerHelper.asIterator(receiver); it.hasNext();) {
             setPropertySafe(messageArgument, senderClass, it.next(), messageName);
         }
     }
@@ -463,24 +1079,81 @@ public class ScriptBytecodeAdapter {
     //              normal Property handling : get
     //  --------------------------------------------------------
 
+    /**
+     * Reads the property named {@code messageName} from {@code receiver}.
+     * <p>
+     * A null receiver is read from {@code NullObject.getNullObject()}. A {@link GroovyObject} is
+     * read with {@link GroovyObject#getProperty(String)} when {@code senderClass} is null or
+     * {@link GroovyObjectOverrides#overridesGetProperty(Class)} is true for the receiver's
+     * class. That test is true for a {@code getProperty} other than the {@link GroovyObject}
+     * default, including a synthetic or {@code @Internal} implementation, and when the method
+     * cannot be inspected. Every other receiver is read through the metaclass from
+     * {@code InvokerHelper.getMetaClass}, calling
+     * {@link MetaClass#getProperty(Class, Object, String, boolean, boolean)} with
+     * {@code isCallToSuper} false and {@code fromInsideClass} false. A
+     * {@link GroovyRuntimeException} is passed to {@link #unwrap} and rethrown.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the property name
+     * @return the property value
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object getProperty(Class senderClass, Object receiver, String messageName) throws Throwable {
         try {
-            return InvokerHelper.getProperty(receiver, messageName);
+            if (receiver == null) {
+                return NullObject.getNullObject().getProperty(messageName);
+            } else if (receiver instanceof GroovyObject groovyObject && (senderClass == null
+                        || GroovyObjectOverrides.overridesGetProperty(receiver.getClass()))) {
+                // TODO: instead of checking for no getProperty specialization, pass senderClass in ThreadLocal or something
+                // overridesGetProperty, not the hasCustomGetProperty of the property-read call sites:
+                // a synthetic or @Internal getProperty receives the read here, and the two criteria
+                // differ on purpose (see GroovyObjectOverrides). As in setProperty, a class that
+                // cannot be inspected counts as overriding, so the read reaches its own getProperty
+                return groovyObject.getProperty(messageName);
+            } else {
+                MetaClass metaClass = InvokerHelper.getMetaClass(receiver);
+                return metaClass.getProperty(senderClass, receiver, messageName, false, false);
+            }
         } catch (GroovyRuntimeException gre) {
             throw unwrap(gre);
         }
     }
 
+    /**
+     * Reads the property named {@code messageName}, returning null when {@code receiver} is
+     * null. A non-null receiver is read with {@link #getProperty}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the property name
+     * @return null when {@code receiver} is null; otherwise the property value
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object getPropertySafe(Class senderClass, Object receiver, String messageName) throws Throwable {
         if (receiver == null) return null;
         return getProperty(senderClass, receiver, messageName);
     }
 
+    /**
+     * Reads the property named {@code messageName} from each element of {@code receiver}. A null
+     * receiver returns null. Otherwise {@code InvokerHelper.asIterator} walks the receiver, each
+     * element is read with {@link #getPropertySafe}, and the values are collected into a
+     * {@link List}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the property name
+     * @return null when {@code receiver} is null; otherwise a {@link List} of property values
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object getPropertySpreadSafe(Class senderClass, Object receiver, String messageName) throws Throwable {
         if (receiver == null) return null;
-
-        List answer = new ArrayList();
-        for (Iterator it = InvokerHelper.asIterator(receiver); it.hasNext();) {
+        List<Object> answer = new ArrayList<>();
+        for (Iterator<?> it = InvokerHelper.asIterator(receiver); it.hasNext();) {
             answer.add(getPropertySafe(senderClass, it.next(), messageName));
         }
         return answer;
@@ -490,24 +1163,97 @@ public class ScriptBytecodeAdapter {
     //              normal Property handling : set
     //  --------------------------------------------------------
 
+    /**
+     * Writes {@code messageArgument} to the property named {@code messageName}.
+     * <p>
+     * A null receiver is written through {@code NullObject.getNullObject()}. A
+     * {@link GroovyObject} is written with {@link GroovyObject#setProperty(String, Object)} when
+     * {@code senderClass} is null or {@link GroovyObjectOverrides#overridesSetProperty(Class)}
+     * is true for the receiver's class, including when that method cannot be inspected. Every
+     * other receiver is written through the metaclass from {@code InvokerHelper.getMetaClass},
+     * calling {@link MetaClass#setProperty(Class, Object, String, Object, boolean, boolean)}
+     * with {@code isCallToSuper} false and {@code fromInsideClass} false.
+     * <p>
+     * If that write throws {@link MissingPropertyException}, {@code receiver} is a
+     * {@link GroovyObject}, and {@code senderClass} is a {@code GeneratedClosure}, the sender is
+     * replaced by its enclosing class and that replacement repeats while the class is a
+     * generated closure. When the resulting class differs from the receiver's class and the
+     * receiver is an instance of it, the metaclass write is repeated with that class as the
+     * sender and with {@code isCallToSuper} and {@code fromInsideClass} both false, and the
+     * method returns. Otherwise the original {@link GroovyRuntimeException} is passed to
+     * {@link #unwrap} and rethrown. An exception thrown by the retried write is not caught here.
+     *
+     * @param messageArgument the value to write
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the property name
+     * @throws Throwable if the write fails. A {@link GroovyRuntimeException} that is not
+     *     recovered by the generated-closure retry is passed to {@link #unwrap} and rethrown
+     */
     public static void setProperty(Object messageArgument, Class senderClass, Object receiver, String messageName) throws Throwable {
         try {
-            if (receiver==null) receiver= NullObject.getNullObject();
-            InvokerHelper.setProperty(receiver, messageName, messageArgument);
+            if (receiver == null) {
+                NullObject.getNullObject().setProperty(messageName, messageArgument);
+            } else if (receiver instanceof GroovyObject groovyObject && (senderClass == null
+                        || GroovyObjectOverrides.overridesSetProperty(receiver.getClass()))) {
+                // an override of setProperty receives the write; for the GroovyObject default, which
+                // would pass it on without the sender, the metaclass is called here instead (with no
+                // sender there is nothing to pass on, so the object's setProperty takes it). A class
+                // that cannot be inspected counts as overriding, so its own setProperty is reached
+                // either way, at the cost of the sender if that is the GroovyObject default (see
+                // GroovyObjectOverrides)
+                groovyObject.setProperty(messageName, messageArgument);
+            } else {
+                MetaClass metaClass = InvokerHelper.getMetaClass(receiver);
+                metaClass.setProperty(senderClass, receiver, messageName, messageArgument, false, false);
+            }
         } catch (GroovyRuntimeException gre) {
+            if (gre instanceof MissingPropertyException
+                    && receiver instanceof GroovyObject groovyObject
+                    && senderClass != null && GeneratedClosure.class.isAssignableFrom(senderClass)) {
+                do {
+                    senderClass = senderClass.getEnclosingClass();
+                } while (GeneratedClosure.class.isAssignableFrom(senderClass));
+                if (senderClass != receiver.getClass() && senderClass.isInstance(receiver)) { // GROOVY-3142: retry with super sender class?
+                    groovyObject.getMetaClass().setProperty(senderClass, receiver, messageName, messageArgument, false, false);
+                    return;
+                }
+            }
             throw unwrap(gre);
         }
     }
 
+    /**
+     * Writes the property named {@code messageName}, doing nothing when {@code receiver} is
+     * null. A non-null receiver is written with {@link #setProperty}.
+     *
+     * @param messageArgument the value to write
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the property name
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static void setPropertySafe(Object messageArgument, Class senderClass, Object receiver, String messageName) throws Throwable {
         if (receiver == null) return;
         setProperty(messageArgument, senderClass, receiver, messageName);
     }
 
+    /**
+     * Writes the property named {@code messageName} on each element of {@code receiver}. A null
+     * receiver returns without writing. Otherwise {@code InvokerHelper.asIterator} walks the
+     * receiver and each element is written with {@link #setPropertySafe}.
+     *
+     * @param messageArgument the value to write
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the property name
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static void setPropertySpreadSafe(Object messageArgument, Class senderClass, Object receiver, String messageName) throws Throwable {
         if (receiver == null) return;
-
-        for (Iterator it = InvokerHelper.asIterator(receiver); it.hasNext();) {
+        for (Iterator<?> it = InvokerHelper.asIterator(receiver); it.hasNext();) {
             setPropertySafe(messageArgument, senderClass, it.next(), messageName);
         }
     }
@@ -516,20 +1262,75 @@ public class ScriptBytecodeAdapter {
     //              normal GroovyObject Property handling : get
     //  --------------------------------------------------------
 
+    /**
+     * Reads {@code messageName} from a {@link GroovyObject}, falling back to the metaclass for a
+     * superclass sender.
+     * <p>
+     * {@link GroovyObject#getProperty(String)} is called first. A
+     * {@link MissingPropertyException} is passed to {@link #unwrap} and rethrown when
+     * {@code senderClass} is null, is the receiver's own class, or the receiver is not an
+     * instance of {@code senderClass}. Any other {@link GroovyRuntimeException} is unwrapped and
+     * rethrown. When the missing-property exception is not rethrown, the receiver's metaclass
+     * {@link MetaClass#getProperty(Class, Object, String, boolean, boolean)} is called with
+     * {@code isCallToSuper} false and {@code fromInsideClass} false.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the property name
+     * @return the property value
+     * @throws Throwable if the read fails. A {@link MissingPropertyException} that does not take
+     *     the metaclass fallback, and any other {@link GroovyRuntimeException}, is passed to
+     *     {@link #unwrap} and rethrown
+     */
     public static Object getGroovyObjectProperty(Class senderClass, GroovyObject receiver, String messageName) throws Throwable {
-        return receiver.getProperty(messageName);
+        Class<?> receiverClass = receiver.getClass();
+        try {
+//          if (senderClass == null || !receiverClass.getMethod("getProperty", String.class).isDefault()) {
+                return receiver.getProperty(messageName);
+//          }
+        } catch (MissingPropertyException mpe) {
+            if (senderClass == null || senderClass == receiverClass || !senderClass.isInstance(receiver)) {
+                throw unwrap(mpe);
+            }
+        } catch (GroovyRuntimeException gre) {
+            throw unwrap(gre);
+        }
+        return receiver.getMetaClass().getProperty(senderClass, receiver, messageName, false, false);
     }
 
+    /**
+     * Reads {@code messageName}, returning null when {@code receiver} is null. A non-null
+     * receiver is read with {@link #getGroovyObjectProperty}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the property name
+     * @return null when {@code receiver} is null; otherwise the property value
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object getGroovyObjectPropertySafe(Class senderClass, GroovyObject receiver, String messageName) throws Throwable {
         if (receiver == null) return null;
         return getGroovyObjectProperty(senderClass, receiver, messageName);
     }
 
+    /**
+     * Reads the property named {@code messageName} from each element of {@code receiver}. A null
+     * receiver returns null. Otherwise {@code InvokerHelper.asIterator} walks the receiver, each
+     * element is read with {@link #getPropertySafe}, and the values are collected into a
+     * {@link List}.
+     *
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the property name
+     * @return null when {@code receiver} is null; otherwise a {@link List} of property values
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object getGroovyObjectPropertySpreadSafe(Class senderClass, GroovyObject receiver, String messageName) throws Throwable {
         if (receiver == null) return null;
-
-        List answer = new ArrayList();
-        for (Iterator it = InvokerHelper.asIterator(receiver); it.hasNext();) {
+        List<Object> answer = new ArrayList<>();
+        for (Iterator<?> it = InvokerHelper.asIterator(receiver); it.hasNext();) {
             answer.add(getPropertySafe(senderClass, it.next(), messageName));
         }
         return answer;
@@ -539,23 +1340,79 @@ public class ScriptBytecodeAdapter {
     //              normal GroovyObject Property handling : set
     //  --------------------------------------------------------
 
+    /**
+     * Writes {@code messageName} on a {@link GroovyObject}, using the object's own setter when
+     * the sender requires it.
+     * <p>
+     * When {@code senderClass} is null or
+     * {@link GroovyObjectOverrides#overridesSetProperty(Class)} is true,
+     * {@link GroovyObject#setProperty(String, Object)} is called and the method returns. A
+     * {@link MissingPropertyException} from that call is passed to {@link #unwrap} and rethrown
+     * when {@code senderClass} is null, is the receiver's own class, or the receiver is not an
+     * instance of {@code senderClass}. Any other {@link GroovyRuntimeException} is unwrapped and
+     * rethrown. Otherwise the receiver's metaclass
+     * {@link MetaClass#setProperty(Class, Object, String, Object, boolean, boolean)} is called
+     * with {@code isCallToSuper} false and {@code fromInsideClass} false.
+     *
+     * @param messageArgument the value to write
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the property name
+     * @throws Throwable if the write fails. A {@link MissingPropertyException} that does not
+     *     take the metaclass fallback, and any other {@link GroovyRuntimeException}, is passed to
+     *     {@link #unwrap} and rethrown
+     */
     public static void setGroovyObjectProperty(Object messageArgument, Class senderClass, GroovyObject receiver, String messageName) throws Throwable {
+        Class<?> receiverClass = receiver.getClass();
         try {
-            receiver.setProperty(messageName, messageArgument);
+            // as in setProperty; when a class that cannot be inspected has the GroovyObject
+            // default after all, the retry below still finds a property only a superclass sender
+            // can see
+            if (senderClass == null || GroovyObjectOverrides.overridesSetProperty(receiverClass)) {
+                receiver.setProperty(messageName, messageArgument);
+                return;
+            }
+        } catch (MissingPropertyException mpe) {
+            if (senderClass == null || senderClass == receiverClass || !senderClass.isInstance(receiver)) {
+                throw unwrap(mpe);
+            }
         } catch (GroovyRuntimeException gre) {
             throw unwrap(gre);
         }
+        receiver.getMetaClass().setProperty(senderClass, receiver, messageName, messageArgument, false, false);
     }
 
+    /**
+     * Writes {@code messageName} on {@code receiver}, doing nothing when {@code receiver} is
+     * null. A non-null receiver is written with
+     * {@link GroovyObject#setProperty(String, Object)}. The call is not passed to the metaclass
+     * and is not unwrapped.
+     *
+     * @param messageArgument the value to write
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the property name
+     */
     public static void setGroovyObjectPropertySafe(Object messageArgument, Class senderClass, GroovyObject receiver, String messageName) throws Throwable {
         if (receiver == null) return;
         receiver.setProperty(messageName, messageArgument);
     }
 
+    /**
+     * Writes the property named {@code messageName} on each element of {@code receiver}. A null
+     * receiver returns without writing. Otherwise {@code InvokerHelper.asIterator} walks the
+     * receiver and each element is written with {@link #setPropertySafe}.
+     *
+     * @param messageArgument the value to write
+     * @param senderClass the class that originated the call
+     * @param receiver the receiver of the call
+     * @param messageName the property name
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static void setGroovyObjectPropertySpreadSafe(Object messageArgument, Class senderClass, GroovyObject receiver, String messageName) throws Throwable {
         if (receiver == null) return;
-
-        for (Iterator it = InvokerHelper.asIterator(receiver); it.hasNext();) {
+        for (Iterator<?> it = InvokerHelper.asIterator(receiver); it.hasNext();) {
             setPropertySafe(messageArgument, senderClass, it.next(), messageName);
         }
     }
@@ -571,17 +1428,28 @@ public class ScriptBytecodeAdapter {
     //  --------------------------------------------------------
 
     /**
-     * Returns the method pointer for the given object name
+     * Returns a method closure for the given object and name.
      *
-     * @param object the object containing the method
-     * @param methodName the name of the method of interest
+     * @param object the object or class providing the method
+     * @param methodName the method(s) of interest
      * @return the resulting Closure
      */
-    public static Closure getMethodPointer(Object object, String methodName) {
+    public static Closure getMethodPointer(final Object object, final String methodName) {
         return InvokerHelper.getMethodPointer(object, methodName);
     }
 
     // TODO: set sender class
+    /**
+     * Invokes {@code call} on {@code closure}. The call is {@link #invokeMethodN} with the
+     * closure's runtime class as the sender and with {@code arguments} passed through, so a
+     * {@link GroovyRuntimeException} is unwrapped.
+     *
+     * @param closure the object whose {@code call} method is invoked
+     * @param arguments the arguments passed to {@code call}
+     * @return the value returned by {@code call}
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
     public static Object invokeClosure(Object closure, Object[] arguments) throws Throwable {
         return invokeMethodN(closure.getClass(), closure, "call", arguments);
     }
@@ -615,26 +1483,94 @@ public class ScriptBytecodeAdapter {
             return DefaultTypeTransformation.castToType(object, type);
     }
 
+    /**
+     * Returns a {@link Tuple} constructed from the elements of {@code array}.
+     *
+     * @param array the elements passed to the {@link Tuple} constructor
+     * @return the new tuple
+     */
     public static Tuple createTuple(Object[] array) {
         return new Tuple(array);
     }
 
+    /**
+     * Creates a {@link List} containing {@code values} in order by calling
+     * {@code InvokerHelper.createList}.
+     *
+     * @param values the elements copied into the list
+     * @return the new list
+     */
     public static List createList(Object[] values) {
         return InvokerHelper.createList(values);
     }
 
+    /**
+     * Wraps a plain value in a {@link PojoWrapper} constrained to {@code clazz}.
+     *
+     * @param val the wrapped value
+     * @param clazz the type the wrapper reports
+     * @return the new wrapper
+     */
     public static Wrapper createPojoWrapper(Object val, Class clazz) {
         return new PojoWrapper(val, clazz);
     }
 
+    /**
+     * Wraps {@code val} in a {@link GroovyObjectWrapper} constrained to {@code clazz}.
+     *
+     * @param val the wrapped {@link GroovyObject}
+     * @param clazz the type the wrapper reports
+     * @return the new wrapper
+     */
     public static Wrapper createGroovyObjectWrapper(GroovyObject val, Class clazz) {
         return new GroovyObjectWrapper(val, clazz);
     }
 
+    /**
+     * Creates a {@link Map} from {@code values} by calling {@code InvokerHelper.createMap}.
+     * Entries are taken as alternating keys and values, in pair order. A {@code SpreadMap}
+     * followed by a {@link Map} contributes that map's entries. A trailing value left without a
+     * pair is ignored.
+     *
+     * @param values alternating keys and values, with optional spread pairs
+     * @return the new map
+     */
     public static Map createMap(Object[] values) {
         return InvokerHelper.createMap(values);
     }
 
+    /**
+     * Builds a range from {@code from} to {@code to}, honoring exclusive ends.
+     * <p>
+     * When both ends are exclusive, an {@link EmptyRange} at {@code from} is returned if
+     * {@link #compareEqual} considers the ends equal, or if stepping from {@code from} toward
+     * {@code to} lands on {@code to} and the ends have the same sign. The step is {@code next}
+     * when {@code from} is less than {@code to} and {@code previous} otherwise, invoked through
+     * {@link #invokeMethod0} with this class as the sender. Sign comes from {@link #compareTo}
+     * against {@code 0}: both ends non-negative, or both negative. Zero counts as non-negative,
+     * so a fully exclusive range from zero to a negative number is not emptied by this rule.
+     * An equal pair with either end exclusive is also an
+     * {@link EmptyRange}.
+     * <p>
+     * Otherwise, two {@code Integer} endpoints produce an {@link IntRange} whose inclusive flags
+     * are the negations of {@code exclusiveLeft} and {@code exclusiveRight}. Two other
+     * {@code Number} endpoints produce a {@link NumberRange} with those same inclusive flags.
+     * Every other pair produces an {@link ObjectRange}. That type does not record inclusivity,
+     * so an exclusive right endpoint is replaced by {@code to.next()} when {@code from} is
+     * greater than {@code to} and by {@code to.previous()} otherwise, and then an exclusive left
+     * endpoint is replaced by {@code from.previous()} when {@code from} is greater than the
+     * updated {@code to} and by {@code from.next()} otherwise. Those calls also go through
+     * {@link #invokeMethod0} with this class as the sender.
+     *
+     * @param from the start of the range
+     * @param to the end of the range
+     * @param exclusiveLeft true when {@code from} is excluded
+     * @param exclusiveRight true when {@code to} is excluded
+     * @return the range, as a {@link List}
+     * @throws Throwable if an endpoint {@code next} or {@code previous} call fails; a
+     *     {@link GroovyRuntimeException} from that call is unwrapped
+     */
+    @GroovyABI(since = "4.0.0")
     public static List createRange(Object from, Object to, boolean exclusiveLeft, boolean exclusiveRight) throws Throwable {
         if (exclusiveLeft && exclusiveRight) {
             if (compareEqual(from, to)) {
@@ -662,7 +1598,7 @@ public class ScriptBytecodeAdapter {
         }
         if (from instanceof Integer && to instanceof Integer) {
             // Currently, empty ranges where from != to, the range is full exclusive (e.g. 0<..<-1) and from and to
-            // have a different sign are constructed as IntRanges. This is because t3hese ranges can still be used to
+            // have a different sign are constructed as IntRanges. This is because these ranges can still be used to
             // index into lists.
             return new IntRange(!exclusiveLeft, !exclusiveRight, (Integer) from, (Integer) to);
         }
@@ -688,6 +1624,18 @@ public class ScriptBytecodeAdapter {
     }
 
     // Kept in for backwards compatibility
+    /**
+     * Builds a range from {@code from} to {@code to} with {@code from} included. The call is
+     * {@link #createRange(Object, Object, boolean, boolean)} with the left end inclusive and the
+     * right end exclusive exactly when {@code inclusive} is false. Kept for compatibility with
+     * callers of this overload.
+     *
+     * @param from the start of the range; this end is included
+     * @param to the end of the range
+     * @param inclusive true when {@code to} is included
+     * @return the range returned by the four-argument method
+     * @throws Throwable if the four-argument method fails
+     */
     public static List createRange(Object from, Object to, boolean inclusive) throws Throwable {
         return createRange(from, to, false, !inclusive);
     }
@@ -697,175 +1645,518 @@ public class ScriptBytecodeAdapter {
         return (T) n;
     }
 
+    /**
+     * Returns the {@link MetaClass} registered for the class of {@code object}. The lookup is
+     * {@code InvokerHelper.getMetaClass(object.getClass())}.
+     *
+     * @param object the object whose class is looked up
+     * @return the metaclass registered for {@code object.getClass()}
+     */
+    public static MetaClass initMetaClass(final Object object) {
+        return InvokerHelper.getMetaClass(object.getClass());
+    }
+
+    //--------------------------------------------------------------------------
+
     //assert
-    public static void assertFailed(Object expression, Object message) {
+    /**
+     * Signals a failed assertion by calling {@code InvokerHelper.assertFailed}. A null or empty
+     * message produces a {@code PowerAssertionError} from {@code expression.toString()}. Any
+     * other message produces an {@code AssertionError} that includes the message and the
+     * expression.
+     *
+     * @param expression the expression that failed
+     * @param message the assertion message, or null or empty for a power assertion
+     */
+    public static void assertFailed(final Object expression, final Object message) {
         InvokerHelper.assertFailed(expression, message);
     }
 
     //isCase
-    //TODO: set sender class
-    public static boolean isCase(Object switchValue, Object caseExpression) throws Throwable {
+    /**
+     * Tests whether {@code caseExpression} matches {@code switchValue} by calling
+     * {@code isCase}.
+     * <p>
+     * A null case expression matches only a null switch value. Otherwise {@link #invokeMethodN}
+     * calls {@code isCase} on the case expression with {@code switchValue} as its only argument,
+     * and the result is converted with {@link DefaultTypeTransformation#castToBoolean(Object)}.
+     *
+     * @param switchValue the value being switched on
+     * @param caseExpression the case expression on which {@code isCase} is called, or null
+     * @return true when the case matches
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
+    public static boolean isCase(final Object switchValue, final Object caseExpression) throws Throwable {
         if (caseExpression == null) {
             return switchValue == null;
         }
         return DefaultTypeTransformation.castToBoolean(invokeMethodN(caseExpression.getClass(), caseExpression, "isCase", new Object[]{switchValue}));
     }
 
-    public static boolean isNotCase(Object switchValue, Object caseExpression) throws Throwable {
+    /**
+     * Returns the negation of {@link #isCase(Object, Object)}.
+     *
+     * @param switchValue the value being switched on
+     * @param caseExpression the case passed to {@link #isCase(Object, Object)}
+     * @return true when {@link #isCase(Object, Object)} is false
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
+    public static boolean isNotCase(final Object switchValue, final Object caseExpression) throws Throwable {
         return !isCase(switchValue, caseExpression);
     }
 
+    //isIn  (GROOVY-9848: membership operator, decoupled from isCase)
+    /**
+     * Tests whether {@code switchValue} is a member of {@code caseExpression}.
+     * <p>
+     * A null case expression matches only a null switch value. A {@link Map} matches when
+     * {@link Map#containsKey(Object)} returns true for {@code switchValue}. When both operands are
+     * character sequences, the case expression's string form is tested with {@code contains} for
+     * the switch value's string form. Every other case expression is tested with
+     * {@link #isCase(Object, Object)}.
+     *
+     * @param switchValue the candidate member
+     * @param caseExpression the collection, character sequence, or case expression being
+     *     searched
+     * @return true when {@code switchValue} is a member of {@code caseExpression}
+     * @throws Throwable if {@link #isCase(Object, Object)} fails for a case expression that is
+     *     not null, not a {@link Map}, and not a character sequence paired with one
+     */
+    public static boolean isIn(final Object switchValue, final Object caseExpression) throws Throwable {
+        if (caseExpression == null) {
+            return switchValue == null;
+        }
+        // map membership is key-based; char-sequence membership is substring-based;
+        // every other receiver keeps its existing (isCase) semantics, incl. user-defined isCase
+        if (caseExpression instanceof Map) {
+            return ((Map) caseExpression).containsKey(switchValue);
+        }
+        if (caseExpression instanceof CharSequence && switchValue instanceof CharSequence) {
+            return caseExpression.toString().contains(switchValue.toString());
+        }
+        return isCase(switchValue, caseExpression);
+    }
+
+    /**
+     * Returns the negation of {@link #isIn(Object, Object)}.
+     *
+     * @param switchValue the candidate member
+     * @param caseExpression the value passed to {@link #isIn(Object, Object)}
+     * @return true when {@link #isIn(Object, Object)} is false
+     * @throws Throwable if {@link #isIn(Object, Object)} fails
+     */
+    public static boolean isNotIn(final Object switchValue, final Object caseExpression) throws Throwable {
+        return !isIn(switchValue, caseExpression);
+    }
+
     //compare
-    public static boolean compareIdentical(Object left, Object right) {
+    /**
+     * Reports whether {@code left} and {@code right} are the same reference, using
+     * {@code left == right}.
+     *
+     * @param left the left operand
+     * @param right the right operand
+     * @return true when the operands are the same reference, including both null
+     */
+    public static boolean compareIdentical(final Object left, final Object right) {
         return left == right;
     }
 
-    public static boolean compareNotIdentical(Object left, Object right) {
+    /**
+     * Reports whether {@code left} and {@code right} are different references, using
+     * {@code left != right}.
+     *
+     * @param left the left operand
+     * @param right the right operand
+     * @return true when the operands are not the same reference
+     */
+    public static boolean compareNotIdentical(final Object left, final Object right) {
         return left != right;
     }
 
-    public static boolean compareEqual(Object left, Object right) {
-        if (left==right) return true;
-        Class<?> leftClass = left==null?null:left.getClass();
-        Class<?> rightClass = right==null?null:right.getClass();
-        if (leftClass ==Integer.class && rightClass==Integer.class) {
-            return left.equals(right);
-        }
-        if (leftClass ==Double.class && rightClass==Double.class) {
-            return left.equals(right);
-        }
-        if (leftClass ==Long.class && rightClass==Long.class) {
-            return left.equals(right);
+    /**
+     * Compares {@code left} and {@code right} for equality.
+     * <p>
+     * The same reference is equal, including both null. When both values are non-null and have
+     * the same class, {@code Integer}, {@code Long}, {@code Double}, {@code Float},
+     * {@code String}, and {@code GStringImpl} use {@code equals}, and {@code BigDecimal} and
+     * {@code BigInteger} are equal when {@code compareTo} returns 0. Every other pair is
+     * compared with {@link DefaultTypeTransformation#compareEqual(Object, Object)}.
+     *
+     * @param left the left operand
+     * @param right the right operand
+     * @return true when the operands are equal
+     */
+    public static boolean compareEqual(final Object left, final Object right) {
+        if (left == right) return true;
+        if (left != null && right != null) {
+            Class leftClass = left.getClass();
+            if (leftClass == right.getClass()) {
+                if (leftClass == Integer.class) {
+                    return left.equals(right);
+                }
+                if (leftClass == BigDecimal.class) {
+                    return ((BigDecimal) left).compareTo((BigDecimal) right) == 0;
+                }
+                if (leftClass == BigInteger.class) {
+                    return ((BigInteger) left).compareTo((BigInteger) right) == 0;
+                }
+                if (leftClass == Long.class) {
+                    return left.equals(right);
+                }
+                if (leftClass == Double.class) {
+                    return left.equals(right);
+                }
+                if (leftClass == Float.class) {
+                    return left.equals(right);
+                }
+                if (leftClass == String.class) {
+                    return left.equals(right);
+                }
+                if (leftClass == GStringImpl.class) {
+                    return left.equals(right);
+                }
+            }
         }
         return DefaultTypeTransformation.compareEqual(left, right);
     }
 
-    public static boolean compareNotEqual(Object left, Object right) {
+    /**
+     * Returns the negation of {@link #compareEqual(Object, Object)}.
+     *
+     * @param left the left operand
+     * @param right the right operand
+     * @return true when {@link #compareEqual(Object, Object)} is false
+     */
+    public static boolean compareNotEqual(final Object left, final Object right) {
         return !compareEqual(left, right);
     }
 
-    public static Integer compareTo(Object left, Object right) {
+    /**
+     * Compares {@code left} with {@code right} and returns a boxed {@code -1}, {@code 0}, or
+     * {@code 1}. The comparison is {@link DefaultTypeTransformation#compareTo(Object, Object)}.
+     * A zero result is returned as {@code 0}, a positive result as {@code 1}, and a negative
+     * result as {@code -1}.
+     *
+     * @param left the left operand
+     * @param right the right operand
+     * @return {@code -1} when {@code left} is less than {@code right}, {@code 0} when they are
+     *     equal, and {@code 1} when {@code left} is greater
+     */
+    public static Integer compareTo(final Object left, final Object right) {
         int answer = DefaultTypeTransformation.compareTo(left, right);
         if (answer == 0) {
             return ZERO;
-        } else {
-            return answer > 0 ? ONE : MINUS_ONE;
         }
+        return answer > 0 ? ONE : MINUS_ONE;
     }
 
-    public static boolean compareLessThan(Object left, Object right) {
-        Class<?> leftClass = left==null?null:left.getClass();
-        Class<?> rightClass = right==null?null:right.getClass();
-        if (leftClass ==Integer.class && rightClass==Integer.class) {
-            return (Integer) left < (Integer) right;
+    /**
+     * Reports whether {@code left} is less than {@code right}.
+     * <p>
+     * When both values are non-null and have the same class, {@code Integer}, {@code Long},
+     * {@code Double}, and {@code Float} use the {@code <} operator, and {@code BigDecimal} and
+     * {@code BigInteger} are less when {@code compareTo} is negative. Every other pair is less
+     * when {@link #compareTo(Object, Object)} returns {@code -1}.
+     *
+     * @param left the left operand
+     * @param right the right operand
+     * @return true when {@code left} is less than {@code right}
+     */
+    public static boolean compareLessThan(final Object left, final Object right) {
+        if (left != null && right != null) {
+            Class leftClass = left.getClass();
+            if (leftClass == right.getClass()) {
+                if (leftClass == Integer.class) {
+                    return (Integer) left < (Integer) right;
+                }
+                if (leftClass == BigDecimal.class) {
+                    return ((BigDecimal) left).compareTo((BigDecimal) right) < 0;
+                }
+                if (leftClass == BigInteger.class) {
+                    return ((BigInteger) left).compareTo((BigInteger) right) < 0;
+                }
+                if (leftClass == Long.class) {
+                    return (Long) left < (Long) right;
+                }
+                if (leftClass == Double.class) {
+                    return (Double) left < (Double) right;
+                }
+                if (leftClass == Float.class) {
+                    return (Float) left < (Float) right;
+                }
+            }
         }
-        if (leftClass ==Double.class && rightClass==Double.class) {
-            return (Double) left < (Double) right;
-        }
-        if (leftClass ==Long.class && rightClass==Long.class) {
-            return (Long) left < (Long) right;
-        }
-        return compareTo(left, right) < 0;
+        return compareTo(left, right) == MINUS_ONE;
     }
 
-    public static boolean compareLessThanEqual(Object left, Object right) {
-        Class<?> leftClass = left==null?null:left.getClass();
-        Class<?> rightClass = right==null?null:right.getClass();
-        if (leftClass ==Integer.class && rightClass==Integer.class) {
-            return (Integer) left <= (Integer) right;
+    /**
+     * Reports whether {@code left} is less than or equal to {@code right}.
+     * <p>
+     * When both values are non-null and have the same class, {@code Integer}, {@code Long},
+     * {@code Double}, and {@code Float} use the {@code <=} operator, and {@code BigDecimal} and
+     * {@code BigInteger} are less or equal when {@code compareTo} is not positive. Every other
+     * pair is less or equal when {@link #compareTo(Object, Object)} returns {@code -1} or
+     * {@code 0}.
+     *
+     * @param left the left operand
+     * @param right the right operand
+     * @return true when {@code left} is less than or equal to {@code right}
+     */
+    public static boolean compareLessThanEqual(final Object left, final Object right) {
+        if (left != null && right != null) {
+            Class leftClass = left.getClass();
+            if (leftClass == right.getClass()) {
+                if (leftClass == Integer.class) {
+                    return (Integer) left <= (Integer) right;
+                }
+                if (leftClass == BigDecimal.class) {
+                    return ((BigDecimal) left).compareTo((BigDecimal) right) <= 0;
+                }
+                if (leftClass == BigInteger.class) {
+                    return ((BigInteger) left).compareTo((BigInteger) right) <= 0;
+                }
+                if (leftClass == Long.class) {
+                    return (Long) left <= (Long) right;
+                }
+                if (leftClass == Double.class) {
+                    return (Double) left <= (Double) right;
+                }
+                if (leftClass == Float.class) {
+                    return (Float) left <= (Float) right;
+                }
+            }
         }
-        if (leftClass ==Double.class && rightClass==Double.class) {
-            return (Double) left <= (Double) right;
-        }
-        if (leftClass ==Long.class && rightClass==Long.class) {
-            return (Long) left <= (Long) right;
-        }
-        return compareTo(left, right) <= 0;
+        Integer result = compareTo(left, right);
+        return  result == MINUS_ONE || result == ZERO;
     }
 
-    public static boolean compareGreaterThan(Object left, Object right) {
-        Class<?> leftClass = left==null?null:left.getClass();
-        Class<?> rightClass = right==null?null:right.getClass();
-        if (leftClass ==Integer.class && rightClass==Integer.class) {
-            return (Integer) left > (Integer) right;
+    /**
+     * Reports whether {@code left} is greater than {@code right}.
+     * <p>
+     * When both values are non-null and have the same class, {@code Integer}, {@code Long},
+     * {@code Double}, and {@code Float} use the {@code >} operator, and {@code BigDecimal} and
+     * {@code BigInteger} are greater when {@code compareTo} is positive. Every other pair is
+     * greater when {@link #compareTo(Object, Object)} returns {@code 1}.
+     *
+     * @param left the left operand
+     * @param right the right operand
+     * @return true when {@code left} is greater than {@code right}
+     */
+    public static boolean compareGreaterThan(final Object left, final Object right) {
+        if (left != null && right != null) {
+            Class leftClass = left.getClass();
+            if (leftClass == right.getClass()) {
+                if (leftClass == Integer.class) {
+                    return (Integer) left > (Integer) right;
+                }
+                if (leftClass == BigDecimal.class) {
+                    return ((BigDecimal) left).compareTo((BigDecimal) right) > 0;
+                }
+                if (leftClass == BigInteger.class) {
+                    return ((BigInteger) left).compareTo((BigInteger) right) > 0;
+                }
+                if (leftClass == Long.class) {
+                    return (Long) left > (Long) right;
+                }
+                if (leftClass == Double.class) {
+                    return (Double) left > (Double) right;
+                }
+                if (leftClass == Float.class) {
+                    return (Float) left > (Float) right;
+                }
+            }
         }
-        if (leftClass ==Double.class && rightClass==Double.class) {
-            return (Double) left > (Double) right;
-        }
-        if (leftClass ==Long.class && rightClass==Long.class) {
-            return (Long) left > (Long) right;
-        }
-        return compareTo(left, right) > 0;
+        return compareTo(left, right) == ONE;
     }
 
-    public static boolean compareGreaterThanEqual(Object left, Object right) {
-        Class<?> leftClass = left==null?null:left.getClass();
-        Class<?> rightClass = right==null?null:right.getClass();
-        if (leftClass ==Integer.class && rightClass==Integer.class) {
-            return (Integer) left >= (Integer) right;
+    /**
+     * Reports whether {@code left} is greater than or equal to {@code right}.
+     * <p>
+     * When both values are non-null and have the same class, {@code Integer}, {@code Long},
+     * {@code Double}, and {@code Float} use the {@code >=} operator, and {@code BigDecimal} and
+     * {@code BigInteger} are greater or equal when {@code compareTo} is not negative. Every
+     * other pair is greater or equal when {@link #compareTo(Object, Object)} returns {@code 1}
+     * or {@code 0}.
+     *
+     * @param left the left operand
+     * @param right the right operand
+     * @return true when {@code left} is greater than or equal to {@code right}
+     */
+    public static boolean compareGreaterThanEqual(final Object left, final Object right) {
+        if (left != null && right != null) {
+            Class leftClass = left.getClass();
+            if (leftClass == right.getClass()) {
+                if (leftClass == Integer.class) {
+                    return (Integer) left >= (Integer) right;
+                }
+                if (leftClass == BigDecimal.class) {
+                    return ((BigDecimal) left).compareTo((BigDecimal) right) >= 0;
+                }
+                if (leftClass == BigInteger.class) {
+                    return ((BigInteger) left).compareTo((BigInteger) right) >= 0;
+                }
+                if (leftClass == Long.class) {
+                    return (Long) left >= (Long) right;
+                }
+                if (leftClass == Double.class) {
+                    return (Double) left >= (Double) right;
+                }
+                if (leftClass == Float.class) {
+                    return (Float) left >= (Float) right;
+                }
+            }
         }
-        if (leftClass ==Double.class && rightClass==Double.class) {
-            return (Double) left >= (Double) right;
-        }
-        if (leftClass ==Long.class && rightClass==Long.class) {
-            return (Long) left >= (Long) right;
-        }
-        return compareTo(left, right) >= 0;
+        Integer result = compareTo(left, right);
+        return  result == ONE || result == ZERO;
     }
 
     //regexpr
-    public static Pattern regexPattern(Object regex) {
-        return StringGroovyMethods.bitwiseNegate((CharSequence)regex.toString());
-    }
-
-    public static Matcher findRegex(Object left, Object right) throws Throwable {
+    /**
+     * Returns a {@link Matcher} of {@code left} against the regular expression {@code right}, by
+     * calling {@code InvokerHelper.findRegex}. A {@code String} left operand is used as that
+     * string; any other left operand is rendered to a string. A {@link Pattern} right operand is
+     * used as that pattern. A {@code String} right operand is compiled, and every other right
+     * operand is compiled from its rendered text.
+     *
+     * @param left the text to search
+     * @param right the regular expression, as a {@link Pattern}, a string, or another value
+     *     rendered to a string
+     * @return the matcher for {@code left}
+     */
+    public static Matcher findRegex(final Object left, final Object right) throws Throwable {
             return InvokerHelper.findRegex(left, right);
     }
 
-    public static boolean matchRegex(Object left, Object right) {
+    /**
+     * Reports whether {@code left} matches the whole regular expression {@code right}, by
+     * calling {@code InvokerHelper.matchRegex}. A null operand yields false. A {@link Pattern}
+     * right operand is used as that pattern; any other right operand is compiled from its string
+     * form. The matcher is saved with {@code RegexSupport.setLastMatcher}, and the result is
+     * {@code Matcher.matches()}.
+     *
+     * @param left the text to match
+     * @param right the regular expression, or null
+     * @return true when {@code left} matches the entire pattern
+     */
+    public static boolean matchRegex(final Object left, final Object right) {
         return InvokerHelper.matchRegex(left, right);
     }
 
-    //spread expressions
-    public static Object[] despreadList(Object[] args, Object[] spreads, int[] positions) {
-        List ret = new ArrayList();
-        int argsPos = 0;
-        int spreadPos = 0;
+    /**
+     * Compiles {@code regex} into a {@link Pattern}. {@code regex} is converted with
+     * {@code toString()} and passed to {@code StringGroovyMethods.bitwiseNegate}.
+     *
+     * Throws {@code PatternSyntaxException} if {@code regex} is not a valid regular expression.
+     * @param regex the expression to compile; its {@code toString()} result is compiled
+     * @return the compiled pattern
+     */
+    public static Pattern regexPattern(final Object regex) {
+        return StringGroovyMethods.bitwiseNegate(regex.toString());
+    }
+
+    //spread
+    /**
+     * Spreads selected argument values into one flat argument array.
+     * <p>
+     * Each entry of {@code positions} is an index in {@code args}. Arguments from the current
+     * index up to that position are copied, then the matching {@code spreads} value is expanded.
+     * After the last position, any remaining arguments are appended. A spread value is tested in
+     * this order: null is copied as null; a {@link List} is copied with {@code addAll}; an
+     * {@code Iterable} has each element added; an {@link Iterator} is drained with
+     * {@code forEachRemaining}; a {@link BaseStream} is drained through its iterator; an array
+     * is boxed with {@link DefaultTypeTransformation#primitiveArrayBox(Object)} when its
+     * component type is primitive, and otherwise copied as an object array. Any other value
+     * throws {@code IllegalArgumentException}. The message names the runtime type and the value,
+     * and a {@link Map} appends ", did you mean to use the spread-map operator instead?".
+     *
+     * @param args the arguments that are not spread
+     * @param spreads the values to expand, one per entry of {@code positions}
+     * @param positions indexes in {@code args} at which each spread value is inserted
+     * @return the flattened arguments
+     */
+    public static Object[] despreadList(final Object[] args, final Object[] spreads, final int[] positions) {
+        List<Object> ret = new ArrayList<>();
+        int argsPos = 0, spreadsPos = 0;
         for (int position : positions) {
-            for (; argsPos < position; argsPos++) {
+            for (; argsPos < position; ++argsPos) {
                 ret.add(args[argsPos]);
             }
-            Object value = spreads[spreadPos];
+            Object value = spreads[spreadsPos];
             if (value == null) {
                 ret.add(null);
             } else if (value instanceof List) {
-                ret.addAll((List) value);
+                ret.addAll((List<?>) value);
+            } else if (value instanceof Iterable) {
+                ((Iterable<?>) value).forEach(ret::add);
+            } else if (value instanceof Iterator) {
+                ((Iterator<?>) value).forEachRemaining(ret::add);
+            } else if (value instanceof BaseStream) {
+                ((BaseStream<?,?>) value).iterator().forEachRemaining(ret::add);
             } else if (value.getClass().isArray()) {
-                ret.addAll(DefaultTypeTransformation.primitiveArrayToList(value));
+                Collections.addAll(ret, value.getClass().getComponentType().isPrimitive()
+                        ? DefaultTypeTransformation.primitiveArrayBox(value) : (Object[]) value);
             } else {
-                String error = "cannot spread the type " + value.getClass().getName() + " with value " + value;
+                String error = "Cannot spread the type " + value.getClass().getName() + " with value " + value;
                 if (value instanceof Map) {
                     error += ", did you mean to use the spread-map operator instead?";
                 }
                 throw new IllegalArgumentException(error);
             }
-            spreadPos++;
+            ++spreadsPos;
         }
-        for (; argsPos < args.length; argsPos++) {
+        for (; argsPos < args.length; ++argsPos) {
             ret.add(args[argsPos]);
         }
         return ret.toArray();
     }
 
-    public static Object spreadMap(Object value) {
+    /**
+     * Spreads {@code value} as a map by calling {@code InvokerHelper.spreadMap}. A {@link Map}
+     * is flattened, in key-set order, into alternating keys and values. A non-null value that is
+     * not a map causes {@code SpreadMapEvaluatingException}. A null value fails with
+     * {@code NullPointerException} while that exception message is built.
+     *
+     * @param value the map to spread
+     * @return the spread map of {@code value}'s entries
+     */
+    public static Object spreadMap(final Object value) {
         return InvokerHelper.spreadMap(value);
     }
 
-    public static Object unaryMinus(Object value) throws Throwable {
+    //unary
+    /**
+     * Returns the negation of {@code value} from {@code InvokerHelper.unaryMinus}.
+     * {@code Integer}, {@code Long}, {@code Double}, {@code Float}, {@code Short}, and
+     * {@code Byte} are negated arithmetically, with {@code Short} and {@code Byte} cast back to
+     * those types. {@code BigInteger} and {@code BigDecimal} use {@code negate()}. An
+     * {@link ArrayList} yields a new list of element-wise results. Any other value, including
+     * another kind of {@link List}, is sent the no-argument message {@code negative}. A
+     * {@link GroovyRuntimeException} raised by the helper propagates without {@link #unwrap}.
+     *
+     * @param value the value to negate
+     * @return the negated value
+     */
+    public static Object unaryMinus(final Object value) throws Throwable {
             return InvokerHelper.unaryMinus(value);
     }
 
-    public static Object unaryPlus(Object value) throws Throwable {
+    /**
+     * Returns the unary plus of {@code value} from {@code InvokerHelper.unaryPlus}.
+     * {@code Integer}, {@code Long}, {@code BigInteger}, {@code BigDecimal}, {@code Double},
+     * {@code Float}, {@code Short}, and {@code Byte} are returned unchanged. An
+     * {@link ArrayList} yields a new list of element-wise results. Any other value is sent the
+     * no-argument message {@code positive}. A {@link GroovyRuntimeException} is passed to
+     * {@link #unwrap} and rethrown.
+     *
+     * @param value the value to which unary plus is applied
+     * @return the value unchanged, or the element-wise or method result
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
+    public static Object unaryPlus(final Object value) throws Throwable {
         try {
             return InvokerHelper.unaryPlus(value);
         } catch (GroovyRuntimeException gre) {
@@ -873,7 +2164,21 @@ public class ScriptBytecodeAdapter {
         }
     }
 
-    public static Object bitwiseNegate(Object value) throws Throwable {
+    /**
+     * Returns the bitwise negation of {@code value} from {@code InvokerHelper.bitwiseNegate}.
+     * {@code Integer} and {@code Long} use the {@code ~} operator, and {@code BigInteger} uses
+     * {@code not()}. A {@code String} or {@code GString} is compiled as a regular expression by
+     * {@code StringGroovyMethods.bitwiseNegate} on {@code value.toString()}. An
+     * {@link ArrayList} yields a new list of element-wise results. Any other value is sent the
+     * no-argument message {@code bitwiseNegate}. A {@link GroovyRuntimeException} is passed to
+     * {@link #unwrap} and rethrown.
+     *
+     * @param value the value to negate
+     * @return the negated value, or the {@link Pattern} compiled from a string
+     * @throws Throwable if the call fails with a {@link GroovyRuntimeException}, which is passed
+     *     to {@link #unwrap} and rethrown
+     */
+    public static Object bitwiseNegate(final Object value) throws Throwable {
         try {
             return InvokerHelper.bitwiseNegate(value);
         } catch (GroovyRuntimeException gre) {
@@ -881,7 +2186,82 @@ public class ScriptBytecodeAdapter {
         }
     }
 
-    public static MetaClass initMetaClass(Object object) {
-        return InvokerHelper.getMetaClass(object.getClass());
+    /**
+     * GEP-15: dispatcher for compound-assignment operators in dynamic Groovy.
+     * If {@code receiver} responds to {@code assignName} with the supplied argument,
+     * invoke it and return {@code receiver} (so the caller's STORE assigns the same
+     * reference back, leaving the in-place mutation visible). Otherwise fall back to
+     * {@code baseName} and return its result for the caller to assign.
+     *
+     * @since 6.0.0
+     */
+    @GroovyABI(since = "6.0.0")
+    public static Object compoundAssign(final Object receiver, final Object arg,
+                                        final String assignName, final String baseName) throws Throwable {
+        if (receiver != null) {
+            MetaClass mc = InvokerHelper.getMetaClass(receiver);
+            if (!mc.respondsTo(receiver, assignName, new Object[]{arg}).isEmpty()) {
+                invokeMethodN(ScriptBytecodeAdapter.class, receiver, assignName, new Object[]{arg});
+                return receiver;
+            }
+        }
+        return invokeMethodN(ScriptBytecodeAdapter.class, receiver, baseName, new Object[]{arg});
     }
+
+    /**
+     * GROOVY-12151: the bytecode-facing factory for the shared packed-closure adapter. The compiler
+     * emits one {@code INVOKESTATIC} of this method per packed closure literal; hosting the factory
+     * here (with the dispatcher bundle travelling as {@code Object} and the result as
+     * {@code Closure}) keeps {@code PackedClosure} off the emitted-bytecode surface and
+     * {@code GeneratedDispatcher.Bundle} out of every creation site (only the hosting class's
+     * dispatcher factory names it). The cast is negligible against the object-creation cost.
+     *
+     * @param owner       the enclosing instance (or the enclosing {@code Class} in a static context)
+     * @param dispatchers the hosting class's linked {@link GeneratedDispatcher.Bundle}
+     * @param id          the hoisted body's compile-time id in the class's dispatch tables
+     * @param method      the hoisted method's name (diagnostics only)
+     * @param captured    captured values ({@code Reference}s for written captures), or {@code null}
+     * @param paramTypes  the literal's declared parameter types
+     * @param strict      whether the adapter installs the fail-fast delegate guard (dynamic trust path)
+     * @param implicit    whether the literal has an implicit {@code it} parameter (fuzzy 0/1 arity)
+     * @param vararg      whether the literal's last parameter is a trailing array (varargs selection)
+     * @return the packed closure adapter
+     *
+     * @since 6.0.0
+     */
+    @GroovyABI(since = "6.0.0")
+    public static Closure<?> packedClosure(final Object owner, final Object dispatchers, final int id,
+            final String method, final Object[] captured, final Class[] paramTypes,
+            final boolean strict, final boolean implicit, final boolean vararg) {
+        return PackedClosure.create(owner, (GeneratedDispatcher.Bundle) dispatchers, id, method,
+                captured, paramTypes, strict, implicit, vararg);
+    }
+
+    /**
+     * Creates the classic {@code Closure} form of a GEP-27 open body:
+     * a packed closure whose free names resolve through a live owner/delegate/strategy resolver,
+     * which this factory creates from {@code owner} and installs in {@code captured[0]}. Like
+     * {@link #packedClosure}, it keeps {@code OpenClosure}, its resolver and the
+     * {@code PackedClosure} family off the emitted-bytecode surface.
+     *
+     * @param owner       the enclosing instance (or the enclosing {@code Class} in a static context)
+     * @param dispatchers the hosting class's linked {@link GeneratedDispatcher.Bundle}
+     * @param id          the hoisted body's compile-time id in the class's dispatch tables
+     * @param method      the hoisted method's name (diagnostics only)
+     * @param captured    captured values with slot 0 reserved for the resolver
+     * @param paramTypes  the literal's declared parameter types
+     * @param implicit    whether the literal has an implicit {@code it} parameter (fuzzy 0/1 arity)
+     * @param vararg      whether the literal's last parameter is a trailing array (varargs selection)
+     * @return the open closure
+     *
+     * @since 7.0.0
+     */
+    @GroovyABI(since = "7.0.0")
+    public static Closure<?> openClosure(final Object owner, final Object dispatchers, final int id,
+            final String method, final Object[] captured, final Class[] paramTypes,
+            final boolean implicit, final boolean vararg) {
+        return OpenClosure.create(owner, (GeneratedDispatcher.Bundle) dispatchers, id, method,
+                captured, paramTypes, implicit, vararg);
+    }
+
 }

@@ -16,19 +16,19 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs;
+package bugs;
 
 import groovy.lang.Binding;
 import groovy.lang.GroovyShell;
 import groovy.util.GroovyScriptEngine;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.File;
 
-public final class Groovy1567 {
+final class Groovy1567 {
 
     @Test
-    public void testGroovyScriptEngineVsGroovyShell() throws Exception {
+    void testGroovyScriptEngineVsGroovyShell() throws Exception {
         // @todo refactor this path
         File currentDir = new File("src/test/groovy/bugs");
         String file = "scriptForGroovy1567.groovy";

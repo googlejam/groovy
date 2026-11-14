@@ -21,17 +21,23 @@ package org.codehaus.groovy.util;
 import java.util.Iterator;
 
 /**
- * Allow a double array to be used where an Iterable is expected.
+ * Allows a double array to be used where an Iterable is expected.
  *
  * @since 3.0.8
  */
 public class DoubleArrayIterable implements Iterable<Double> {
     private final double[] array;
 
-    public DoubleArrayIterable(double[] array) {
+    /**
+     * Creates an iterable view that traverses the supplied array in index order.
+     *
+     * @param array the backing array to iterate
+     */
+    public DoubleArrayIterable(final double[] array) {
         this.array = array;
     }
 
+    /** {@inheritDoc} */
     @Override
     public Iterator<Double> iterator() {
         return new DoubleArrayIterator(array);

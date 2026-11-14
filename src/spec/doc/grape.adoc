@@ -18,6 +18,9 @@
   under the License.
 
 //////////////////////////////////////////
+ifndef::tools-groovy[]
+:tools-groovy: tools-groovy.adoc
+endif::[]
 
 [[section-grape]]
 = Dependency management with Grape
@@ -55,7 +58,7 @@ this:
 
 [source,groovy]
 -----------------------------------------------------------------
-@GrabResolver(name='restlet', root='http://maven.restlet.org/')
+@GrabResolver(name='restlet', root='https://maven.restlet.talend.com')
 @Grab(group='org.restlet', module='org.restlet', version='1.1.6')
 -----------------------------------------------------------------
 
@@ -117,7 +120,7 @@ proxy server, you can specify those settings on the command like via the
 groovy -Dhttp.proxyHost=yourproxy -Dhttp.proxyPort=8080 yourscript.groovy
 -------------------------------------------------------------------------
 
-Or you can make this system wide by adding these properties to your
+Or you can make this system-wide by adding these properties to your
 JAVA_OPTS environment variable:
 
 ------------------------------------------------------------
@@ -127,7 +130,37 @@ JAVA_OPTS = -Dhttp.proxyHost=yourproxy -Dhttp.proxyPort=8080
 [[Grape-Logging]]
 === Logging
 
-If you want to see what Grape is doing set the system property
+The Grape facade (`groovy.grape.Grape`) uses
+https://docs.oracle.com/en/java/javase/17/docs/api/java.logging/java/lang/System.Logger.html[JDK Platform Logging]
+and can be configured through `~/.groovy/logging.properties`
+(see <<{tools-groovy}#section-groovy-commandline,the groovy command>> for details).
+
+Logging of the underlying engine depends on which Grape implementation is active.
+
+==== GrapeIvy logging
+
+GrapeIvy routes Ivy's internal logging through JDK Platform Logging
+under the logger name `groovy.grape.ivy`. To control the verbosity,
+set the level in `~/.groovy/logging.properties`:
+
+[source,properties]
+----
+# Show Ivy info messages (INFO, WARNING, ERROR)
+groovy.grape.ivy.level=INFO
+
+# Show verbose Ivy output (adds dependency resolution details)
+groovy.grape.ivy.level=FINE
+
+# Show all Ivy debug output
+groovy.grape.ivy.level=FINEST
+----
+
+The `grape` command's global options `-q`/`--quiet`, `-w`/`--warn`, `-i`/`--info`,
+`-V`/`--verbose` and `-d`/`--debug` adjust the Ivy logging level for that invocation.
+`grape resolve` reuses `-i`/`--ivy` and `-d`/`--dos` for its output format, so on a
+resolve those two flags do not set the log level.
+
+If you want to see download progress specifically, set the system property
 `groovy.grape.report.downloads` to `true` (e.g. add
 `-Dgroovy.grape.report.downloads=true` to invocation or JAVA_OPTS) and Grape will
 print the following infos to System.error:
@@ -137,20 +170,30 @@ print the following infos to System.error:
 * Retrying download of an artifact
 * Download size and time for downloaded artifacts
 
-To log with even more verbosity, increase the Ivy log level
-(defaults to `-1`). For example `-Divy.message.logger.level=4`.
+==== GrapeMaven logging
+
+When using the GrapeMaven engine, set `-Dgroovy.grape.debug=true` to
+enable verbose Maven Resolver logging to `System.err`. The
+`groovy.grape.report.downloads` property has no effect with this engine.
 
 [[Grape-Detail]]
 == Detail
 
 Grape (The _Groovy Adaptable Packaging Engine_ or _Groovy Advanced
 Packaging Engine_) is the infrastructure enabling the grab() calls in
-Groovy, a set of classes leveraging http://ant.apache.org/ivy/[Ivy] to allow for a repository driven
-module system for Groovy. This allows a developer to write a script with
-an essentially arbitrary library requirement, and ship just the script.
-Grape will, at runtime, download as needed and link the named libraries
-and all dependencies forming a transitive closure when the script is run
-from existing repositories such as Maven Central.
+Groovy, a repository-driven module system that allows a developer to
+write a script with an essentially arbitrary library requirement, and
+ship just the script. Grape will, at runtime, download as needed and
+link the named libraries and all dependencies forming a transitive
+closure when the script is run from existing repositories such as
+Maven Central.
+
+Groovy ships with two Grape engine implementations: `GrapeIvy`, based on
+http://ant.apache.org/ivy/[Apache Ivy], and `GrapeMaven`, based on
+https://maven.apache.org/resolver/[Maven Resolver (Aether)]. They
+provide the same core `@Grab` / `@GrabResolver` / `@GrabExclude`
+experience but differ in some areas of advanced configuration and
+behaviour; see <<Grape-Implementations>> for details.
 
 Grape follows the Ivy conventions for module version identification,
 with naming change.
@@ -162,12 +205,117 @@ groovy endorsed modules.
 * `module` - The name of the module to load. Translated directly to a
 Maven artifactId or an Ivy artifact.
 * `version` - The version of the module to use. Either a literal version
-`1.1-RC3' or an Ivy Range `[2.2.1,)' meaning 2.2.1 or any greater
-version).
+`1.1-RC3' or a range `[2.2.1,)' meaning 2.2.1 or any greater version).
 * `classifier` - The optional classifier to use (for example, _jdk15_)
 
-The downloaded modules will be stored according to Ivy’s standard
-mechanism with a cache root of `~/.groovy/grapes`
+The downloaded modules will be stored according to the active engine's
+cache conventions (see <<Grape-Implementations>> for per-engine cache
+directories).
+
+[[Grape-Implementations]]
+=== Grape Implementations
+
+Groovy ships with two built-in Grape engine implementations. Both support
+the same core `@Grab`, `@GrabResolver`, and `@GrabExclude` annotations and
+method calls. They differ in their underlying resolution mechanism, cache
+layout, and some advanced configuration options.
+
+==== Built-in implementations
+
+===== GrapeIvy (default)
+
+`groovy.grape.ivy.GrapeIvy` uses http://ant.apache.org/ivy/[Apache Ivy]
+for dependency resolution. It is the default engine when both implementations
+are on the classpath.
+
+* *Backend*: Apache Ivy
+* *Local cache*: `~/.groovy/grapes` (Ivy's standard cache format)
+* *Configuration file*: `~/.groovy/grapeConfig.xml` (full Ivy XML settings — see <<Grape-CustomizeIvysettings>>)
+* *`@GrabConfig(autoDownload=false)`*: Supported. When `false`, resolution
+  is restricted to the local cache; no network calls are made.
+* *`conf:` parameter*: Mapped directly to Ivy configurations; multiple
+  configurations such as `conf:['default','optional']` are supported.
+* *Version wildcards*: `'*'` resolves to Ivy's `latest.default`.
+
+===== GrapeMaven
+
+`groovy.grape.maven.GrapeMaven` uses
+https://maven.apache.org/resolver/[Maven Resolver (Aether)]
+for dependency resolution.
+
+* *Backend*: Maven Resolver (Aether)
+* *Local cache*: `~/.groovy/grapesM2` (Maven local-repository format)
+* *Configuration*: Remote repositories configured via `@GrabResolver` or
+  the `Grape.addResolver()` API; no configuration file equivalent.
+* *`@GrabConfig(autoDownload=…)`*: The `autoDownload` flag is not
+  honoured; GrapeMaven always attempts remote resolution when an artifact
+  is not already cached.
+* *`conf:` parameter*: Treated as a Maven scope; `'default'` is mapped
+  to `'compile'`. Multiple configurations in a single grab are not supported.
+* *Version wildcards*: `'*'` resolves to Maven's `LATEST`.
+
+==== Selecting an implementation
+
+When both `groovy-grape-ivy` and `groovy-grape-maven` are on the
+classpath, `GrapeIvy` is preferred by default. To switch to GrapeMaven
+for a script, pass the system property:
+
+-------------------------------------------------------------------------
+groovy -Dgroovy.grape.impl=groovy.grape.maven.GrapeMaven yourscript.groovy
+-------------------------------------------------------------------------
+
+Or set it globally via `JAVA_OPTS`:
+
+-------------------------------------------------------------------------
+JAVA_OPTS=-Dgroovy.grape.impl=groovy.grape.maven.GrapeMaven
+-------------------------------------------------------------------------
+
+==== Migration considerations
+
+Most existing `@Grab` scripts work unchanged with both engines, but
+there are some compatibility notes to consider:
+
+* *`conf:` parameter*: GrapeIvy supports multiple Ivy configurations
+  (e.g., `conf:['default','optional']`), while GrapeMaven treats `conf:`
+  as a singular Maven scope (e.g., `conf:'compile'`). Scripts using
+  multiple configurations must remain on GrapeIvy or be reworked.
+
+* *Custom Ivy configuration*: If you have customized
+  `~/.groovy/grapeConfig.xml` with non-standard Ivy settings (especially
+  if you disabled the default `m2compatible=true`), those settings do not
+  apply to GrapeMaven. Review your configuration before switching, or
+  reconfigure custom repositories using `@GrabResolver` annotations.
+
+* *`@GrabConfig(autoDownload=false)`*: GrapeMaven does not honour
+  `autoDownload=false` as a per-grab switch. The closest equivalent is
+  to point `@GrabResolver` (or `Grape.addResolver`) to a local-only
+  repository/cache location. If you rely on `autoDownload=false`
+  semantics broadly, remain on GrapeIvy.
+
+==== Custom implementations
+
+You can provide your own `GrapeEngine` implementation by including a jar
+on the classpath that declares it as a Java SPI (Service Provider Interface).
+Groovy will discover and load it via `java.util.ServiceLoader`.
+
+To register a custom implementation:
+
+1. Create a class implementing `groovy.grape.GrapeEngine`.
+2. Add a service provider configuration file at
+   `META-INF/services/groovy.grape.GrapeEngine` in your jar with a single
+   line naming the fully-qualified class name.
+3. Place the jar on the classpath.
+
+You can then select it with:
+
+-------------------------------------------------------------------------
+groovy -Dgroovy.grape.impl=my.custom.GrapeImpl yourscript.groovy
+-------------------------------------------------------------------------
+
+If your implementation is the only one on the classpath, it will be
+automatically discovered and used by default. If multiple implementations
+are present (including the built-ins), you must specify which one to use
+via the system property.
 
 [[Grape-Usage]]
 == Usage
@@ -182,6 +330,11 @@ the classloader of the groovy compiler. This annotation is detected and
 evaluated before any other resolution of classes in the script, so
 imported classes can be properly resolved by a `@Grab` annotation.
 
+Supported annotation targets include imports (recommended), classes,
+methods, constructors, fields, parameters, and local variables.
+
+Here is an example placing `@Grab` on a class:
+
 [source,groovy]
 -----------------------------------------------------------------------
 import com.jidesoft.swing.JideSplitButton
@@ -193,9 +346,56 @@ public class TestClassAnnotation {
 }
 -----------------------------------------------------------------------
 
+Here is an example placing `@Grab` on a local variable:
+
+[source,groovy]
+-----------------------------------------------------------------------
+@Grab('commons-lang:commons-lang:2.4')
+var input = 'hello world'
+println org.apache.commons.lang.WordUtils.capitalize(input)
+-----------------------------------------------------------------------
+
 An appropriate `grab(...)` call will be added to the static initializer
 of the class of the containing class (or script class in the case of an
 annotated script element).
+
+[[Grape-CompilingWithoutEngine]]
+==== Compiling without a Grape engine
+
+If the compiled code never refers to the grabbed classes directly, the
+grabs only supply runtime functionality, and no Grape engine is needed
+during compilation. Without an engine, the grab done by the compiler
+does nothing, but the `grab(...)` call is still added to the static
+initializer. When the compiled class is later run with `groovy-grape-ivy`
+or `groovy-grape-maven` on the classpath, that call creates the engine
+and resolves the dependencies.
+
+[source,groovy]
+-----------------------------------------------------------------------
+@Grab('com.h2database:h2:2.4.240')
+@GrabConfig(systemClassLoader=true)
+import java.sql.DriverManager
+
+def conn = DriverManager.getConnection('jdbc:h2:mem:test')
+-----------------------------------------------------------------------
+
+This mode has some caveats:
+
+* The grabbed classes can only be used dynamically, for example through
+`Class.forName`, a `ServiceLoader`, `DriverManager` or dynamic method calls.
+A static reference, such as an import or a declared type, fails to
+compile because the class can't be resolved.
+* The compiler logs a "Grapes disabled" warning when it finds no engine.
+Compiling with `-Dgroovy.grape.enable=false` avoids the warning and
+produces the same class.
+* The grab needs a Groovy class loader to add the jars to, so run the
+class with the `groovy` command (or from another `GroovyClassLoader`).
+Run with plain `java`, the grab fails with "No suitable ClassLoader found for grab".
+* Grabs with `initClass=false` are not added to the static initializer,
+so they are never resolved in this mode.
+* Any `@GrabConfig` system properties are set at runtime before the grab,
+so properties read when the engine is created, such as `grape.root`,
+`grape.config` or `groovy.grape.impl`, are seen by that engine.
 
 [[Grape-MultipleGrapeAnnotations]]
 === Multiple Grape Annotations
@@ -234,7 +434,7 @@ annotation to apply to only a subset of the Grab annotations.
 === Method call
 
 Typically a call to grab will occur early in the script or in class
-initialization. This is to insure that the libraries are made available
+initialization. This is to ensure that the libraries are made available
 to the ClassLoader before the groovy code relies on the code. A couple
 of typical calls may appear as follows:
 
@@ -303,7 +503,8 @@ runtime exception.
 [[Grape-ArgumentsMaparguments]]
 ==== Arguments Map arguments
 
-* `classLoader:` - <GroovyClassLaoder> or <RootClassLoader> - The
+* `classLoader:` - a `groovy.lang.GroovyClassLoader` or an
+`org.codehaus.groovy.tools.RootLoader`, or a subclass of either - The
 ClassLoader to add resolved Jars to
 * `refObject:` - <Object> - The closest parent ClassLoader for the
 object’s class will be treated as though it were passed in as
@@ -359,25 +560,53 @@ respective jar file from the grape cache.
 [[Grape-RepositoryDirectory]]
 ==== Repository Directory
 
-If you need to change the directory grape uses for downloading libraries
-you can specify the grape.root system property to change the default
-(which is ~/.groovy/grapes)
+The local cache directory used by each engine is:
+
+* *GrapeIvy*: `~/.groovy/grapes`
+* *GrapeMaven*: `~/.groovy/grapesM2`
+
+If you need to change the root directory that Grape uses for downloading
+libraries you can specify the `grape.root` system property to change the
+default (which is `~/.groovy`). Both engines respect this property.
 
 -------------------------------------------------
 groovy -Dgrape.root=/repo/grapes yourscript.groovy
 -------------------------------------------------
 
 [[Grape-CustomizeIvysettings]]
-==== Customize Ivy settings
+==== Customize Ivy settings (GrapeIvy only)
 
-You can customize the ivy settings that Grape uses by creating a
-~/.groovy/grapeConfig.xml file. If no such file exists,
-https://github.com/apache/groovy/blob/master/src/resources/groovy/grape/defaultGrapeConfig.xml[here]
-are the default settings used by Grape.
+When using GrapeIvy, you can customize the Ivy settings that Grape uses by creating a
+`~/.groovy/grapeConfig.xml` file. If no such file exists, Grape uses the
+https://github.com/apache/groovy/blob/master/subprojects/groovy-grape-ivy/src/main/resources/groovy/grape/ivy/defaultGrapeConfig.xml[default Ivy settings]
+shipped in the `groovy-grape-ivy` module.
+
+`-Dgrape.config` selects a different file:
+
+* `default` — the shipped default settings
+* `relaxed` — the shipped relaxed settings, which use plain Ivy resolvers
+* `classpath:<resource>` — a resource loaded by the GrapeIvy class loader, then by the thread context class loader
+* any other value — a filesystem path
+
+An unresolvable value is ignored and the shipped default is used.
+
+The shipped default and relaxed settings give the Maven Central resolver a
+connection timeout of 30 seconds and a read timeout of 60 seconds (the
+`timeout-constraint` named `grape`). The read timeout applies to each read, so
+a long download is not cut off, but a transfer that stalls fails instead of
+holding the grab, and Ivy's artifact lock, indefinitely. A custom
+`grapeConfig.xml` replaces the shipped file, so copy that constraint across if
+you still want it. `GrapeIvy.addResolver` attaches the same constraint to a
+resolver it adds when the loaded settings define it.
 
 For more information on how to customize these settings, please refer to
-the https://ant.apache.org/ivy/history/latest-milestone/index.html[Ivy
+the https://ant.apache.org/ivy/history/latest-milestone/settings.html[Ivy settings
 documentation].
+
+This configuration file is not used by the GrapeMaven engine; with
+GrapeMaven, additional remote repositories are registered via
+`@GrabResolver` annotations or programmatically via the
+`Grape.addResolver` API.
 
 [[Grape-MoreExamples]]
 === More Examples
@@ -426,18 +655,18 @@ Launching a Jetty server to serve Groovy templates:
 
 [source,groovy]
 --------------------------------------------------------------------------------------------------
-@Grab('org.eclipse.jetty.aggregate:jetty-server:8.1.19.v20160209')
-@Grab('org.eclipse.jetty.aggregate:jetty-servlet:8.1.19.v20160209')
-@Grab('javax.servlet:javax.servlet-api:3.0.1')
+@Grab('org.eclipse.jetty.ee11:jetty-ee11-servlet:12.1.15')
 import org.eclipse.jetty.server.Server
-import org.eclipse.jetty.servlet.ServletContextHandler
+import org.eclipse.jetty.ee11.servlet.ServletContextHandler
 import groovy.servlet.TemplateServlet
 
 def runServer(duration) {
     def server = new Server(8080)
-    def context = new ServletContextHandler(server, "/", ServletContextHandler.SESSIONS)
-    context.resourceBase = "."
-    context.addServlet(TemplateServlet, "*.gsp")
+    def context = new ServletContextHandler(ServletContextHandler.SESSIONS)
+    context.contextPath = '/'
+    context.baseResourceAsString = '.'
+    context.addServlet(TemplateServlet, '*.gsp')
+    server.handler = context
     server.start()
     sleep duration
     server.stop()
@@ -446,12 +675,12 @@ def runServer(duration) {
 runServer(10000)
 --------------------------------------------------------------------------------------------------
 
-Grape will download Jetty and its dependencies on first launch of this
-script, and cache them. We create a new Jetty Server on port 8080,
-then expose Groovy’s TemplateServlet at the root of the context — Groovy
-comes with its own powerful template engine mechanism. We start the
-server and let it run for a certain duration. Each time someone will hit
-+http://localhost:8080/somepage.gsp+, it will display the somepage.gsp
-template to the user — those template pages should be situated in the
-same directory as this server script.
+Grape downloads Jetty and its dependencies on the first launch of this
+script and caches them. `groovy.servlet.TemplateServlet` is a Jakarta Servlet,
+so the container is Jetty 12.1's `ee11` module (Jakarta EE 11) rather than the
+Jetty 8 and `javax.servlet` coordinates used by older editions of this example.
+The script creates a server on port 8080 and exposes `TemplateServlet` at `*.gsp`.
+Groovy's installation supplies `groovy-servlet`. The server runs for the given
+duration. A request to +http://localhost:8080/somepage.gsp+ renders `somepage.gsp`
+from the same directory as the script.
 

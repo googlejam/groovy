@@ -16,12 +16,14 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class NullCompareBug extends GroovyTestCase {
-    
+
+class NullCompareBug {
+
+    @Test
     void testBug() {
         assert "dog" > null
         assert null < "dog"

@@ -20,46 +20,48 @@ package org.codehaus.groovy.transform.stc;
 
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.FieldNode;
+import org.codehaus.groovy.ast.expr.Expression;
 import org.codehaus.groovy.ast.expr.VariableExpression;
-import org.codehaus.groovy.ast.stmt.SwitchStatement;
-
-import java.lang.reflect.Modifier;
 
 import static org.codehaus.groovy.transform.stc.StaticTypesMarker.SWITCH_CONDITION_EXPRESSION_TYPE;
 
 /**
- * A type checking extension that will take care of handling errors which are specific to enums. In particular, it will
- * handle the enum constants within switch-case statement.
+ * A type checking extension that will take care of handling errors which are
+ * specific to enums. In particular, it will handle the enum constants within
+ * a switch's case statements.
  *
  * @since 3.0.0
  */
 public class EnumTypeCheckingExtension extends TypeCheckingExtension {
-    public EnumTypeCheckingExtension(StaticTypeCheckingVisitor staticTypeCheckingVisitor) {
+
+    /**
+     * Creates the enum-specific type-checking extension.
+     */
+    public EnumTypeCheckingExtension(final StaticTypeCheckingVisitor staticTypeCheckingVisitor) {
         super(staticTypeCheckingVisitor);
     }
 
+    /**
+     * Resolves enum constants referenced inside switch case labels, including
+     * first-class switch expressions (GROOVY-12255).
+     */
     @Override
-    public boolean handleUnresolvedVariableExpression(VariableExpression vexp) {
-        SwitchStatement switchStatement = this.typeCheckingVisitor.typeCheckingContext.getEnclosingSwitchStatement();
-
-        if (null == switchStatement) return false;
-
-        ClassNode type = switchStatement.getExpression().getNodeMetaData(StaticTypesMarker.TYPE);
-
-        if (null == type) return false;
-
-        if (type.isEnum()) {
-            FieldNode fieldNode = type.redirect().getField(vexp.getName());
-            if (null != fieldNode) {
-                int modifiers = fieldNode.getModifiers();
-                if (Modifier.isPublic(modifiers) && Modifier.isStatic(modifiers) && Modifier.isFinal(modifiers)
-                        && type.equals(fieldNode.getType())) {
+    public boolean handleUnresolvedVariableExpression(final VariableExpression vexp) {
+        Expression selector = selectorOfEnclosingSwitch();
+        if (selector != null) {
+            ClassNode type = selector.getNodeMetaData(StaticTypesMarker.TYPE);
+            if (type != null && type.isEnum()) {
+                FieldNode fieldNode = type.redirect().getField(vexp.getName());
+                if (fieldNode != null && fieldNode.isEnum()) {
                     vexp.putNodeMetaData(SWITCH_CONDITION_EXPRESSION_TYPE, type);
                     return true;
                 }
             }
         }
-
         return false;
+    }
+
+    private Expression selectorOfEnclosingSwitch() {
+        return typeCheckingVisitor.typeCheckingContext.getEnclosingSwitchSelector();
     }
 }

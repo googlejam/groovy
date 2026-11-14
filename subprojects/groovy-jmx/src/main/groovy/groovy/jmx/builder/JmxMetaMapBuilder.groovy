@@ -19,7 +19,9 @@
 package groovy.jmx.builder
 
 import javax.management.ObjectName
+
 import java.lang.reflect.Constructor
+import java.lang.reflect.Modifier
 
 /**
  * The JmxMetaMapBuilder class is used to collect meta data passed in JmxBuilder nodes.  Once collected,
@@ -27,8 +29,8 @@ import java.lang.reflect.Constructor
  */
 class JmxMetaMapBuilder {
 
-    private static final ATTRIB_EXCEPTION_LIST = ["class", "descriptor", "jmx", "metaClass"]
-    private static final OPS_EXCEPTION_LIST = [
+    private static final Set<String> ATTRIB_EXCEPTION_LIST = ["class", "descriptor", "jmx", "metaClass"]
+    private static final Set<String> OPS_EXCEPTION_LIST = [
             "clone",
             "equals",
             "finalize",
@@ -186,22 +188,20 @@ class JmxMetaMapBuilder {
      * @return the meta map for the attribute
      */
     static Map buildAttributeMapFrom(def object) {
-        def properties = object.metaClass.getProperties()
-
         def attribs = [:]
-        properties.each { MetaProperty prop ->
-            if (!ATTRIB_EXCEPTION_LIST.contains(prop.name)) {
-                def attrib = [:]
-                def getterPrefix = (prop.type.name == "java.lang.Boolean" || prop.type.name == "boolean") ? "is" : "get"
-                def name = JmxBuilderTools.capitalize(prop.name)
-                attrib.name = name
-                attrib.displayName = "Property ${prop.name}".toString()
-                attrib.readable = true
-                attrib.getMethod = getterPrefix + name
-                attrib.writable = false
-                attrib.type = prop.type.name
-                attrib.property = prop
-                attribs.put(name, attrib)
+        object.metaClass.properties.each { MetaProperty prop ->
+            if (!ATTRIB_EXCEPTION_LIST.contains(prop.name)
+                    && !Modifier.isPrivate(prop.modifiers)) { // GROOVY-10438
+                String name = JmxBuilderTools.capitalize(prop.name)
+                attribs.put(name, [
+                   name: name,
+                   type: prop.type.name,
+                   displayName: "Property ${prop.name}".toString(),
+                   getMethod: (prop.type.name == 'boolean' ? 'is' : 'get') + name,
+                   property: prop,
+                   readable: true,
+                   writable: false
+                ])
             }
         }
         return attribs
@@ -329,7 +329,7 @@ class JmxMetaMapBuilder {
 
                 // ctorName:[]
                 if (descriptor && (descriptor instanceof List && descriptor.size() == 0)) {
-                    params = null // represnts a ctor with no params
+                    params = null // represents a ctor with no params
                 }
                 // ctorName:["paramType1","paramType2"..."paramTypeN"]
                 if (descriptor && (descriptor instanceof List && descriptor.size() > 0)) {
@@ -389,18 +389,20 @@ class JmxMetaMapBuilder {
      * **************************************/
     /**
      * Returns a meta map of operations from given object.
+     * <p>
+     * Every public method reachable on the object is exported, inherited ones included, less
+     * the names in {@code OPS_EXCEPTION_LIST}. To export a narrower set, name the wanted
+     * operations explicitly in a descriptor rather than relying on this default.
+     *
      * @param object to profile
      * @return The meta map generated.
      */
     static Map buildOperationMapFrom(def object) {
-        def methods = object.metaClass.getMethods()
+        def methods = object.metaClass.methods
         def ops = [:]
 
-        def declaredMethods = object.getClass().getDeclaredMethods()*.name
-
         methods.each { method ->
-            // avoid picking up extra methods from parents
-            if ((declaredMethods.contains(method.name) && !OPS_EXCEPTION_LIST.contains(method.name)) || (!OPS_EXCEPTION_LIST.contains(method.name))) {
+            if (!OPS_EXCEPTION_LIST.contains(method.name)) {
                 String mName = method.name
                 MetaProperty prop =
                         (mName.length() > 3 && (mName.startsWith("get") || mName.startsWith("set")) ||
@@ -422,6 +424,13 @@ class JmxMetaMapBuilder {
         return ops
     }
 
+    /**
+     * Builds an operation meta map from the supplied descriptor collection.
+     *
+     * @param object the object being profiled
+     * @param descCollection the operation descriptor collection
+     * @return the normalized operation metadata
+     */
     static Map buildOperationMapFrom(object, descCollection) {
         def map = [:]
 
@@ -467,7 +476,7 @@ class JmxMetaMapBuilder {
                     if (descriptor && descriptor instanceof Map) {
                         // foo:[params:["paramTypeName0":[name:"",desc:""], paramTypeNameN[:]]]
                         if (descriptor.params && descriptor.params instanceof Map) {
-                            params = descriptor?.params.keySet().toList()
+                            params = descriptor?.params?.keySet()?.toList()
                         }
                         // foo:[params:["paramTypeName0",...,"paramTypeNameN"]]
                         if (descriptor.params && descriptor.params instanceof List) {
@@ -610,7 +619,9 @@ class JmxMetaMapBuilder {
 
     /**
      * Creates a fully-normalized meta map for a given collection of listeners.
-     * @param - collection of descriptors to normalize
+     *
+     * @param descCollection collection of descriptors to normalize
+     * @return the normalized listener metadata
      * @see JmxMetaMapBuilder#createListenerMap(Object)
      */
     static buildListenerMapFrom(descCollection) {

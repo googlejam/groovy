@@ -22,12 +22,12 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Represents an inner class defined as helper for an interface
+ * Represents an inner class defined as helper for an interface.
  */
 public class InterfaceHelperClassNode extends InnerClassNode {
 
-    private List callSites = new ArrayList();
-    
+    private List<String> callSites;
+
     /**
      * @param name is the full name of the class
      * @param modifiers the modifiers, @see org.objectweb.asm.Opcodes
@@ -35,14 +35,24 @@ public class InterfaceHelperClassNode extends InnerClassNode {
      * @param callSites list of callsites used in the interface
      */
     public InterfaceHelperClassNode(ClassNode outerClass, String name, int modifiers, ClassNode superClass, List<String> callSites) {
-        super(outerClass, name, modifiers, superClass, ClassHelper.EMPTY_TYPE_ARRAY, MixinNode.EMPTY_ARRAY);
+        super(null, name, modifiers, superClass, ClassNode.EMPTY_ARRAY, MixinNode.EMPTY_ARRAY);
         setCallSites(callSites);
     }
-    
+
+    /**
+     * Replaces the call-site list. A null argument stores an empty list.
+     *
+     * @param cs call-site names used by the interface, or null
+     */
     public void setCallSites(List<String> cs) {
-        callSites = (cs != null) ? cs : new ArrayList<String>();
+        callSites = (cs != null ? cs : new ArrayList<>());
     }
-    
+
+    /**
+     * Returns the call-site names stored for this helper.
+     *
+     * @return those names; empty when none were supplied
+     */
     public List<String> getCallSites() {
         return callSites;
     }

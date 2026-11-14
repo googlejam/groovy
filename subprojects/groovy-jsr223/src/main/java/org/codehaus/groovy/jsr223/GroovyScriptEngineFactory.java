@@ -46,6 +46,7 @@
  */
 package org.codehaus.groovy.jsr223;
 
+import groovy.lang.GString;
 import groovy.lang.GroovySystem;
 
 import javax.script.ScriptEngine;
@@ -69,6 +70,11 @@ public class GroovyScriptEngineFactory implements ScriptEngineFactory {
 
     private static final String LANGUAGE_NAME = "Groovy";
 
+    /**
+     * Returns the display name of this script engine implementation.
+     *
+     * @return the engine name reported through the JSR-223 API
+     */
     @Override
     public String getEngineName() {
         return "Groovy Scripting Engine";
@@ -86,7 +92,7 @@ public class GroovyScriptEngineFactory implements ScriptEngineFactory {
     }
 
     /**
-     * This is also different than scripting.dev.java.net which used an
+     * This is also different from scripting.dev.java.net which used an
      * initial lowercase.  But these are proper names and should be capitalized.
      */
     @Override
@@ -94,26 +100,53 @@ public class GroovyScriptEngineFactory implements ScriptEngineFactory {
         return LANGUAGE_NAME;
     }
 
+    /**
+     * Returns the version of the Groovy language available at runtime.
+     *
+     * @return the runtime Groovy version
+     */
     @Override
     public String getLanguageVersion() {
         return GroovySystem.getVersion();
     }
 
+    /**
+     * Returns the file extensions recognized by this engine.
+     *
+     * @return an immutable list of supported script file extensions
+     */
     @Override
     public List<String> getExtensions() {
         return EXTENSIONS;
     }
 
+    /**
+     * Returns the MIME types associated with Groovy scripts.
+     *
+     * @return an immutable list of supported MIME types
+     */
     @Override
     public List<String> getMimeTypes() {
         return MIME_TYPES;
     }
 
+    /**
+     * Returns the short and display names accepted when locating this engine.
+     *
+     * @return an immutable list of supported engine names
+     */
     @Override
     public List<String> getNames() {
         return NAMES;
     }
 
+    /**
+     * Resolves a standard JSR-223 metadata key for this engine.
+     *
+     * @param key the metadata key to resolve
+     * @return the metadata value associated with {@code key}
+     * @throws IllegalArgumentException if {@code key} is not supported by this factory
+     */
     @Override
     public Object getParameter(String key) {
 
@@ -135,11 +168,24 @@ public class GroovyScriptEngineFactory implements ScriptEngineFactory {
 
     }
 
+    /**
+     * Creates a new Groovy script engine backed by this factory.
+     *
+     * @return a fresh {@link GroovyScriptEngineImpl} instance
+     */
     @Override
     public ScriptEngine getScriptEngine() {
         return new GroovyScriptEngineImpl(this);
     }
 
+    /**
+     * Formats a Groovy method call using the supplied receiver, method name, and arguments.
+     *
+     * @param obj the expression identifying the receiver object
+     * @param method the method name to call
+     * @param args the argument expressions to include in the invocation
+     * @return a Groovy expression that invokes {@code method} on {@code obj}
+     */
     @Override
     public String getMethodCallSyntax(String obj, String method,
                                       String... args) {
@@ -162,6 +208,19 @@ public class GroovyScriptEngineFactory implements ScriptEngineFactory {
         return ret.toString();
     }
 
+    /**
+     * Produces a Groovy statement that prints the supplied text.
+     * <p>
+     * The text is data, so it is rendered as a string literal with every character escaped
+     * that would otherwise change what the statement means: the quote and backslash that
+     * would end or re-escape the literal, the dollar that would make it an interpolating
+     * {@link GString}, and the line terminators that would end the line. Other
+     * control characters are legal inside a Groovy string literal and are emitted as they
+     * are.
+     *
+     * @param toDisplay the text to render
+     * @return a {@code println} statement which displays the text verbatim
+     */
     @Override
     public String getOutputStatement(String toDisplay) {
         StringBuilder buf = new StringBuilder();
@@ -176,6 +235,15 @@ public class GroovyScriptEngineFactory implements ScriptEngineFactory {
                 case '\\':
                     buf.append("\\\\");
                     break;
+                case '$':
+                    buf.append("\\$");
+                    break;
+                case '\n':
+                    buf.append("\\n");
+                    break;
+                case '\r':
+                    buf.append("\\r");
+                    break;
                 default:
                     buf.append(ch);
                     break;
@@ -185,6 +253,12 @@ public class GroovyScriptEngineFactory implements ScriptEngineFactory {
         return buf.toString();
     }
 
+    /**
+     * Joins multiple Groovy statements into a single program.
+     *
+     * @param statements the statements to concatenate in source order
+     * @return a newline-delimited Groovy program
+     */
     @Override
     public String getProgram(String... statements) {
         StringBuilder ret = new StringBuilder();
@@ -199,10 +273,8 @@ public class GroovyScriptEngineFactory implements ScriptEngineFactory {
     private static final List<String> MIME_TYPES;
 
     static {
-        List<String> n = new ArrayList<String>(2);
-        n.add(SHORT_NAME);
-        n.add(LANGUAGE_NAME);
-        NAMES = Collections.unmodifiableList(n);
+        List<String> n;
+        NAMES = List.of(SHORT_NAME, LANGUAGE_NAME);
 
         n = new ArrayList<String>(1);
         n.add("groovy");

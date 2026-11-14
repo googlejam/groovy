@@ -16,19 +16,19 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
+
 plugins {
     id 'org.apache.groovy-library'
 }
 
 dependencies {
-    api rootProject // ASTMatcher uses ASTNode
+    api project(':') // ASTMatcher uses ASTNode
 
-    testImplementation project(':groovy-test')
-    testImplementation project(':groovy-templates')
-    testImplementation("org.spockframework:spock-junit4:${versions.spock}") {
-        exclude group: 'org.codehaus.groovy'
+    testImplementation projects.groovyTest
+    testImplementation projects.groovyTemplates
+    testImplementation "org.spockframework:spock-junit4:${versions.spock}", {
+        exclude group: 'org.apache.groovy'
     }
-    testRuntimeOnly("org.junit.vintage:junit-vintage-engine:${versions.junit5}")
 }
 
 tasks.named('test') {
@@ -38,5 +38,4 @@ tasks.named('test') {
 
 groovyLibrary {
     optionalModule()
-    withoutBinaryCompatibilityChecks()
 }

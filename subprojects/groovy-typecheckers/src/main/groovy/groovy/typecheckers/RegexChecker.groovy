@@ -18,23 +18,30 @@
  */
 package groovy.typecheckers
 
-import org.apache.groovy.lang.annotation.Incubating
+import groovy.util.regex.RegexGuard
 import org.apache.groovy.typecheckers.CheckingVisitor
+import org.codehaus.groovy.ast.ASTNode
 import org.codehaus.groovy.ast.ClassHelper
 import org.codehaus.groovy.ast.ClassNode
+import org.codehaus.groovy.ast.FieldNode
 import org.codehaus.groovy.ast.MethodNode
+import org.codehaus.groovy.ast.Variable
 import org.codehaus.groovy.ast.expr.BinaryExpression
 import org.codehaus.groovy.ast.expr.BitwiseNegationExpression
+import org.codehaus.groovy.ast.expr.ClassExpression
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.MethodCall
 import org.codehaus.groovy.ast.expr.MethodCallExpression
+import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
+import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.syntax.Types
 import org.codehaus.groovy.transform.stc.GroovyTypeCheckingExtensionSupport
 import org.codehaus.groovy.transform.stc.StaticTypesMarker
 
+import java.lang.reflect.Modifier
 import java.util.regex.Matcher
 import java.util.regex.Pattern
 import java.util.regex.PatternSyntaxException
@@ -58,6 +65,8 @@ import static org.codehaus.groovy.transform.stc.StaticTypeCheckingSupport.checkC
  * </pre>
  * These examples illustrate explicitly defined constant strings but local variable
  * or field definitions where a constant string can be determined are also checked.
+ * For {@code Pattern#compile(String, int)} the regex is checked as compiled with its flags,
+ * when they can be determined; otherwise the call is not checked.
  * </li>
  * <li>
  * Invalid regex strings in conjunction with Groovy's regex find and regex match expressions, or the JDK's {@code Pattern#matches} method:
@@ -83,6 +92,14 @@ import static org.codehaus.groovy.transform.stc.StaticTypeCheckingSupport.checkC
  *     assert m.group(1) == 'foo'  // okay
  *     assert m.group(3)           // type error: only two groups in regex
  * </pre>
+ * Named groups are checked the same way when the name is a constant:
+ * <pre>
+ *     Matcher m = 'foobar' =~ /(?&lt;first&gt;...)(?&lt;second&gt;...)/
+ *     assert m.find()
+ *     assert m.group('first') == 'foo'  // okay
+ *     assert m.group('third')           // type error: no such named group
+ * </pre>
+ * The group index or name passed to {@code start} and {@code end} is checked in the same way.
  * </li>
  * </ul>
  *
@@ -97,17 +114,33 @@ import static org.codehaus.groovy.transform.stc.StaticTypeCheckingSupport.checkC
  * https://checkerframework.org/manual/#regex-checker
  * https://homes.cs.washington.edu/~mernst/pubs/regex-types-ftfjp2012.pdf
  * https://github.com/typetools/checker-framework/tree/master/checker/src/main/java/org/checkerframework/checker/regex
+ *
+ * @since 4.0.0
  */
-@Incubating
 class RegexChecker extends GroovyTypeCheckingExtensionSupport.TypeCheckingDSL {
-    private static final String REGEX_GROUP_COUNT = RegexChecker.simpleName + "_INFERRED_GROUP_COUNT"
-    private static final String REGEX_MATCHER_RESULT_TYPE = RegexChecker.simpleName + "_MATCHER_RESULT_INFERRED_TYPE"
-    private static final ClassNode MATCHER_TYPE = ClassHelper.make(Matcher)
 
+    private static final ClassNode MATCHER_TYPE = ClassHelper.make(Matcher)
+    private static final ClassNode REGEX_GUARD_TYPE = ClassHelper.make(RegexGuard)
+    private static final String REGEX_GROUP_COUNT = RegexChecker.getSimpleName() + '_INFERRED_GROUP_COUNT'
+    private static final String REGEX_STRING = RegexChecker.getSimpleName() + '_INFERRED_REGEX'
+    private static final String REGEX_MATCHER_RESULT_TYPE = RegexChecker.getSimpleName() + '_MATCHER_RESULT_INFERRED_TYPE'
+    // the usual spellings of a named-capturing group opener, including whitespace in COMMENTS mode;
+    // used only to list names in messages, as COMMENTS mode allows other spellings
+    private static final Pattern GROUP_NAME = ~/\(\?<\s*([a-zA-Z](?:\s*[a-zA-Z0-9])*)\s*>/
+    // String-receiver methods whose first argument is a regex; covers both the JDK methods
+    // (matches, split, replaceAll, replaceFirst) and the CharSequence extension methods
+    private static final List<String> REGEX_ARG_METHODS = [
+        'matches', 'find', 'findAll', 'findGroups', 'findAllGroups',
+        'eachMatch', 'replaceAll', 'replaceFirst', 'split', 'splitEachLine'
+    ].asImmutable()
+
+    /**
+     * Registers regex validation and matcher type-inference hooks for visited methods.
+     */
     @Override
     Object run() {
         beforeVisitMethod { MethodNode method ->
-            def visitor = new CheckingVisitor() {
+            method.code?.visit(new CheckingVisitor() {
                 @Override
                 void visitBitwiseNegationExpression(BitwiseNegationExpression expression) {
                     super.visitBitwiseNegationExpression(expression)
@@ -122,9 +155,9 @@ class RegexChecker extends GroovyTypeCheckingExtensionSupport.TypeCheckingDSL {
                         def exp = findConstExp(expression.rightExpression, String)
                         checkRegex(exp, expression)
                     } else if (expression.operation.type == Types.LEFT_SQUARE_BRACKET) {
-                        if (isVariableExpression(expression.leftExpression)) {
+                        if (expression.leftExpression instanceof VariableExpression) {
                             def var = findTargetVariable(expression.leftExpression)
-                            def groupCount = var?.getNodeMetaData(REGEX_GROUP_COUNT)
+                            def groupCount = regexMetaData(var, REGEX_GROUP_COUNT)
                             if (groupCount != null) {
                                 expression.putNodeMetaData(REGEX_GROUP_COUNT, groupCount)
                                 if (groupCount == 0) {
@@ -140,14 +173,24 @@ class RegexChecker extends GroovyTypeCheckingExtensionSupport.TypeCheckingDSL {
                 @Override
                 void visitMethodCallExpression(MethodCallExpression call) {
                     super.visitMethodCallExpression(call)
-                    if (isClassExpression(call.objectExpression)) {
+                    if (call.objectExpression instanceof ClassExpression) {
                         checkPatternMethod(call, call.objectExpression.type)
-                    } else if (isPattern(call.receiver) && call.methodAsString == 'matcher') {
-                        def var = findTargetVariable(call.receiver)
-                        def groupCount = var?.getNodeMetaData(REGEX_GROUP_COUNT)
-                        if (groupCount != null) {
-                            call.putNodeMetaData(REGEX_GROUP_COUNT, groupCount)
+                    } else if (isString(call.receiver) && call.methodAsString in REGEX_ARG_METHODS && call.arguments.expressions) {
+                        def exp = findConstExp(call.arguments.getExpression(0), String)
+                        checkRegex(exp, call)
+                        if (call.methodAsString == 'findGroups' && call.getNodeMetaData(REGEX_GROUP_COUNT) == null) {
+                            // no constant regex string found directly, but a pattern-operator
+                            // argument or a pattern variable may still carry a group count
+                            def arg = call.arguments.getExpression(0)
+                            def source = arg instanceof VariableExpression ? findTargetVariable(arg) : arg
+                            def groupCount = regexMetaData(source, REGEX_GROUP_COUNT)
+                            if (groupCount != null) {
+                                call.putNodeMetaData(REGEX_GROUP_COUNT, groupCount)
+                            }
                         }
+                    } else if (isPattern(call.receiver) && call.methodAsString == 'matcher') {
+                        def source = call.receiver instanceof VariableExpression ? findTargetVariable(call.receiver) : call.receiver
+                        copyRegexMetaData(source, call)
                     }
                 }
 
@@ -161,32 +204,95 @@ class RegexChecker extends GroovyTypeCheckingExtensionSupport.TypeCheckingDSL {
                     def arguments = call.arguments
                     if (classType == PATTERN_TYPE && call.methodAsString in ['compile', 'matches'] && arguments.expressions) {
                         def exp = findConstExp(arguments.getExpression(0), String)
-                        checkRegex(exp, call)
+                        if (call.methodAsString == 'compile' && arguments.expressions.size() > 1) {
+                            // compile(regex, flags): flags such as COMMENTS and LITERAL change how the
+                            // regex is parsed, so it is only checked when the flags are known
+                            def flags = findFlags(arguments.getExpression(1), [] as Set)
+                            if (flags != null) {
+                                checkRegex(exp, call, flags)
+                            }
+                        } else {
+                            checkRegex(exp, call)
+                        }
+                    } else if (classType == REGEX_GUARD_TYPE && arguments.expressions) {
+                        // deadline-guarded evaluation: matches/matcher (typically written by hand)
+                        // take the pattern first; the operator-shaped matchRegex/findRegex hooks
+                        // (generated by @SafeRegex from the regex operators) take the input first
+                        if (call.methodAsString in ['matches', 'matcher']) {
+                            checkRegex(findConstExp(arguments.getExpression(0), String), call)
+                        } else if (call.methodAsString in ['matchRegex', 'findRegex'] && arguments.expressions.size() > 1) {
+                            checkRegex(findConstExp(arguments.getExpression(1), String), call)
+                        }
                     }
+                }
+
+                // initial values of local variables, for flags written as an expression
+                private final Map<Variable, Expression> localInitExps = [:]
+
+                /**
+                 * Determines the value of a flags argument: an int constant, a Pattern flag constant,
+                 * flags combined with '|', or a local variable or field initialized with one of these.
+                 * Returns null when the value is only known at runtime.
+                 */
+                private Integer findFlags(Expression exp, Set<Variable> seen) {
+                    def constant = findConstExp(exp, Integer)
+                    if (constant != null) {
+                        return (Integer) constant.value
+                    }
+                    if (exp instanceof PropertyExpression && exp.objectExpression instanceof ClassExpression
+                            && exp.objectExpression.type == PATTERN_TYPE) {
+                        return patternFlag(exp.propertyAsString)
+                    }
+                    if (exp instanceof BinaryExpression && exp.operation.type == Types.BITWISE_OR) {
+                        def left = findFlags(exp.leftExpression, seen)
+                        def right = findFlags(exp.rightExpression, seen)
+                        return left != null && right != null ? left | right : null
+                    }
+                    if (exp instanceof VariableExpression) {
+                        def var = findTargetVariable(exp)
+                        if (seen.add(var)) {
+                            if (var instanceof FieldNode && var.hasInitialExpression()) {
+                                return findFlags(var.initialExpression, seen)
+                            }
+                            if (localInitExps.containsKey(var)) {
+                                return findFlags(localInitExps.get(var), seen)
+                            }
+                        }
+                    }
+                    null
                 }
 
                 @Override
                 void visitDeclarationExpression(DeclarationExpression decl) {
                     super.visitDeclarationExpression(decl)
                     if (decl.variableExpression != null) {
-                        if (isConstantExpression(decl.rightExpression)) {
+                        if (decl.rightExpression instanceof ConstantExpression) {
                             localConstVars.put(decl.variableExpression, decl.rightExpression)
                         }
+                        localInitExps.put(decl.variableExpression, decl.rightExpression)
+                        copyRegexMetaData(decl.rightExpression, decl.variableExpression)
+                    } else if (decl.isMultipleAssignmentDeclaration() && decl.rightExpression instanceof MethodCallExpression
+                            && decl.rightExpression.methodAsString == 'findGroups') {
+                        // findGroups yields the full match plus one element per group; more
+                        // variables than that can never all be bound, even on a successful match
                         def groupCount = decl.rightExpression.getNodeMetaData(REGEX_GROUP_COUNT)
                         if (groupCount != null) {
-                            decl.variableExpression.putNodeMetaData(REGEX_GROUP_COUNT, groupCount)
+                            int numVars = decl.tupleExpression.expressions.size()
+                            if (numVars > groupCount + 1) {
+                                addStaticTypeError('Too many variables ' + numVars + ' for findGroups: a regex with ' + groupCount +
+                                        ' group' + (groupCount == 1 ? '' : 's') + ' yields at most ' + (groupCount + 1) +
+                                        ' elements (the full match plus each group)', decl)
+                            }
                         }
                     }
                 }
-
-            }
-            method.code.visit(visitor)
+            })
         }
 
         incompatibleAssignment { lhsType, rhsType, expr ->
-            if (isBinaryExpression(expr) && isAssignment(expr.operation.type)) {
+            if (expr instanceof BinaryExpression && isAssignment(expr.operation.type)) {
                 def from = expr.rightExpression
-                if (isBinaryExpression(from) && from.operation.type == Types.LEFT_SQUARE_BRACKET && getType(from.leftExpression) == MATCHER_TYPE) {
+                if (from instanceof BinaryExpression && from.operation.type == Types.LEFT_SQUARE_BRACKET && getType(from.leftExpression) == MATCHER_TYPE) {
                     ClassNode inferred = from.getNodeMetaData(REGEX_MATCHER_RESULT_TYPE)
                     if (inferred) {
                         handled = true
@@ -200,9 +306,9 @@ class RegexChecker extends GroovyTypeCheckingExtensionSupport.TypeCheckingDSL {
             }
         }
 
-        methodNotFound { receiverType, name, argList, argTypes, call ->
+        methodNotFound { receiverType, name, argList, argTypes, MethodCall call ->
             def receiver = call.receiver
-            if (isBinaryExpression(receiver) && receiver.operation.type == Types.LEFT_SQUARE_BRACKET && getType(receiver.leftExpression) == MATCHER_TYPE) {
+            if (receiver instanceof BinaryExpression && receiver.operation.type == Types.LEFT_SQUARE_BRACKET && getType(receiver.leftExpression) == MATCHER_TYPE) {
                 ClassNode inferred = receiver.getNodeMetaData(REGEX_MATCHER_RESULT_TYPE)
                 if (inferred) {
                     makeDynamic(call, inferred)
@@ -211,38 +317,44 @@ class RegexChecker extends GroovyTypeCheckingExtensionSupport.TypeCheckingDSL {
         }
 
         afterVisitMethod { MethodNode method ->
-            def visitor = new CheckingVisitor() {
+            method.code?.visit(new CheckingVisitor() {
                 @Override
                 void visitDeclarationExpression(DeclarationExpression decl) {
                     super.visitDeclarationExpression(decl)
                     if (decl.variableExpression != null) {
-                        if (isConstantExpression(decl.rightExpression)) {
+                        if (decl.rightExpression instanceof ConstantExpression) {
                             localConstVars.put(decl.variableExpression, decl.rightExpression)
                         }
-                        def groupCount = decl.rightExpression.getNodeMetaData(REGEX_GROUP_COUNT)
-                        if (groupCount != null) {
-                            decl.variableExpression.putNodeMetaData(REGEX_GROUP_COUNT, groupCount)
-                        }
+                        copyRegexMetaData(decl.rightExpression, decl.variableExpression)
                     }
                 }
 
                 @Override
                 void visitMethodCallExpression(MethodCallExpression call) {
                     if (isPattern(call.receiver) && call.methodAsString == 'matcher') {
-                        def var = findTargetVariable(call.receiver)
-                        def groupCount = var?.getNodeMetaData(REGEX_GROUP_COUNT)
-                        if (groupCount != null) {
-                            call.putNodeMetaData(REGEX_GROUP_COUNT, groupCount)
-                        }
+                        def source = call.receiver instanceof VariableExpression ? findTargetVariable(call.receiver) : call.receiver
+                        copyRegexMetaData(source, call)
                     }
                     super.visitMethodCallExpression(call)
-                    if (isVariableExpression(call.objectExpression) && call.methodAsString == 'group' && isMatcher(call.receiver) && call.arguments.expressions) {
+                    if (call.objectExpression instanceof VariableExpression && call.methodAsString in ['group', 'start', 'end'] && isMatcher(call.receiver) && call.arguments.expressions) {
                         def var = findTargetVariable(call.receiver)
-                        def maxCnt = var?.getNodeMetaData(REGEX_GROUP_COUNT)
+                        def maxCnt = regexMetaData(var, REGEX_GROUP_COUNT)
                         if (maxCnt != null) {
-                            def cnt = findConstExp(call.arguments.getExpression(0), Integer).value
-                            if (cnt > maxCnt) {
-                                addStaticTypeError("Invalid group count " + cnt + " for regex with " + maxCnt + " group" + (maxCnt == 1 ? "" : "s"), call)
+                            def arg = call.arguments.getExpression(0)
+                            def cnt = findConstExp(arg, Integer)?.value
+                            if (cnt != null) {
+                                if (cnt > maxCnt) {
+                                    addStaticTypeError('Invalid group count ' + cnt + ' for regex with ' + maxCnt + ' group' + (maxCnt == 1 ? '' : 's'), call)
+                                }
+                            } else {
+                                // a group name: it must be one the regex defines
+                                def name = findConstExp(arg, String)?.value
+                                String regex = regexMetaData(var, REGEX_STRING)
+                                if (name != null && regex != null && !definesGroup(regex, name)) {
+                                    def names = findGroupNames(regex)
+                                    String known = names ? 'named group' + (names.size() == 1 ? ' ' : 's ') + names.join(', ') : 'no named groups'
+                                    addStaticTypeError("Invalid group name '" + name + "' for regex with " + known, call)
+                                }
                             }
                         }
                     }
@@ -254,41 +366,116 @@ class RegexChecker extends GroovyTypeCheckingExtensionSupport.TypeCheckingDSL {
                     if (expression.operation.type == Types.LEFT_SQUARE_BRACKET) {
                         def maxCnt = expression.leftExpression?.getNodeMetaData(REGEX_GROUP_COUNT)
                         if (maxCnt != null) {
-                            def cnt = findConstExp(expression.rightExpression, Integer).value
-                            if (cnt > maxCnt) {
-                                addStaticTypeError("Invalid group count " + cnt + " for regex with " + maxCnt + " group" + (maxCnt == 1 ? "" : "s"), expression)
+                            def cnt = findConstExp(expression.rightExpression, Integer)?.value
+                            if (cnt != null && cnt > maxCnt) {
+                                addStaticTypeError('Invalid group count ' + cnt + ' for regex with ' + maxCnt + ' group' + (maxCnt == 1 ? '' : 's'), expression)
                             }
                         }
                     }
                 }
-            }
-            method.code.visit(visitor)
+            })
         }
     }
 
-    private boolean isMatcher(Expression obj) {
-        obj.type == MATCHER_TYPE ||
-                obj.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE) == MATCHER_TYPE ||
-                obj.getNodeMetaData(StaticTypesMarker.INFERRED_RETURN_TYPE) == MATCHER_TYPE
+    //--------------------------------------------------------------------------
+
+    private boolean isMatcher(Expression exp) {
+        exp.type == MATCHER_TYPE
+            || exp.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE) == MATCHER_TYPE
+            || exp.getNodeMetaData(StaticTypesMarker.INFERRED_RETURN_TYPE) == MATCHER_TYPE
     }
 
-    private boolean isPattern(Expression obj) {
-        obj.type == PATTERN_TYPE ||
-                obj.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE) == PATTERN_TYPE ||
-                obj.getNodeMetaData(StaticTypesMarker.INFERRED_RETURN_TYPE) == PATTERN_TYPE
+    private boolean isString(Expression exp) {
+        exp.type == STRING_TYPE
+            || exp.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE) == STRING_TYPE
+            || exp.getNodeMetaData(StaticTypesMarker.INFERRED_RETURN_TYPE) == STRING_TYPE
     }
 
-    private void checkRegex(ConstantExpression regex, Expression target) {
+    private boolean isPattern(Expression exp) {
+        exp.type == PATTERN_TYPE
+            || exp.getNodeMetaData(StaticTypesMarker.INFERRED_TYPE) == PATTERN_TYPE
+            || exp.getNodeMetaData(StaticTypesMarker.INFERRED_RETURN_TYPE) == PATTERN_TYPE
+    }
+
+    private void checkRegex(ConstantExpression regex, Expression target, int flags = 0) {
         if (regex == null) return
         try {
-            def pattern = Pattern.compile(regex.value)
+            def pattern = Pattern.compile(regex.value, flags)
             Matcher m = pattern.matcher('')
             target.putNodeMetaData(REGEX_GROUP_COUNT, m.groupCount())
+            // the name check compiles this text again, so it carries the flags that change how
+            // names are read: a LITERAL regex defines no groups, whatever its text contains
+            String text = (flags & Pattern.LITERAL) ? Pattern.quote(regex.value)
+                : (flags & Pattern.COMMENTS) ? '(?x)' + regex.value : regex.value
+            target.putNodeMetaData(REGEX_STRING, text)
         } catch (PatternSyntaxException ex) {
             String additional = regex.lineNumber != target.lineNumber ?
-                " @ line $regex.lineNumber, column $regex.columnNumber: " : ": "
-            addStaticTypeError("Bad regex" + additional + ex.message, target)
+                " @ line $regex.lineNumber, column $regex.columnNumber: " : ': '
+            addStaticTypeError('Bad regex' + additional + ex.message, target)
+        } catch (IllegalArgumentException ex) {
+            addStaticTypeError('Bad regex flags: ' + ex.message, target)
         }
     }
 
+    /**
+     * Returns the value of the named {@code Pattern} flag constant, or null if there is none.
+     */
+    private static Integer patternFlag(String name) {
+        try {
+            def field = Pattern.getField(name)
+            Modifier.isStatic(field.modifiers) && field.type == int ? (Integer) field.get(null) : null
+        } catch (NoSuchFieldException ignore) {
+            null
+        }
+    }
+
+    /**
+     * Checks whether a regex that is known to compile defines a named-capturing group. A named
+     * backreference to an undefined group does not compile, so the JDK answers exactly, whatever
+     * the spelling of the group in COMMENTS mode; the newline ends a trailing comment. A regex
+     * whose unterminated quote swallows the backreference reports every name as defined.
+     * A name that is not a legal group name is never defined; it is rejected before probing, as
+     * COMMENTS mode would otherwise ignore whitespace within it and other characters could end
+     * the backreference early.
+     */
+    private static boolean definesGroup(String regex, String name) {
+        if (!(name ==~ /[a-zA-Z][a-zA-Z0-9]*/)) return false
+        try {
+            Pattern.compile(regex + '\n\\k<' + name + '>')
+            true
+        } catch (PatternSyntaxException ignore) {
+            false
+        }
+    }
+
+    /**
+     * Lists the named-capturing groups of a regex that is known to compile, for use in messages.
+     * The text scan finds the usual spellings of a group opener; each candidate is confirmed with
+     * {@link #definesGroup} so openers in quoted text or character classes are left out.
+     */
+    private static List<String> findGroupNames(String regex) {
+        List<String> names = []
+        Matcher m = GROUP_NAME.matcher(regex)
+        while (m.find()) {
+            names << m.group(1).replaceAll(/\s+/, '')
+        }
+        names.unique().findAll { definesGroup(regex, it) }
+    }
+
+    /**
+     * Returns the regex metadata recorded on a node, or {@code null} when there is none. A variable that
+     * resolves to something other than an AST node, such as a script binding variable, is not tracked.
+     */
+    private static Object regexMetaData(source, String key) {
+        source instanceof ASTNode ? source.getNodeMetaData(key) : null
+    }
+
+    private static void copyRegexMetaData(source, target) {
+        for (String key : [REGEX_GROUP_COUNT, REGEX_STRING]) {
+            def value = regexMetaData(source, key)
+            if (value != null) {
+                target.putNodeMetaData(key, value)
+            }
+        }
+    }
 }

@@ -16,11 +16,15 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy7920Bug extends GroovyTestCase {
+import static groovy.test.GroovyAssert.assertScript
+
+
+class Groovy7920Bug {
+    @Test
     void testGetAtViaInterface() {
         assertScript '''
             interface Foo {}
@@ -34,6 +38,7 @@ class Groovy7920Bug extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testGetAtViaSuper() {
         assertScript '''
             class Foo {}
@@ -47,6 +52,7 @@ class Groovy7920Bug extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testGetAtNonNumeric() {
         assertScript '''
             @groovy.transform.CompileStatic

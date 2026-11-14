@@ -25,14 +25,22 @@ import java.util.Map;
  * Represents the variable bindings of a script which can be altered
  * from outside the script object or created outside of a script and passed
  * into it.
- * <p> Binding instances are not supposed to be used in a multi-threaded context.
+ * <p> Binding instances are not supposed to be used in a multithreaded context.
  */
 public class Binding extends GroovyObjectSupport {
     private Map variables;
 
+    /**
+     * Creates an empty binding.
+     */
     public Binding() {
     }
 
+    /**
+     * Creates a binding backed by the supplied variables map.
+     *
+     * @param variables the initial variables
+     */
     public Binding(Map variables) {
         this.variables = variables;
     }
@@ -88,16 +96,21 @@ public class Binding extends GroovyObjectSupport {
 
         variables.remove(name);
     }
-    
+
     /**
      * Simple check for whether the binding contains a particular variable or not.
-     * 
+     *
      * @param name the name of the variable to check for
      */
     public boolean hasVariable(String name) {
         return variables != null && variables.containsKey(name);
     }
 
+    /**
+     * Returns the variables map, creating it on first access.
+     *
+     * @return the backing variables map
+     */
     public Map getVariables() {
         if (variables == null)
             variables = new LinkedHashMap();
@@ -109,7 +122,7 @@ public class Binding extends GroovyObjectSupport {
      */
     @Override
     public Object getProperty(String property) {
-        /** @todo we should check if we have the property with the metaClass instead of try/catch  */
+        /* @todo we should check if we have the property with the metaClass instead of try/catch  */
         try {
             return super.getProperty(property);
         }
@@ -123,7 +136,7 @@ public class Binding extends GroovyObjectSupport {
      */
     @Override
     public void setProperty(String property, Object newValue) {
-        /** @todo we should check if we have the property with the metaClass instead of try/catch  */
+        /* @todo we should check if we have the property with the metaClass instead of try/catch  */
         try {
             super.setProperty(property, newValue);
         }
@@ -131,5 +144,5 @@ public class Binding extends GroovyObjectSupport {
             setVariable(property, newValue);
         }
     }
-    
+
 }

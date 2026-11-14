@@ -19,6 +19,7 @@
 package groovy.util;
 
 import groovy.lang.Binding;
+import groovy.lang.Closure;
 import groovy.lang.GroovyObject;
 import groovy.lang.MetaClass;
 import groovy.lang.MissingMethodException;
@@ -27,7 +28,7 @@ import groovy.lang.Script;
 import org.codehaus.groovy.runtime.InvokerHelper;
 
 /**
- * {@link Script} that performs method invocations and property access like {@link groovy.lang.Closure} does.
+ * {@link Script} that performs method invocations and property access like {@link Closure} does.
  *
  * <p>
  * {@link DelegatingScript} is a convenient basis for loading a custom-defined DSL as a {@link Script}, then execute it.
@@ -87,10 +88,18 @@ public abstract class DelegatingScript extends Script {
     private Object delegate;
     private MetaClass metaClass;
 
+    /**
+     * Creates a delegating script with an empty binding.
+     */
     protected DelegatingScript() {
         super();
     }
 
+    /**
+     * Creates a delegating script using the supplied binding.
+     *
+     * @param binding the binding to use for the script
+     */
     protected DelegatingScript(Binding binding) {
         super(binding);
     }
@@ -103,6 +112,13 @@ public abstract class DelegatingScript extends Script {
         this.metaClass = InvokerHelper.getMetaClass(delegate.getClass());
     }
 
+    /**
+     * Delegates method invocation before falling back to normal script dispatch.
+     *
+     * @param name the method name
+     * @param args the invocation arguments
+     * @return the invocation result
+     */
     @Override
     public Object invokeMethod(String name, Object args) {
         try {
@@ -115,6 +131,12 @@ public abstract class DelegatingScript extends Script {
         }
     }
 
+    /**
+     * Resolves properties against the delegate before the script binding.
+     *
+     * @param property the property name
+     * @return the property value
+     */
     @Override
     public Object getProperty(String property) {
         try {
@@ -124,6 +146,12 @@ public abstract class DelegatingScript extends Script {
         }
     }
 
+    /**
+     * Sets a property on the delegate before falling back to the script binding.
+     *
+     * @param property the property name
+     * @param newValue the new property value
+     */
     @Override
     public void setProperty(String property, Object newValue) {
         try {
@@ -133,6 +161,11 @@ public abstract class DelegatingScript extends Script {
         }
     }
 
+    /**
+     * Returns the current delegation target.
+     *
+     * @return the delegate object
+     */
     public Object getDelegate() {
         return delegate;
     }

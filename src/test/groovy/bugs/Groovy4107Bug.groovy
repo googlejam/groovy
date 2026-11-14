@@ -16,17 +16,20 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
 import org.codehaus.groovy.control.MultipleCompilationErrorsException
+import org.junit.jupiter.api.Test
 
-class Groovy4107Bug extends GroovyTestCase {
+import static org.junit.jupiter.api.Assertions.fail
+
+class Groovy4107Bug {
+    @Test
     void testUnqualifiedImportResolveBug() {
         try {
             new GroovyShell().parse """
                 import Roshan4107
-                
+
                 Roshan4107.foo()
             """
             fail('The compilation should have failed as the class Roshan4107 is non-existent')

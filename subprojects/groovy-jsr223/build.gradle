@@ -21,8 +21,8 @@ plugins {
 }
 
 dependencies {
-    api rootProject // ScriptExtensions use Binding...
-    testImplementation project(':groovy-test')
+    api project(':') // ScriptExtensions use Binding...
+    testImplementation projects.groovyTest
 }
 
 groovyLibrary {

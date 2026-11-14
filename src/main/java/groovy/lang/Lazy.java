@@ -20,6 +20,7 @@ package groovy.lang;
 
 import org.codehaus.groovy.transform.GroovyASTTransformationClass;
 
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -144,10 +145,13 @@ import java.lang.annotation.Target;
  * }
  * </pre>
  */
-@java.lang.annotation.Documented
+@Documented
 @Retention(RetentionPolicy.SOURCE)
-@Target({ElementType.FIELD})
-@GroovyASTTransformationClass("org.codehaus.groovy.transform.LazyASTTransformation")
+@Target(ElementType.FIELD)
+@GroovyASTTransformationClass({
+        "org.codehaus.groovy.transform.LazyASTStubber",
+        "org.codehaus.groovy.transform.LazyASTTransformation"
+})
 public @interface Lazy {
     /**
      * @return if field should be soft referenced instead of hard referenced

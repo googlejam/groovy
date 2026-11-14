@@ -18,10 +18,11 @@
  */
 package org.codehaus.groovy.classgen.asm;
 
+import org.apache.groovy.ast.tools.ExpressionUtils;
 import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.ConstructorNode;
-import org.codehaus.groovy.ast.FieldNode;
+import org.codehaus.groovy.ast.GroovyCodeVisitorAdapter;
 import org.codehaus.groovy.ast.MethodNode;
 import org.codehaus.groovy.ast.Parameter;
 import org.codehaus.groovy.ast.expr.ArgumentListExpression;
@@ -31,32 +32,48 @@ import org.codehaus.groovy.ast.expr.ClassExpression;
 import org.codehaus.groovy.ast.expr.ConstantExpression;
 import org.codehaus.groovy.ast.expr.ConstructorCallExpression;
 import org.codehaus.groovy.ast.expr.Expression;
+import org.codehaus.groovy.ast.expr.MethodCall;
 import org.codehaus.groovy.ast.expr.MethodCallExpression;
 import org.codehaus.groovy.ast.expr.PropertyExpression;
 import org.codehaus.groovy.ast.expr.SpreadExpression;
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression;
 import org.codehaus.groovy.ast.expr.TupleExpression;
 import org.codehaus.groovy.ast.expr.VariableExpression;
+import org.codehaus.groovy.ast.stmt.BlockStatement;
+import org.codehaus.groovy.ast.stmt.ExpressionStatement;
+import org.codehaus.groovy.ast.stmt.Statement;
 import org.codehaus.groovy.ast.tools.WideningCategories;
 import org.codehaus.groovy.classgen.AsmClassGenerator;
 import org.codehaus.groovy.runtime.ScriptBytecodeAdapter;
 import org.codehaus.groovy.runtime.typehandling.DefaultTypeTransformation;
 import org.codehaus.groovy.runtime.typehandling.ShortTypeHandling;
 import org.codehaus.groovy.syntax.SyntaxException;
+import org.codehaus.groovy.transform.stc.ExtensionMethodNode;
 import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Iterator;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.TreeMap;
 
+import static org.apache.groovy.ast.tools.ClassNodeUtils.isSubtype;
 import static org.apache.groovy.ast.tools.ExpressionUtils.isNullConstant;
 import static org.apache.groovy.ast.tools.ExpressionUtils.isSuperExpression;
 import static org.apache.groovy.ast.tools.ExpressionUtils.isThisExpression;
+import static org.apache.groovy.ast.tools.ExpressionUtils.mayHaveSideEffects;
+import static org.codehaus.groovy.ast.ClassHelper.isClassType;
 import static org.codehaus.groovy.ast.ClassHelper.isFunctionalInterface;
+import static org.codehaus.groovy.ast.ClassHelper.isObjectType;
 import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveType;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveVoid;
+import static org.codehaus.groovy.ast.ClassHelper.isStringType;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.castX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.isNullOrInstanceOfX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.ternaryX;
+import static org.codehaus.groovy.ast.tools.ParameterUtils.isVargs;
+import static org.codehaus.groovy.runtime.DefaultGroovyMethods.last;
 import static org.codehaus.groovy.transform.stc.StaticTypeCheckingSupport.isClassClassNodeWrappingConcreteType;
 import static org.objectweb.asm.Opcodes.AALOAD;
 import static org.objectweb.asm.Opcodes.ACC_FINAL;
@@ -77,84 +94,157 @@ import static org.objectweb.asm.Opcodes.NEW;
 import static org.objectweb.asm.Opcodes.POP;
 import static org.objectweb.asm.Opcodes.SWAP;
 
+/**
+ * Handles method and constructor invocations, generating appropriate bytecode.
+ */
 public class InvocationWriter {
 
     // method invocation
+    /** Multi-adapter for {@code invokeMethodOnCurrent} call-site variants. */
     public static final MethodCallerMultiAdapter invokeMethodOnCurrent = MethodCallerMultiAdapter.newStatic(ScriptBytecodeAdapter.class, "invokeMethodOnCurrent", true, false);
+    /** Multi-adapter for {@code invokeMethodOnSuper} call-site variants. */
     public static final MethodCallerMultiAdapter invokeMethodOnSuper = MethodCallerMultiAdapter.newStatic(ScriptBytecodeAdapter.class, "invokeMethodOnSuper", true, false);
+    /** Multi-adapter for generic {@code invokeMethod} call-site variants. */
     public static final MethodCallerMultiAdapter invokeMethod = MethodCallerMultiAdapter.newStatic(ScriptBytecodeAdapter.class, "invokeMethod", true, false);
+    /** Multi-adapter for {@code invokeStaticMethod} call-site variants. */
     public static final MethodCallerMultiAdapter invokeStaticMethod = MethodCallerMultiAdapter.newStatic(ScriptBytecodeAdapter.class, "invokeStaticMethod", true, true);
+    /**
+     * @deprecated Use direct closure invocation instead
+     */
+    @Deprecated(since = "5.0.0")
     public static final MethodCaller invokeClosureMethod = MethodCaller.newStatic(ScriptBytecodeAdapter.class, "invokeClosure");
-    public static final MethodCaller castToVargsArray = MethodCaller.newStatic(DefaultTypeTransformation.class, "castToVargsArray");
-    private static final MethodNode CLASS_FOR_NAME_STRING = ClassHelper.CLASS_Type.getDeclaredMethod("forName", new Parameter[]{new Parameter(ClassHelper.STRING_TYPE, "name")});
+    /** Method caller for casting an array of arguments to a varargs array. */
+    public static final MethodCaller castToVargsArray    = MethodCaller.newStatic(DefaultTypeTransformation.class, "castToVargsArray");
 
-    // type conversions
-    private static final MethodCaller asTypeMethod = MethodCaller.newStatic(ScriptBytecodeAdapter.class, "asType");
-    private static final MethodCaller castToTypeMethod = MethodCaller.newStatic(ScriptBytecodeAdapter.class, "castToType");
-    private static final MethodCaller castToClassMethod = MethodCaller.newStatic(ShortTypeHandling.class, "castToClass");
+    // type conversion
+    private static final MethodCaller asTypeMethod       = MethodCaller.newStatic(ScriptBytecodeAdapter.class, "asType");
+    private static final MethodCaller castToTypeMethod   = MethodCaller.newStatic(ScriptBytecodeAdapter.class, "castToType");
+    private static final MethodCaller castToClassMethod  = MethodCaller.newStatic(ShortTypeHandling.class, "castToClass");
     private static final MethodCaller castToStringMethod = MethodCaller.newStatic(ShortTypeHandling.class, "castToString");
-    private static final MethodCaller castToEnumMethod = MethodCaller.newStatic(ShortTypeHandling.class, "castToEnum");
+    private static final MethodCaller castToEnumMethod   = MethodCaller.newStatic(ShortTypeHandling.class, "castToEnum");
 
     // constructor calls with this() and super()
     private static final MethodCaller selectConstructorAndTransformArguments = MethodCaller.newStatic(ScriptBytecodeAdapter.class, "selectConstructorAndTransformArguments");
 
+    private static final MethodNode CLASS_FOR_NAME_STRING = ClassHelper.CLASS_Type.getDeclaredMethod("forName", new Parameter[]{new Parameter(ClassHelper.STRING_TYPE, "")});
+
+    /** The controller coordinating all bytecode writers for the current class. */
     protected final WriterController controller;
 
+    /** The expression currently being compiled as a call, used for optimizations. */
+    protected Expression currentCall;
+
+    /**
+     * Creates an invocation writer with the given controller.
+     *
+     * @param controller the writer controller
+     */
     public InvocationWriter(final WriterController controller) {
         this.controller = controller;
     }
 
+    /**
+     * Generates bytecode for a method call.
+     *
+     * @param origin the original expression
+     * @param receiver the receiver expression
+     * @param message the method name expression
+     * @param arguments the arguments expression
+     * @param adapter the method caller adapter
+     * @param safe whether to use safe navigation
+     * @param spreadSafe whether to use spread-safe navigation
+     * @param implicitThis whether the receiver is implicit 'this'
+     */
     public void makeCall(final Expression origin, final Expression receiver, final Expression message, final Expression arguments, final MethodCallerMultiAdapter adapter, boolean safe, final boolean spreadSafe, boolean implicitThis) {
+        var oldCall = currentCall;
+        currentCall = origin instanceof MethodCall ? origin : null;
+
         ClassNode sender;
         if (isSuperExpression(receiver) || (isThisExpression(receiver) && !implicitThis)) {
+            // GROOVY-6045, GROOVY-8693, et al.
             sender = controller.getThisType();
-            if (isSuperExpression(receiver)) {
-                sender = sender.getSuperClass(); // GROOVY-4035
-                implicitThis = false; // prevent recursion
-                safe = false; // GROOVY-6045
-            }
+            implicitThis = false;
+            safe = false;
         } else {
             sender = controller.getClassNode();
         }
-
         makeCall(origin, new ClassExpression(sender), receiver, message, arguments, adapter, safe, spreadSafe, implicitThis);
+
+        currentCall = oldCall;
     }
 
+    /**
+     * Generates bytecode for a method invocation, choosing among direct call,
+     * call-site caching, and uncached (ScriptBytecodeAdapter) strategies.
+     *
+     * @param origin     the original expression triggering this call
+     * @param sender     the class from which the call is dispatched
+     * @param receiver   the receiver expression
+     * @param message    the method name expression
+     * @param arguments  the arguments expression
+     * @param adapter    the multi-adapter selecting the correct runtime method
+     * @param safe       whether to use safe navigation ({@code ?.})
+     * @param spreadSafe whether to use spread-safe navigation ({@code *?.})
+     * @param implicitThis whether the receiver is implicit {@code this}
+     */
+    protected void makeCall(final Expression origin, final ClassExpression sender, final Expression receiver, final Expression message, final Expression arguments, final MethodCallerMultiAdapter adapter, final boolean safe, final boolean spreadSafe, final boolean implicitThis) {
+        boolean containsSpreadExpression = AsmClassGenerator.containsSpreadExpression(arguments);
+        // direct invocation path
+        if (!makeDirectCall(origin, receiver, message, arguments, adapter, implicitThis, containsSpreadExpression))
+            // call site or indy path
+            if (!makeCachedCall(origin, sender, receiver, message, arguments, adapter, safe, spreadSafe, implicitThis, containsSpreadExpression))
+                // ScriptBytecodeAdapter path
+                makeUncachedCall(origin, sender, receiver, message, arguments, adapter, safe, spreadSafe, implicitThis, containsSpreadExpression);
+    }
+
+    /**
+     * Emits a direct (INVOKE*) bytecode call to {@code target} when static type
+     * information is available. Returns {@code false} if a direct call cannot be made.
+     *
+     * @param target       the resolved method node to call directly
+     * @param implicitThis whether the receiver is implicit {@code this}
+     * @param receiver     the receiver expression (may be {@code null})
+     * @param args         the argument tuple
+     * @return {@code true} if the call was emitted, {@code false} otherwise
+     */
     protected boolean writeDirectMethodCall(final MethodNode target, final boolean implicitThis, final Expression receiver, final TupleExpression args) {
-        if (target == null) return false;
+        if (target == null || target instanceof ExtensionMethodNode) return false;
 
         ClassNode declaringClass = target.getDeclaringClass();
-        String methodName = target.getName();
-        int opcode;
-        if (target.isStatic()) {
-            opcode = INVOKESTATIC;
-        } else if (declaringClass.isInterface()) {
-            opcode = INVOKEINTERFACE;
-        } else if (target.isPrivate() || isSuperExpression(receiver)) {
-            opcode = INVOKESPECIAL;
-        } else {
-            opcode = INVOKEVIRTUAL;
+        ClassNode enclosingClass = controller.getClassNode(), receiverType = enclosingClass;
+        if (receiver != null) {
+            receiverType = controller.getTypeChooser().resolveType(receiver, enclosingClass);
+            if (target.isStatic() && isClassClassNodeWrappingConcreteType(receiverType)) {
+                receiverType = receiverType.getGenericsTypes()[0].getType();
+            }
         }
 
         CompileStack compileStack = controller.getCompileStack();
         OperandStack operandStack = controller.getOperandStack();
         MethodVisitor mv = controller.getMethodVisitor();
-        ClassNode classNode = controller.getClassNode();
+        int startDepth = operandStack.getStackLength();
 
         // handle receiver
-        int argumentsToRemove = 0;
-        if (opcode != INVOKESTATIC) {
-            argumentsToRemove = 1;
+        if (!target.isStatic()) {
             if (receiver != null) {
                 Expression objectExpression = receiver;
-                if (implicitThis
-                        && classNode.getOuterClass() != null
-                        && !classNode.isDerivedFrom(declaringClass)
-                        && !classNode.implementsInterface(declaringClass)) {
+                if (!implicitThis && callSuperDefault(enclosingClass, target, receiver)) {
+                    compileStack.pushImplicitThis(true);
+                    objectExpression = new VariableExpression("this", declaringClass);
+                } else if (implicitThis
+                        && enclosingClass.getOuterClass() != null
+                        && !enclosingClass.isDerivedFrom(declaringClass)
+                        && !enclosingClass.implementsInterface(declaringClass)) {
                     // outer class method invocation
                     compileStack.pushImplicitThis(false);
-                    if (!controller.isInGeneratedFunction() && isThis(receiver)) {
-                        objectExpression = new PropertyExpression(new ClassExpression(declaringClass), "this");
+                    if (isThis(receiver)) {
+                        ClassNode outerType = getImplicitReceiverType(enclosingClass, declaringClass);
+                        if (!controller.isInGeneratedFunction()) {
+                            objectExpression = new PropertyExpression(new ClassExpression(outerType != null ? outerType : declaringClass), "this");
+                        } else if (outerType != null && !outerType.equals(controller.getThisType())) {
+                            // method of an enclosing instance of the closure's this object
+                            objectExpression = new PropertyExpression(new ClassExpression(outerType), "this");
+                        }
                     }
                 } else {
                     compileStack.pushImplicitThis(implicitThis);
@@ -164,64 +254,133 @@ public class InvocationWriter {
                 compileStack.popImplicitThis();
             } else {
                 mv.visitIntInsn(ALOAD, 0);
-                operandStack.push(classNode);
+                operandStack.push(enclosingClass);
             }
+        } else if (!implicitThis && mayHaveSideEffects(receiver)) {
+            // a static member reached through an expression still evaluates it (JLS 15.12.4.1)
+            receiver.visit(controller.getAcg());
+            operandStack.pop();
         }
 
-        ClassNode receiverType;
-        if (receiver != null) {
-            receiverType = controller.getTypeChooser().resolveType(receiver, classNode);
-            if (isClassClassNodeWrappingConcreteType(receiverType) && target.isStatic())
-                receiverType = receiverType.getGenericsTypes()[0].getType();
+        int opcode;
+        if (target.isStatic()) {
+            opcode = INVOKESTATIC;
+        } else if (isSuperExpression(receiver) || isClassWithSuper(receiver)) {
+            opcode = INVOKESPECIAL;
+        } else if (declaringClass.isInterface()) {
+            opcode = INVOKEINTERFACE;
         } else {
-            receiverType = declaringClass;
+            opcode = INVOKEVIRTUAL;
         }
 
-        int stackLen = operandStack.getStackLength();
-        String owner = BytecodeHelper.getClassInternalName(declaringClass);
-        if (opcode == INVOKEVIRTUAL && declaringClass.equals(ClassHelper.OBJECT_TYPE)) {
-            // avoid using a narrowed type if the method is defined on object because it can interfere
+        ClassNode ownerClass = declaringClass;
+        if (opcode == INVOKESPECIAL) { // GROOVY-8693, GROOVY-9909
+            if (!declaringClass.isInterface() || receiverType.implementsInterface(declaringClass)) ownerClass = receiverType;
+        } else if (opcode == INVOKEVIRTUAL && isObjectType(declaringClass)) {
+            // avoid using a narrowed type if the method is defined on Object, because it can interfere
             // with delegate type inference in static compilation mode and trigger a ClassCastException
-            receiverType = declaringClass;
         } else if (opcode == INVOKEVIRTUAL
                 && !receiverType.isArray()
                 && !receiverType.isInterface()
                 && !isPrimitiveType(receiverType)
                 && !receiverType.equals(declaringClass)
                 && receiverType.isDerivedFrom(declaringClass)) {
-
-            owner = BytecodeHelper.getClassInternalName(receiverType);
+            ownerClass = receiverType; // use actual for typical call
             if (!receiverType.equals(operandStack.getTopOperand())) {
-                mv.visitTypeInsn(CHECKCAST, owner);
+                mv.visitTypeInsn(CHECKCAST, BytecodeHelper.getClassInternalName(ownerClass));
             }
-        } else if (opcode != INVOKESPECIAL && (declaringClass.getModifiers() & (ACC_FINAL | ACC_PUBLIC)) == 0 && !receiverType.equals(declaringClass)
+        } else if ((declaringClass.getModifiers() & (ACC_FINAL | ACC_PUBLIC)) == 0 && !receiverType.equals(declaringClass)
                 && (declaringClass.isInterface() ? receiverType.implementsInterface(declaringClass) : receiverType.isDerivedFrom(declaringClass))) {
-            // GROOVY-6962, GROOVY-9955: method declared by inaccessible class
-            owner = BytecodeHelper.getClassInternalName(receiverType);
+            // GROOVY-6962, GROOVY-9955, GROOVY-10380: method declared by inaccessible class or interface
+            if (declaringClass.isInterface() && !receiverType.isInterface()) opcode = INVOKEVIRTUAL;
+            ownerClass = receiverType;
         }
 
-        loadArguments(args.getExpressions(), target.getParameters());
+        ClassNode returnType = target.getReturnType();
+        Parameter[] parameters = target.getParameters();
+        if (parameters.length > 0 && parameters[0].isReceiver())
+            parameters = Arrays.copyOfRange(parameters, 1, parameters.length);
 
-        String descriptor = BytecodeHelper.getMethodDescriptor(target.getReturnType(), target.getParameters());
-        mv.visitMethodInsn(opcode, owner, methodName, descriptor, declaringClass.isInterface());
-        ClassNode returnType = target.getReturnType().redirect();
-        if (returnType == ClassHelper.VOID_TYPE) {
+        loadArguments(args.getExpressions(), parameters);
+
+        String ownerName = BytecodeHelper.getClassInternalName(ownerClass);
+        String signature = BytecodeHelper.getMethodDescriptor(returnType, parameters);
+        mv.visitMethodInsn(opcode, ownerName, target.getName(), signature, ownerClass.isInterface());
+        operandStack.remove(operandStack.getStackLength() - startDepth); // receiver plus argument(s)
+
+        if (isPrimitiveVoid(returnType)) {
+            if (currentCall != null && currentCall.getNodeMetaData(AsmClassGenerator.ELIDE_EXPRESSION_VALUE) != null) {
+                return true; // do not load value
+            }
             returnType = ClassHelper.OBJECT_TYPE;
             mv.visitInsn(ACONST_NULL);
         }
-        argumentsToRemove += (operandStack.getStackLength() - stackLen);
-        operandStack.remove(argumentsToRemove);
         operandStack.push(returnType);
         return true;
     }
 
     /**
-     * Supplements {@link org.apache.groovy.ast.tools.ExpressionUtils#isThisExpression isThisExpression}
+     * Finds the class of the instance that an implicit-this call to a method
+     * of {@code declaringClass} is made on: the innermost class, starting at
+     * {@code enclosingClass} and skipping closures and lambdas, that extends
+     * or implements {@code declaringClass} and is reachable through enclosing
+     * instances.
+     *
+     * @param enclosingClass the class being generated
+     * @param declaringClass the class that declares the target method
+     * @return the class whose instance receives the call, or {@code null} if
+     *         no enclosing instance has the method
+     */
+    protected static ClassNode getImplicitReceiverType(final ClassNode enclosingClass, final ClassNode declaringClass) {
+        ClassNode type = enclosingClass;
+        while (type != null) {
+            if (ClassHelper.isGeneratedFunction(type)) {
+                type = type.getOuterClass();
+            } else if (isSubtype(declaringClass, type)) {
+                return type;
+            } else if (type.getDeclaredField("this$0") != null) {
+                type = type.getOuterClass();
+            } else {
+                break; // no enclosing instance
+            }
+        }
+        return null;
+    }
+
+    private boolean callSuperDefault(final ClassNode enclosingClass, final MethodNode target, final Expression receiver) {
+        ClassNode declaringClass = target.getDeclaringClass();
+        if (declaringClass.isInterface() && enclosingClass.implementsInterface(declaringClass)) {
+            return isClassWithSuper(receiver);
+        }
+        return false;
+    }
+
+    private boolean isClassWithSuper(final Expression exp) {
+        if (exp instanceof PropertyExpression pexp) {
+            return pexp.getObjectExpression() instanceof ClassExpression && "super".equals(pexp.getPropertyAsString());
+        }
+        return false;
+    }
+
+    private boolean isOuterClassSuper(final Expression exp) {
+        if (isClassWithSuper(exp)) {
+            PropertyExpression pexp = (PropertyExpression) exp;
+            return !pexp.getObjectExpression().getType().isInterface();
+        }
+        return false;
+    }
+
+
+    /**
+     * Supplements {@link ExpressionUtils#isThisExpression isThisExpression}
      * with the ability to see into {@code CheckcastReceiverExpression}.
      */
     private static boolean isThis(final Expression expression) {
         boolean[] isThis = new boolean[1];
-        expression.visit(new org.codehaus.groovy.ast.GroovyCodeVisitorAdapter() {
+        expression.visit(new GroovyCodeVisitorAdapter() {
+            /**
+             * Tracks whether the visited variable expression is {@code this}.
+             */
             @Override
             public void visitVariableExpression(final VariableExpression vexp) {
                 isThis[0] = vexp.isThisExpression();
@@ -230,87 +389,113 @@ public class InvocationWriter {
         return isThis[0];
     }
 
-    private boolean lastIsArray(final List<Expression> argumentList, final int pos) {
-        Expression last = argumentList.get(pos);
-        ClassNode type = controller.getTypeChooser().resolveType(last, controller.getClassNode());
+    private boolean isArray(final Expression expression) {
+        if (isNullConstant(expression)) return true; // null is an array argument for variadic parameter
+        ClassNode type = controller.getTypeChooser().resolveType(expression, controller.getClassNode());
         return type.isArray();
     }
 
-    // load arguments
-    protected void loadArguments(final List<Expression> argumentList, final Parameter[] para) {
-        if (para.length == 0) return;
-        ClassNode lastParaType = para[para.length - 1].getOriginType();
-        AsmClassGenerator acg = controller.getAcg();
+    /**
+     * Evaluates and loads each argument expression, handling varargs packing.
+     *
+     * @param arguments  the argument expressions to evaluate
+     * @param parameters the declared parameters of the target method
+     */
+    protected void loadArguments(final List<Expression> arguments, final Parameter[] parameters) {
+        if (parameters.length == 0) return;
+        int nthParameter = parameters.length - 1;
+        ClassNode lastType = parameters[nthParameter].getOriginType();
+
         OperandStack operandStack = controller.getOperandStack();
-        if (lastParaType.isArray() && (argumentList.size() > para.length
-                || argumentList.size() == para.length - 1 || !lastIsArray(argumentList, para.length - 1))) {
-            int stackLen = operandStack.getStackLength() + argumentList.size();
-            MethodVisitor mv = controller.getMethodVisitor();
-            controller.setMethodVisitor(mv);
-            // varg call
-            // first parameters as usual
-            for (int i = 0, n = para.length - 1; i < n; i += 1) {
-                argumentList.get(i).visit(acg);
-                operandStack.doGroovyCast(para[i].getType());
+        int expected = operandStack.getStackLength() + arguments.size();
+        boolean varg = lastType.isArray() && (
+                arguments.size() > parameters.length
+                || arguments.size() == parameters.length - 1
+                || !arguments.isEmpty() && !isArray(last(arguments)));
+
+        for (int i = 0, n = varg ? nthParameter : arguments.size(); i < n; i += 1) {
+            Expression argument = arguments.get(i);
+            argument.visit(controller.getAcg());
+            if (!isNullConstant(argument)) {
+                operandStack.doGroovyCast(parameters[i].getType());
             }
-            // last parameters wrapped in an array
-            List<Expression> lastParams = new LinkedList<>();
-            for (int i = para.length - 1, n = argumentList.size(); i < n; i += 1) {
-                lastParams.add(argumentList.get(i));
+        }
+
+        if (varg) {
+            // last arguments wrapped in an array
+            List<Expression> lastArgs = arguments.subList(nthParameter, arguments.size());
+            Expression array = new ArrayExpression(lastType.getComponentType(), lastArgs);
+            if (lastArgs.size() == 1) { // GROOVY-10722: disambiguate array and null cases
+                Expression lastExpr = lastArgs.get(0); // TODO: cache non-trivial expression value
+                array = ternaryX(isNullOrInstanceOfX(lastExpr, lastType), castX(lastType, lastExpr), array);
             }
-            ArrayExpression array = new ArrayExpression(
-                    lastParaType.getComponentType(),
-                    lastParams
-            );
-            array.visit(acg);
+            array.visit(controller.getAcg());
+
             // adjust stack length
-            while (operandStack.getStackLength() < stackLen) {
+            while (operandStack.getStackLength() < expected) {
                 operandStack.push(ClassHelper.OBJECT_TYPE);
             }
-            if (argumentList.size() == para.length - 1) {
+            if (arguments.size() == nthParameter) {
                 operandStack.remove(1);
-            }
-        } else {
-            for (int i = 0, n = argumentList.size(); i < n; i += 1) {
-                argumentList.get(i).visit(acg);
-                operandStack.doGroovyCast(para[i].getType());
             }
         }
     }
 
+    /**
+     * Attempts to emit a direct (statically resolved) method call.
+     * Returns {@code false} if no direct call is possible, causing the caller to
+     * fall through to the cached or uncached path.
+     *
+     * @param origin                    the original call expression
+     * @param receiver                  the receiver expression
+     * @param message                   the method name expression
+     * @param arguments                 the arguments expression
+     * @param adapter                   the method caller adapter
+     * @param implicitThis              whether the receiver is implicit {@code this}
+     * @param containsSpreadExpression  whether any argument uses spread ({@code *})
+     * @return {@code true} if the call was emitted directly
+     */
     protected boolean makeDirectCall(Expression origin, Expression receiver, Expression message, Expression arguments, MethodCallerMultiAdapter adapter, boolean implicitThis, boolean containsSpreadExpression) {
         if (makeClassForNameCall(origin, receiver, message, arguments)) return true;
-
-        // optimization path
-        boolean fittingAdapter = adapter == invokeMethodOnCurrent || adapter == invokeStaticMethod;
-        if (fittingAdapter && controller.optimizeForInt && controller.isFastPath()) {
+        if (controller.optimizeForInt && controller.isFastPath() // optimization path
+                && adapter == invokeMethodOnCurrent || adapter == invokeStaticMethod) {
             String methodName = getMethodName(message);
             if (methodName != null) {
-                TupleExpression args;
-                if (arguments instanceof TupleExpression) {
-                    args = (TupleExpression) arguments;
-                } else {
-                    args = new TupleExpression(receiver);
+                OptimizingStatementWriter.StatementMeta meta = origin.getNodeMetaData(OptimizingStatementWriter.StatementMeta.class);
+                if (meta != null && meta.target != null) {
+                    TupleExpression args;
+                    if (arguments instanceof TupleExpression) {
+                        args = (TupleExpression) arguments;
+                    } else {
+                        args = new TupleExpression(receiver);
+                    }
+                    if (writeDirectMethodCall(meta.target, true, null, args)) return true;
                 }
-
-                OptimizingStatementWriter.StatementMeta meta = null;
-                if (origin != null) meta = origin.getNodeMetaData(OptimizingStatementWriter.StatementMeta.class);
-                MethodNode mn = null;
-                if (meta != null) mn = meta.target;
-
-                if (writeDirectMethodCall(mn, true, null, args)) return true;
             }
         }
-
-        if (containsSpreadExpression) return false;
-        if (origin instanceof MethodCallExpression) {
-            MethodCallExpression mce = (MethodCallExpression) origin;
-            MethodNode target = mce.getMethodTarget();
-            return writeDirectMethodCall(target, implicitThis, receiver, makeArgumentList(arguments));
+        if (!containsSpreadExpression && origin instanceof MethodCallExpression) {
+            return writeDirectMethodCall(((MethodCallExpression) origin).getMethodTarget(), implicitThis, receiver, makeArgumentList(arguments));
         }
         return false;
     }
 
+    /**
+     * Attempts to emit a call-site-cached invocation (or invokedynamic).
+     * Returns {@code false} if the call cannot be cached, causing the caller to
+     * fall through to the uncached path.
+     *
+     * @param origin                    the original call expression
+     * @param sender                    the class from which the call is dispatched
+     * @param receiver                  the receiver expression
+     * @param message                   the method name expression
+     * @param arguments                 the arguments expression
+     * @param adapter                   the method caller adapter
+     * @param safe                      whether to use safe navigation
+     * @param spreadSafe                whether to use spread-safe navigation
+     * @param implicitThis              whether the receiver is implicit {@code this}
+     * @param containsSpreadExpression  whether any argument uses spread
+     * @return {@code true} if a cached call was emitted
+     */
     protected boolean makeCachedCall(Expression origin, ClassExpression sender, Expression receiver, Expression message, Expression arguments, MethodCallerMultiAdapter adapter, boolean safe, boolean spreadSafe, boolean implicitThis, boolean containsSpreadExpression) {
         // prepare call site
         if ((adapter == invokeMethod || adapter == invokeMethodOnCurrent || adapter == invokeStaticMethod) && !spreadSafe) {
@@ -323,24 +508,35 @@ public class InvocationWriter {
         return false;
     }
 
+    /**
+     * Emits an uncached invocation via {@link ScriptBytecodeAdapter}.
+     * Used as the fallback when neither direct nor cached dispatch is applicable.
+     *
+     * @param origin                    the original call expression
+     * @param sender                    the class from which the call is dispatched
+     * @param receiver                  the receiver expression
+     * @param message                   the method name expression
+     * @param arguments                 the arguments expression
+     * @param adapter                   the method caller adapter
+     * @param safe                      whether to use safe navigation
+     * @param spreadSafe                whether to use spread-safe navigation
+     * @param implicitThis              whether the receiver is implicit {@code this}
+     * @param containsSpreadExpression  whether any argument uses spread
+     */
     protected void makeUncachedCall(Expression origin, ClassExpression sender, Expression receiver, Expression message, Expression arguments, MethodCallerMultiAdapter adapter, boolean safe, boolean spreadSafe, boolean implicitThis, boolean containsSpreadExpression) {
-        OperandStack operandStack = controller.getOperandStack();
         CompileStack compileStack = controller.getCompileStack();
+        OperandStack operandStack = controller.getOperandStack();
         AsmClassGenerator acg = controller.getAcg();
 
-        // ensure VariableArguments are read, not stored
+        // ensure variable arguments are read, not written
         compileStack.pushLHS(false);
 
-        // sender only for call sites
-        if (adapter == AsmClassGenerator.setProperty) {
-            ConstantExpression.NULL.visit(acg);
-        } else {
-            sender.visit(acg);
-        }
+        // sender
+        sender.visit(acg);
 
         String methodName = getMethodName(message);
         if (adapter == invokeMethodOnSuper && methodName != null) {
-            controller.getSuperMethodNames().add(methodName);
+            controller.getSuperMethodNames().add(methodName); // for MOP method
         }
 
         // receiver
@@ -384,25 +580,11 @@ public class InvocationWriter {
         operandStack.replace(ClassHelper.OBJECT_TYPE, operandsToRemove);
     }
 
-    protected void makeCall(Expression origin, ClassExpression sender, Expression receiver, Expression message, Expression arguments, MethodCallerMultiAdapter adapter, boolean safe, boolean spreadSafe, boolean implicitThis) {
-        // direct method call paths
-        boolean containsSpreadExpression = AsmClassGenerator.containsSpreadExpression(arguments);
-
-        if (makeDirectCall(origin, receiver, message, arguments, adapter, implicitThis, containsSpreadExpression)) return;
-
-        // normal path
-        if (makeCachedCall(origin, sender, receiver, message, arguments, adapter, safe, spreadSafe, implicitThis, containsSpreadExpression)) return;
-
-        // path through ScriptBytecodeAdapter
-        makeUncachedCall(origin, sender, receiver, message, arguments, adapter, safe, spreadSafe, implicitThis, containsSpreadExpression);
-    }
-
     /**
      * if Class.forName(x) is recognized, make a direct method call
      */
     protected boolean makeClassForNameCall(final Expression origin, final Expression receiver, final Expression message, final Expression arguments) {
-        if (!(receiver instanceof ClassExpression)) return false;
-        ClassExpression ce = (ClassExpression) receiver;
+        if (!(receiver instanceof ClassExpression ce)) return false;
         if (!ClassHelper.CLASS_Type.equals(ce.getType())) return false;
         String msg = getMethodName(message);
         if (!"forName".equals(msg)) return false;
@@ -411,12 +593,19 @@ public class InvocationWriter {
         return writeDirectMethodCall(CLASS_FOR_NAME_STRING, false, receiver, ae);
     }
 
+    /**
+     * Converts an expression to an argument list.
+     *
+     * @return {@code arguments} if already an argument list or an argument list
+     *         of the expression or expressions (in case of a tuple expression).
+     *
+     * @since 2.0.0
+     */
     public static ArgumentListExpression makeArgumentList(final Expression arguments) {
         ArgumentListExpression ae;
         if (arguments instanceof ArgumentListExpression) {
             ae = (ArgumentListExpression) arguments;
-        } else if (arguments instanceof TupleExpression) {
-            TupleExpression te = (TupleExpression) arguments;
+        } else if (arguments instanceof TupleExpression te) {
             ae = new ArgumentListExpression(te.getExpressions());
         } else {
             ae = new ArgumentListExpression();
@@ -425,11 +614,17 @@ public class InvocationWriter {
         return ae;
     }
 
+    /**
+     * Extracts the constant method name string from a message expression.
+     * Returns {@code null} if the expression is not a constant string.
+     *
+     * @param message the method name expression
+     * @return the method name string, or {@code null} if not determinable
+     */
     protected String getMethodName(final Expression message) {
         String methodName = null;
-        if (message instanceof CastExpression) {
-            CastExpression msg = (CastExpression) message;
-            if (msg.getType() == ClassHelper.STRING_TYPE) {
+        if (message instanceof CastExpression msg) {
+            if (isStringType(msg.getType())) {
                 final Expression methodExpr = msg.getExpression();
                 if (methodExpr instanceof ConstantExpression) {
                     methodName = methodExpr.getText();
@@ -437,138 +632,148 @@ public class InvocationWriter {
             }
         }
 
-        if (methodName == null && message instanceof ConstantExpression) {
-            ConstantExpression constantExpression = (ConstantExpression) message;
+        if (methodName == null && message instanceof ConstantExpression constantExpression) {
             methodName = constantExpression.getText();
         }
         return methodName;
     }
 
+    /**
+     * Generates bytecode for a standard (non-static, non-constructor) method call expression.
+     *
+     * @param call the method call expression to compile
+     */
     public void writeInvokeMethod(MethodCallExpression call) {
-        if (isClosureCall(call)) {
-            // let's invoke the closure method
-            invokeClosure(call.getArguments(), call.getMethodAsString());
-        } else {
-            if (isFunctionInterfaceCall(call)) {
-                call = transformToRealMethodCall(call);
-            }
-            MethodCallerMultiAdapter adapter = invokeMethod;
-            Expression objectExpression = call.getObjectExpression();
-            if (isSuperExpression(objectExpression)) {
-                adapter = invokeMethodOnSuper;
-            } else if (isThisExpression(objectExpression)) {
-                adapter = invokeMethodOnCurrent;
-            }
-            if (isStaticInvocation(call)) {
-                adapter = invokeStaticMethod;
-            }
-            Expression messageName = new CastExpression(ClassHelper.STRING_TYPE, call.getMethod());
-            makeCall(call, objectExpression, messageName, call.getArguments(), adapter, call.isSafe(), call.isSpreadSafe(), call.isImplicitThis());
+        Expression receiver = call.getObjectExpression();
+        // GROOVY-8466: replace "rcvr.call(args)" with "rcvr.abstractMethod(args)"
+        if (!isThisExpression(receiver) && "call".equals(call.getMethodAsString())) {
+            ClassNode type = controller.getTypeChooser().resolveType(receiver, controller.getClassNode());
+            if (isFunctionalInterface(type)) call = transformToRealMethodCall(call, type);
         }
+        MethodCallerMultiAdapter adapter = invokeMethod;
+        if (isSuperExpression(receiver) || isOuterClassSuper(receiver)) { // GROOVY-11611
+            adapter = invokeMethodOnSuper;
+        } else if (isThisExpression(receiver)) {
+            adapter = invokeMethodOnCurrent;
+        }
+        if (isStaticInvocation(call)) {
+            adapter = invokeStaticMethod;
+        }
+        Expression messageName = new CastExpression(ClassHelper.STRING_TYPE, call.getMethod());
+        makeCall(call, receiver, messageName, call.getArguments(), adapter, call.isSafe(), call.isSpreadSafe(), call.isImplicitThis());
     }
 
-    private static boolean isFunctionInterfaceCall(final MethodCallExpression call) {
-        if ("call".equals(call.getMethodAsString())) {
-            Expression objectExpression = call.getObjectExpression();
-            if (!isThisExpression(objectExpression)) {
-                return isFunctionalInterface(objectExpression.getType());
+    private static MethodCallExpression transformToRealMethodCall(final MethodCallExpression call, final ClassNode type) {
+        MethodNode methodNode = ClassHelper.findSAM(type);
+
+        var rewrite = (MethodCallExpression) call.transformExpression(expression -> {
+            if (expression == call.getMethod()) {
+                var methodName = new ConstantExpression(methodNode.getName());
+                methodName.setSourcePosition(call.getMethod());
+                return methodName;
+            }
+            return expression;
+        });
+        rewrite.setMethodTarget(methodNode);
+        return rewrite;
+    }
+
+    private boolean isStaticInvocation(final MethodCallExpression call) {
+        if (isThisExpression(call.getObjectExpression())) {
+            if (controller.getCompileStack().isInSpecialConstructorCall()) {
+                return true;
+            }
+            if (controller.isStaticContext() && !call.isImplicitThis()) {
+                return true;
+            }
+            if (controller.isStaticMethod()) {
+                return true;
             }
         }
         return false;
     }
 
-    private static MethodCallExpression transformToRealMethodCall(MethodCallExpression call) {
-        ClassNode type = call.getObjectExpression().getType();
-        MethodNode methodNode = ClassHelper.findSAM(type);
-
-        call = (MethodCallExpression) call.transformExpression(expression -> {
-            if (!(expression instanceof ConstantExpression)) {
-                return expression;
-            }
-            return new ConstantExpression(methodNode.getName());
-        });
-        call.setMethodTarget(methodNode);
-        return call;
-    }
-
-    private boolean isClosureCall(final MethodCallExpression call) {
-        // are we a local variable?
-        // it should not be an explicitly "this" qualified method call
-        // and the current class should have a possible method
-        ClassNode classNode = controller.getClassNode();
-        String methodName = call.getMethodAsString();
-        if (methodName == null) return false;
-        if (!call.isImplicitThis()) return false;
-        if (!isThisExpression(call.getObjectExpression())) return false;
-        FieldNode field = classNode.getDeclaredField(methodName);
-        if (field == null) return false;
-        if (isStaticInvocation(call) && !field.isStatic()) return false;
-        Expression arguments = call.getArguments();
-        return !classNode.hasPossibleMethod(methodName, arguments);
-    }
-
-    private void invokeClosure(final Expression arguments, final String methodName) {
-        AsmClassGenerator acg = controller.getAcg();
-        acg.visitVariableExpression(new VariableExpression(methodName));
-        controller.getOperandStack().box();
-        if (arguments instanceof TupleExpression) {
-            arguments.visit(acg);
-        } else {
-            new TupleExpression(arguments).visit(acg);
-        }
-        invokeClosureMethod.call(controller.getMethodVisitor());
-        controller.getOperandStack().replace(ClassHelper.OBJECT_TYPE);
-    }
-
-    private boolean isStaticInvocation(final MethodCallExpression call) {
-        if (!isThisExpression(call.getObjectExpression())) return false;
-        if (controller.isStaticMethod()) return true;
-        return controller.isStaticContext() && !call.isImplicitThis();
-    }
-
+    /**
+     * Generates bytecode for a static method call expression.
+     *
+     * @param call the static method call expression to compile
+     */
     public void writeInvokeStaticMethod(final StaticMethodCallExpression call) {
         Expression receiver = new ClassExpression(call.getOwnerType());
         Expression messageName = new ConstantExpression(call.getMethod());
         makeCall(call, receiver, messageName, call.getArguments(), InvocationWriter.invokeStaticMethod, false, false, false);
     }
 
+    //--------------------------------------------------------------------------
+
+    /**
+     * Generates bytecode for a constructor call expression, choosing the
+     * appropriate strategy (direct, AIC, or normal call-site).
+     *
+     * @param call the constructor call expression to compile
+     */
+    public void writeInvokeConstructor(final ConstructorCallExpression call) {
+        if (writeDirectConstructorCall(call)) return;
+        if (writeAICCall              (call)) return;
+        writeNormalConstructorCall(call);
+    }
+
     private boolean writeDirectConstructorCall(final ConstructorCallExpression call) {
         if (!controller.isFastPath()) return false;
 
         OptimizingStatementWriter.StatementMeta meta = call.getNodeMetaData(OptimizingStatementWriter.StatementMeta.class);
-        ConstructorNode cn = null;
-        if (meta != null) cn = (ConstructorNode) meta.target;
-        if (cn == null) return false;
+        ConstructorNode ctor = meta != null ? (ConstructorNode) meta.target : null;
+        if (ctor == null) return false;
 
-        String ownerDescriptor = prepareConstructorCall(cn);
-        TupleExpression args = makeArgumentList(call.getArguments());
-        loadArguments(args.getExpressions(), cn.getParameters());
-        finnishConstructorCall(cn, ownerDescriptor, args.getExpressions().size());
+        List<Expression> args = makeArgumentList(call.getArguments()).getExpressions();
+
+        loadArguments(args, ctor.getParameters());
+        String ownerDescriptor = prepareConstructorCall(ctor);
+        finnishConstructorCall(ctor, ownerDescriptor, args.size());
 
         return true;
     }
 
+    /**
+     * Emits the {@code NEW} and {@code DUP} instructions for a constructor call and
+     * returns the internal class name of the type being constructed.
+     *
+     * @param cn the constructor node whose declaring class is being instantiated
+     * @return the JVM internal name of the class being constructed
+     */
     protected String prepareConstructorCall(final ConstructorNode cn) {
-        String owner = BytecodeHelper.getClassInternalName(cn.getDeclaringClass());
+        String type = BytecodeHelper.getClassInternalName(cn.getDeclaringClass());
         MethodVisitor mv = controller.getMethodVisitor();
-        mv.visitTypeInsn(NEW, owner);
+        mv.visitTypeInsn(NEW, type);
         mv.visitInsn(DUP);
-        return owner;
+        return type;
     }
 
-    protected void finnishConstructorCall(final ConstructorNode cn, final String ownerDescriptor, final int argsToRemove) {
-        String desc = BytecodeHelper.getMethodDescriptor(ClassHelper.VOID_TYPE, cn.getParameters());
+    /**
+     * Emits the {@code INVOKESPECIAL} {@code <init>} instruction and updates the operand
+     * stack after a constructor call set up by {@link #prepareConstructorCall}.
+     *
+     * @param cn              the constructor node being invoked
+     * @param ownerDescriptor the JVM internal name of the owning class
+     * @param argsToRemove    the number of argument entries to pop from the tracked stack
+     */
+    protected void   finnishConstructorCall(final ConstructorNode cn, final String ownerDescriptor, final int argsToRemove) {
+        String signature = BytecodeHelper.getMethodDescriptor(ClassHelper.VOID_TYPE, cn.getParameters());
         MethodVisitor mv = controller.getMethodVisitor();
-        mv.visitMethodInsn(INVOKESPECIAL, ownerDescriptor, "<init>", desc, false);
+        mv.visitMethodInsn(INVOKESPECIAL, ownerDescriptor, "<init>", signature, false);
 
         controller.getOperandStack().remove(argsToRemove);
         controller.getOperandStack().push(cn.getDeclaringClass());
     }
 
+    /**
+     * Emits a normal (non-direct, non-AIC) constructor call via the call-site writer.
+     *
+     * @param call the constructor call expression to compile
+     */
     protected void writeNormalConstructorCall(final ConstructorCallExpression call) {
         Expression arguments = call.getArguments();
-        if (arguments instanceof TupleExpression) {
-            TupleExpression tupleExpression = (TupleExpression) arguments;
+        if (arguments instanceof TupleExpression tupleExpression) {
             int size = tupleExpression.getExpressions().size();
             if (size == 0) {
                 arguments = MethodCallExpression.NO_ARGUMENTS;
@@ -579,21 +784,29 @@ public class InvocationWriter {
         controller.getCallSiteWriter().makeCallSite(receiver, CallSiteWriter.CONSTRUCTOR, arguments, false, false, false, false);
     }
 
-    public void writeInvokeConstructor(final ConstructorCallExpression call) {
-        if (writeDirectConstructorCall(call)) return;
-        if (writeAICCall(call)) return;
-        writeNormalConstructorCall(call);
-    }
-
+    /**
+     * Emits a constructor call for an anonymous inner class (AIC).
+     * Returns {@code false} if the call is not for an AIC.
+     *
+     * @param call the constructor call expression to compile
+     * @return {@code true} if an AIC call was emitted
+     */
     protected boolean writeAICCall(final ConstructorCallExpression call) {
         if (!call.isUsingAnonymousInnerClass()) return false;
-        ConstructorNode cn = call.getType().getDeclaredConstructors().get(0);
-        OperandStack os = controller.getOperandStack();
 
-        String ownerDescriptor = prepareConstructorCall(cn);
+        ConstructorNode ctor = call.getType().getDeclaredConstructors().get(0);
+
+        String ownerDescriptor = prepareConstructorCall(ctor);
+
+        // Cast arguments carry their cast type in a wrapper only when the
+        // generated constructor delegates to super through the dynamic
+        // selection path, which unwraps them (GROOVY-6285, GROOVY-9244). A
+        // statically bound super call consumes its arguments with a plain
+        // cast, so a wrapper would reach that cast intact and fail there
+        // (GROOVY-12232).
+        boolean wrapCastArguments = delegatesToSuperDynamically(ctor);
 
         List<Expression> args = makeArgumentList(call.getArguments()).getExpressions();
-        Parameter[] params = cn.getParameters();
         // if a this appears as parameter here, then it should be
         // not static, unless we are in a static method. But since
         // ACG#visitVariableExpression does the opposite for this case, we
@@ -601,20 +814,69 @@ public class InvocationWriter {
         // sine visiting a method call or property with implicit this will push
         // a new value for this again.
         controller.getCompileStack().pushImplicitThis(true);
-        for (int i = 0, n = params.length; i < n; i += 1) {
-            Parameter p = params[i];
-            Expression arg = args.get(i);
-            if (arg instanceof VariableExpression) {
-                VariableExpression var = (VariableExpression) arg;
+        int i = 0; Parameter[] params = ctor.getParameters();
+        for (Expression arg : args) {
+            Parameter p = params[Math.min(i++, params.length)];
+            if (arg instanceof VariableExpression var) {
                 loadVariableWithReference(var);
             } else {
                 arg.visit(controller.getAcg());
+                if (wrapCastArguments && arg instanceof CastExpression && !isPrimitiveType(arg.getType())) {
+                    controller.getAcg().loadWrapper(arg); // GROOVY-6285, GROOVY-9244
+                }
             }
-            os.doGroovyCast(p.getType());
+            controller.getOperandStack().doGroovyCast(p.getType());
         }
         controller.getCompileStack().popImplicitThis();
-        finnishConstructorCall(cn, ownerDescriptor, args.size());
+        finnishConstructorCall(ctor, ownerDescriptor, args.size());
         return true;
+    }
+
+    /**
+     * Whether the given generated constructor (of an anonymous inner class)
+     * will delegate to its super constructor through the dynamic
+     * {@code selectConstructorAndTransformArguments} path rather than a direct
+     * {@code invokespecial}. Mirrors the choice made when the constructor
+     * itself is compiled: {@link #makeDirectConstructorCall} binds directly
+     * only for a spread-free argument list with an arity-unique candidate.
+     */
+    private static boolean delegatesToSuperDynamically(final ConstructorNode ctor) {
+        // the generated constructor's super call is not necessarily the first
+        // statement (the this$0 assignment may precede it)
+        ConstructorCallExpression superCall = null;
+        Statement code = ctor.getCode();
+        List<Statement> statements = code instanceof BlockStatement block
+                ? block.getStatements() : List.of(code);
+        for (Statement statement : statements) {
+            if (statement instanceof ExpressionStatement es
+                    && es.getExpression() instanceof ConstructorCallExpression cce
+                    && cce.isSuperCall()) {
+                superCall = cce;
+                break;
+            }
+        }
+        if (superCall == null) {
+            return false; // no super delegation to select for
+        }
+        List<Expression> superArgs = makeArgumentList(superCall.getArguments()).getExpressions();
+        for (Expression arg : superArgs) {
+            if (arg instanceof SpreadExpression) return true;
+        }
+        int nArguments = superArgs.size();
+        ConstructorNode match = null, varg = null;
+        for (ConstructorNode constructor : ctor.getDeclaringClass().getSuperClass().getDeclaredConstructors()) {
+            int nParameters = constructor.getParameters().length;
+            if (nArguments == nParameters) {
+                if (match == null) match = constructor;
+                else return true; // ambiguous match
+            } else if (isVargs(constructor.getParameters())
+                    && (nArguments == nParameters - 1 || nArguments > nParameters)) {
+                if (varg == null) varg = constructor;
+                else return true; // ambiguous match
+            }
+        }
+        if (match == null) match = varg;
+        return match == null;
     }
 
     private void loadVariableWithReference(final VariableExpression var) {
@@ -625,33 +887,57 @@ public class InvocationWriter {
         }
     }
 
+    //--------------------------------------------------------------------------
+
+    /**
+     * Delegates to {@link #makeSingleArgumentCall(Expression, String, Expression, boolean)}
+     * with {@code safe = false}.
+     *
+     * @param receiver  the receiver expression
+     * @param message   the method name
+     * @param arguments the single argument expression
+     */
     public final void makeSingleArgumentCall(final Expression receiver, final String message, final Expression arguments) {
         makeSingleArgumentCall(receiver, message, arguments, false);
     }
 
+    /**
+     * Generates a single-argument method call via the call-site writer.
+     *
+     * @param receiver  the receiver expression
+     * @param message   the method name
+     * @param arguments the single argument expression
+     * @param safe      whether to use safe navigation ({@code ?.})
+     */
     public void makeSingleArgumentCall(final Expression receiver, final String message, final Expression arguments, final boolean safe) {
         controller.getCallSiteWriter().makeSingleArgumentCall(receiver, message, arguments, safe);
     }
 
+    /**
+     * Generates bytecode for a {@code this()} or {@code super()} constructor
+     * call at the start of a constructor body.
+     *
+     * @param call the constructor call expression representing {@code this()} or {@code super()}
+     */
     public void writeSpecialConstructorCall(final ConstructorCallExpression call) {
         controller.getCompileStack().pushInSpecialConstructorCall();
-        visitSpecialConstructorCall(call);
+
+        if (!controller.getClosureWriter().addGeneratedClosureConstructorCall(call)) {
+            ClassNode callType = controller.getClassNode();
+            if (call.isSuperCall()) callType = callType.getSuperClass();
+            List<ConstructorNode> constructors = sortConstructors(call, callType);
+
+            if (!makeDirectConstructorCall(constructors, call, callType)) {
+                makeMOPBasedConstructorCall(constructors, call, callType);
+            }
+        }
+
         controller.getCompileStack().pop();
     }
 
-    private void visitSpecialConstructorCall(final ConstructorCallExpression call) {
-        if (controller.getClosureWriter().addGeneratedClosureConstructorCall(call)) return;
-        ClassNode callNode = controller.getClassNode();
-        if (call.isSuperCall()) callNode = callNode.getSuperClass();
-        List<ConstructorNode> constructors = sortConstructors(call, callNode);
-        if (!makeDirectConstructorCall(constructors, call, callNode)) {
-            makeMOPBasedConstructorCall(constructors, call, callNode);
-        }
-    }
-
-    private static List<ConstructorNode> sortConstructors(final ConstructorCallExpression call, final ClassNode callNode) {
+    private static List<ConstructorNode> sortConstructors(final ConstructorCallExpression call, final ClassNode callType) {
         // sort in a new list to prevent side effects
-        List<ConstructorNode> constructors = new ArrayList<>(callNode.getDeclaredConstructors());
+        List<ConstructorNode> constructors = new ArrayList<>(callType.getDeclaredConstructors());
         constructors.sort((c0, c1) -> {
             String descriptor0 = BytecodeHelper.getMethodDescriptor(ClassHelper.VOID_TYPE, c0.getParameters());
             String descriptor1 = BytecodeHelper.getMethodDescriptor(ClassHelper.VOID_TYPE, c1.getParameters());
@@ -660,7 +946,7 @@ public class InvocationWriter {
         return constructors;
     }
 
-    private boolean makeDirectConstructorCall(final List<ConstructorNode> constructors, final ConstructorCallExpression call, final ClassNode callNode) {
+    private boolean makeDirectConstructorCall(final List<ConstructorNode> constructors, final ConstructorCallExpression call, final ClassNode callType) {
         if (!controller.isConstructor()) return false;
 
         Expression arguments = call.getArguments();
@@ -671,27 +957,36 @@ public class InvocationWriter {
             argumentList = new ArrayList<>();
             argumentList.add(arguments);
         }
-        for (Expression expression : argumentList) {
-            if (expression instanceof SpreadExpression) return false;
+        for (Expression argument : argumentList) {
+            if (argument instanceof SpreadExpression) return false;
         }
 
-        ConstructorNode cn = getMatchingConstructor(constructors, argumentList);
-        if (cn == null) return false;
+        ConstructorNode ctor = null;
+        ConstructorNode varg = null;
+        int nArguments = argumentList.size();
+        for (ConstructorNode constructor : constructors) {
+            int nParameters = constructor.getParameters().length;
+            if (nArguments == nParameters) {
+                if (ctor == null) ctor = constructor;
+                else return false; // ambiguous match
+            } else if (isVargs(constructor.getParameters())
+                    && (nArguments == nParameters - 1 || nArguments > nParameters)) {
+                if (varg == null) varg = constructor;
+                else return false; // ambiguous match
+            }
+        }
+        if (ctor == null) ctor = varg;
+        if (ctor == null) return false;
+
         MethodVisitor mv = controller.getMethodVisitor();
         OperandStack operandStack = controller.getOperandStack();
-        Parameter[] params = cn.getParameters();
 
         mv.visitVarInsn(ALOAD, 0);
-        for (int i = 0, n = params.length; i < n; i += 1) {
-            Expression expression = argumentList.get(i);
-            expression.visit(controller.getAcg());
-            if (!isNullConstant(expression)) {
-                operandStack.doGroovyCast(params[i].getType());
-            }
-            operandStack.remove(1);
-        }
-        String descriptor = BytecodeHelper.getMethodDescriptor(ClassHelper.VOID_TYPE, params);
-        mv.visitMethodInsn(INVOKESPECIAL, BytecodeHelper.getClassInternalName(callNode), "<init>", descriptor, false);
+        int mark = operandStack.getStackLength();
+        loadArguments(argumentList, ctor.getParameters());
+        operandStack.remove(operandStack.getStackLength() - mark);
+        String descriptor = BytecodeHelper.getMethodDescriptor(ClassHelper.VOID_TYPE, ctor.getParameters());
+        mv.visitMethodInsn(INVOKESPECIAL, BytecodeHelper.getClassInternalName(callType), "<init>", descriptor, false);
 
         return true;
     }
@@ -750,7 +1045,7 @@ public class InvocationWriter {
             if (controller.isConstructor()) {
                 // in this case we need one "this", so a SWAP will exchange
                 // "this" and Object[], a DUP_X1 will then copy the Object[]
-                /// to the last place in the stack:
+                // to the last place in the stack:
                 //     Object[],this -SWAP-> this,Object[]
                 //     this,Object[] -DUP_X1-> Object[],this,Object[]
                 mv.visitInsn(SWAP);
@@ -835,25 +1130,8 @@ public class InvocationWriter {
         operandStack.remove(2);
     }
 
-    // we match only on the number of arguments, not anything else
-    private static ConstructorNode getMatchingConstructor(final List<ConstructorNode> constructors, final List<Expression> argumentList) {
-        ConstructorNode lastMatch = null;
-        for (ConstructorNode cn : constructors) {
-            Parameter[] params = cn.getParameters();
-            // if number of parameters does not match we have no match
-            if (argumentList.size() != params.length) continue;
-            if (lastMatch == null) {
-                lastMatch = cn;
-            } else {
-                // we already had a match so we don't make a direct call at all
-                return null;
-            }
-        }
-        return lastMatch;
-    }
-
     /**
-     * Converts sourceType to a non primitive by using Groovy casting.
+     * Converts sourceType to a non-primitive by using Groovy casting.
      * sourceType might be a primitive
      * This might be done using SBA#castToType
      */
@@ -862,9 +1140,9 @@ public class InvocationWriter {
         ClassNode boxedType = os.box();
         if (WideningCategories.implementsInterfaceOrSubclassOf(boxedType, targetType)) return;
         MethodVisitor mv = controller.getMethodVisitor();
-        if (ClassHelper.CLASS_Type.equals(targetType)) {
+        if (isClassType(targetType)) {
             castToClassMethod.call(mv);
-        } else if (ClassHelper.STRING_TYPE.equals(targetType)) {
+        } else if (isStringType(targetType)) {
             castToStringMethod.call(mv);
         } else if (targetType.isDerivedFrom(ClassHelper.Enum_Type)) {
             (new ClassExpression(targetType)).visit(controller.getAcg());
@@ -878,11 +1156,22 @@ public class InvocationWriter {
         }
     }
 
+    /**
+     * Unboxes a non-primitive value on the operand stack to a primitive {@code boolean}.
+     *
+     * @param last the type currently on top of the operand stack
+     */
     public void castNonPrimitiveToBool(final ClassNode last) {
         MethodVisitor mv = controller.getMethodVisitor();
         BytecodeHelper.unbox(mv, ClassHelper.boolean_TYPE);
     }
 
+    /**
+     * Emits a Groovy {@code as} coercion from {@code from} to {@code target}.
+     *
+     * @param from   the source type currently on the operand stack
+     * @param target the target type to coerce to
+     */
     public void coerce(final ClassNode from, final ClassNode target) {
         if (from.isDerivedFrom(target)) return;
         MethodVisitor mv = controller.getMethodVisitor();

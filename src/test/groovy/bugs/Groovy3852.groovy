@@ -16,16 +16,13 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.transform.CompileStatic
-import org.junit.Assert
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 import static groovy.test.GroovyAssert.assertScript
 import static groovy.test.GroovyAssert.shouldFail
 
-@CompileStatic
 final class Groovy3852 {
 
     @Test
@@ -36,8 +33,7 @@ final class Groovy3852 {
             @Deprecated
             class A {}
         '''
-
-        assert err =~ /Cannot specify duplicate annotation/
+        assert err.message =~ /Cannot specify duplicate annotation/
     }
 
     @Test
@@ -48,8 +44,7 @@ final class Groovy3852 {
             @Retention(value=RetentionPolicy.CLASS)
             @interface B {}
         '''
-
-        assert err =~ /Cannot specify duplicate annotation/
+        assert err.message =~ /Cannot specify duplicate annotation/
     }
 
     @Test
@@ -62,8 +57,7 @@ final class Groovy3852 {
                 def m() {}
             }
         '''
-
-        assert err =~ /Cannot specify duplicate annotation/
+        assert err.message =~ /Cannot specify duplicate annotation/
 
         err = shouldFail '''
             class D {
@@ -73,43 +67,34 @@ final class Groovy3852 {
                 def p
             }
         '''
-
-        assert err =~ /Cannot specify duplicate annotation/
+        assert err.message =~ /Cannot specify duplicate annotation/
     }
 
     @Test
     void testDuplicationNonRuntimeRetentionPolicyAnnotations() {
-        try {
-            assertScript '''
-                @Newify(auto=false, value=String)
-                @Newify(auto=false, value=String)
-                class Groovy3930 {
-                    static void main(args) {
-                        println 'success'
-                    }
+        assertScript '''
+            @Newify(auto=false, value=String)
+            @Newify(auto=false, value=String)
+            class Groovy3930 {
+                static void main(args) {
+                    println 'success'
                 }
-            '''
-        } catch (any) {
-            Assert.fail('Compilation should have succeeded as it has duplication annotations but with retention policy "not RUNTIME"')
-        }
+            }
+        '''
     }
 
     @Test
     void testDuplicationAnnotationsForImport() {
         // TODO: replace with better test - Newify doesn't really make sense for import
-        try {
-            assertScript '''
-                @Newify(auto=false, value=String)
-                @Newify(auto=false, value=String)
-                import java.lang.String
-                class Groovy3925 {
-                    static void main(args) {
-                        println 'success'
-                    }
+        assertScript '''
+            @Newify(auto=false, value=String)
+            @Newify(auto=false, value=String)
+            import java.lang.String
+            class Groovy3925 {
+                static void main(args) {
+                    println 'success'
                 }
-            '''
-        } catch (any) {
-            Assert.fail('Compilation should have succeeded as it has duplication annotations but with retention policy "not RUNTIME"')
-        }
+            }
+        '''
     }
 }

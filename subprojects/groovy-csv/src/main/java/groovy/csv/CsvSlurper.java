@@ -1,0 +1,398 @@
+/*
+ *  Licensed to the Apache Software Foundation (ASF) under one
+ *  or more contributor license agreements.  See the NOTICE file
+ *  distributed with this work for additional information
+ *  regarding copyright ownership.  The ASF licenses this file
+ *  to you under the Apache License, Version 2.0 (the
+ *  "License"); you may not use this file except in compliance
+ *  with the License.  You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing,
+ *  software distributed under the License is distributed on an
+ *  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *  KIND, either express or implied.  See the License for the
+ *  specific language governing permissions and limitations
+ *  under the License.
+ */
+package groovy.csv;
+
+import org.apache.groovy.lang.annotation.Incubating;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.MapperFeature;
+import tools.jackson.databind.MappingIterator;
+import tools.jackson.databind.cfg.DateTimeFeature;
+import tools.jackson.dataformat.csv.CsvMapper;
+import tools.jackson.dataformat.csv.CsvReadFeature;
+import tools.jackson.dataformat.csv.CsvSchema;
+
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.Reader;
+import java.io.StringReader;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Represents a CSV parser.
+ * <p>
+ * Usage:
+ * <pre><code class="language-groovy groovyTestCase">
+ * def csv = new groovy.csv.CsvSlurper().parseText('name,age\nAlice,30\nBob,25')
+ * assert csv[0].name == 'Alice'
+ * assert csv[1].age == '25'
+ * </code></pre>
+ *
+ * @since 6.0.0
+ */
+@Incubating
+public class CsvSlurper {
+    private final CsvMapper mapper;
+    private char separator = ',';
+    private char quoteChar = '"';
+    private boolean useHeader = true;
+    private List<String> columns;
+
+    /**
+     * Creates a slurper that uses comma-separated columns, double quotes,
+     * and treats the first row as headers.
+     */
+    public CsvSlurper() {
+        this.mapper = mapper();
+    }
+
+    // CsvMapper is thread-safe once configured, so a single shared instance is reused.
+    // Jackson 2's defaults keep databinding behaving as it did before Jackson 3; java.time
+    // support is built in. Jackson 2's CsvMapper also sorted properties alphabetically, which
+    // configureForJackson2() does not restore: a plain class's columns are alphabetical while
+    // record components keep their declaration order, as the user guide documents.
+    private static final CsvMapper MAPPER = CsvMapper.builder()
+            .configureForJackson2()
+            .enable(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY)
+            .disable(DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS)
+            .disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE)
+            .build();
+
+    static CsvMapper mapper() {
+        return MAPPER;
+    }
+
+    /**
+     * Set the column separator character (default: comma).
+     *
+     * @param separator the separator character
+     * @return this slurper for chaining
+     */
+    public CsvSlurper setSeparator(char separator) {
+        this.separator = separator;
+        return this;
+    }
+
+    /**
+     * Set the quote character (default: double-quote).
+     *
+     * @param quoteChar the quote character
+     * @return this slurper for chaining
+     */
+    public CsvSlurper setQuoteChar(char quoteChar) {
+        this.quoteChar = quoteChar;
+        return this;
+    }
+
+    /**
+     * Set whether the first row is a header row (default: true).
+     *
+     * @param useHeader true to treat the first row as headers
+     * @return this slurper for chaining
+     */
+    public CsvSlurper setUseHeader(boolean useHeader) {
+        this.useHeader = useHeader;
+        return this;
+    }
+
+    /**
+     * Set explicit column names, typically for CSV without a header row.
+     * When column names are supplied and {@code useHeader} is true, the first
+     * row is still consumed as a header row but the supplied names take
+     * precedence over the names it contains.
+     *
+     * @param columns the column names
+     * @return this slurper for chaining
+     */
+    public CsvSlurper setColumns(String... columns) {
+        return setColumns(List.of(columns));
+    }
+
+    /**
+     * Set explicit column names, typically for CSV without a header row.
+     * When column names are supplied and {@code useHeader} is true, the first
+     * row is still consumed as a header row but the supplied names take
+     * precedence over the names it contains.
+     *
+     * @param columns the column names
+     * @return this slurper for chaining
+     */
+    public CsvSlurper setColumns(List<String> columns) {
+        this.columns = columns == null || columns.isEmpty() ? null : List.copyOf(columns);
+        return this;
+    }
+
+    /**
+     * Parse the content of the specified CSV text.
+     *
+     * @param csv the CSV text
+     * @return a list of maps (one per row), keyed by column headers
+     */
+    public List<Map<String, String>> parseText(String csv) {
+        if (csv == null || csv.isBlank()) {
+            return List.of();
+        }
+        return parse(new StringReader(csv));
+    }
+
+    /**
+     * Parse CSV from a reader.
+     * When explicit column names have been supplied via {@link #setColumns(String...)},
+     * each row is returned as a map keyed by those names. Otherwise, when
+     * {@code useHeader} is true (the default), maps are keyed by column headers from
+     * the first row. Otherwise, maps are keyed by generated column names
+     * {@code c1}, {@code c2}, ...
+     *
+     * @param reader the reader of CSV
+     * @return a list of maps (one per row)
+     */
+    public List<Map<String, String>> parse(Reader reader) {
+        try {
+            if (useHeader || columns != null) {
+                MappingIterator<Map<String, String>> it = mapper
+                        .readerFor(Map.class)
+                        .with(buildSchema())
+                        .readValues(reader);
+                List<Map<String, String>> result = it.readAll();
+                // Jackson may return a single empty map for header-only input
+                if (result.size() == 1 && result.get(0).isEmpty()) {
+                    result.clear();
+                }
+                return result;
+            }
+            // no header row and no explicit columns: generate column names per row
+            MappingIterator<String[]> it = mapper
+                    .readerFor(String[].class)
+                    .with(CsvReadFeature.WRAP_AS_ARRAY)
+                    .with(buildSchema())
+                    .readValues(reader);
+            List<Map<String, String>> result = new ArrayList<>();
+            while (it.hasNext()) {
+                String[] row = it.next();
+                Map<String, String> map = new LinkedHashMap<>();
+                for (int i = 0; i < row.length; i++) {
+                    map.put("c" + (i + 1), row[i]);
+                }
+                result.add(map);
+            }
+            return result;
+        } catch (JacksonException e) {
+            throw new CsvRuntimeException(e);
+        }
+    }
+
+    /**
+     * Parse CSV from a UTF-8 encoded input stream. The caller is responsible for closing the stream.
+     *
+     * @param stream the input stream of CSV
+     * @return a list of maps (one per row)
+     */
+    public List<Map<String, String>> parse(InputStream stream) {
+        return parse(stream, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Parse CSV from an input stream decoded with the given charset.
+     * The caller is responsible for closing the stream.
+     *
+     * @param stream the input stream of CSV
+     * @param charset the charset used to decode the stream
+     * @return a list of maps (one per row)
+     */
+    public List<Map<String, String>> parse(InputStream stream, Charset charset) {
+        return parse(new InputStreamReader(stream, charset));
+    }
+
+    /**
+     * Parse CSV from a UTF-8 encoded file.
+     *
+     * @param file the CSV file
+     * @return a list of maps (one per row), keyed by column headers
+     */
+    public List<Map<String, String>> parse(File file) throws IOException {
+        return parse(file.toPath());
+    }
+
+    /**
+     * Parse CSV from a file decoded with the given charset.
+     *
+     * @param file the CSV file
+     * @param charset the charset used to decode the file
+     * @return a list of maps (one per row), keyed by column headers
+     */
+    public List<Map<String, String>> parse(File file, Charset charset) throws IOException {
+        return parse(file.toPath(), charset);
+    }
+
+    /**
+     * Parse CSV from a UTF-8 encoded path.
+     *
+     * @param path the path to the CSV file
+     * @return a list of maps (one per row), keyed by column headers
+     */
+    public List<Map<String, String>> parse(Path path) throws IOException {
+        return parse(path, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Parse CSV from a path decoded with the given charset.
+     *
+     * @param path the path to the CSV file
+     * @param charset the charset used to decode the file
+     * @return a list of maps (one per row), keyed by column headers
+     */
+    public List<Map<String, String>> parse(Path path, Charset charset) throws IOException {
+        try (InputStream stream = Files.newInputStream(path)) {
+            return parse(stream, charset);
+        }
+    }
+
+    /**
+     * Parse CSV into typed objects using Jackson databinding.
+     * Supports {@code @JsonProperty} and {@code @JsonFormat} annotations for
+     * column mapping and type conversion.
+     *
+     * @param type the target type
+     * @param csv the CSV text
+     * @param <T> the target type
+     * @return a list of typed objects
+     */
+    public <T> List<T> parseAs(Class<T> type, String csv) {
+        return parseAs(type, new StringReader(csv));
+    }
+
+    /**
+     * Parse CSV from a reader into typed objects.
+     * When explicit column names have been supplied via {@link #setColumns(String...)},
+     * values are bound to properties of those names by position. Otherwise, when
+     * {@code useHeader} is true (the default), values are bound by the column names
+     * in the header row. Otherwise, positional columns are derived from the target
+     * type's properties: component declaration order for records, alphabetical
+     * order for other classes. Use {@code @JsonPropertyOrder} on the type to set
+     * an explicit column order.
+     *
+     * @param type the target type
+     * @param reader the reader of CSV
+     * @param <T> the target type
+     * @return a list of typed objects
+     */
+    public <T> List<T> parseAs(Class<T> type, Reader reader) {
+        try {
+            CsvSchema schema;
+            if (columns != null) {
+                schema = buildSchema();
+            } else if (useHeader) {
+                // Use empty schema with header — Jackson matches columns by name
+                // rather than by position, allowing CSV column order to differ from field order
+                schema = CsvSchema.emptySchema().withHeader().rebuild()
+                        .setColumnSeparator(separator)
+                        .setQuoteChar(quoteChar)
+                        .build();
+            } else {
+                schema = mapper.schemaFor(type).rebuild()
+                        .setColumnSeparator(separator)
+                        .setQuoteChar(quoteChar)
+                        .build();
+            }
+            MappingIterator<T> it = mapper
+                    .readerFor(type)
+                    .with(schema)
+                    .readValues(reader);
+            return it.readAll();
+        } catch (JacksonException e) {
+            throw new CsvRuntimeException(e);
+        }
+    }
+
+    /**
+     * Parse CSV from a UTF-8 encoded file into typed objects.
+     *
+     * @param type the target type
+     * @param file the CSV file
+     * @param <T> the target type
+     * @return a list of typed objects
+     */
+    public <T> List<T> parseAs(Class<T> type, File file) throws IOException {
+        return parseAs(type, file.toPath());
+    }
+
+    /**
+     * Parse CSV from a file decoded with the given charset into typed objects.
+     *
+     * @param type the target type
+     * @param file the CSV file
+     * @param charset the charset used to decode the file
+     * @param <T> the target type
+     * @return a list of typed objects
+     */
+    public <T> List<T> parseAs(Class<T> type, File file, Charset charset) throws IOException {
+        return parseAs(type, file.toPath(), charset);
+    }
+
+    /**
+     * Parse CSV from a UTF-8 encoded path into typed objects.
+     *
+     * @param type the target type
+     * @param path the path to the CSV file
+     * @param <T> the target type
+     * @return a list of typed objects
+     */
+    public <T> List<T> parseAs(Class<T> type, Path path) throws IOException {
+        return parseAs(type, path, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Parse CSV from a path decoded with the given charset into typed objects.
+     *
+     * @param type the target type
+     * @param path the path to the CSV file
+     * @param charset the charset used to decode the file
+     * @param <T> the target type
+     * @return a list of typed objects
+     */
+    public <T> List<T> parseAs(Class<T> type, Path path, Charset charset) throws IOException {
+        try (InputStream stream = Files.newInputStream(path)) {
+            return parseAs(type, new InputStreamReader(stream, charset));
+        }
+    }
+
+    private CsvSchema buildSchema() {
+        CsvSchema.Builder builder = CsvSchema.builder()
+                .setColumnSeparator(separator)
+                .setQuoteChar(quoteChar);
+        if (columns != null) {
+            for (String column : columns) {
+                builder.addColumn(column);
+            }
+        }
+        CsvSchema schema = builder.build();
+        if (useHeader) {
+            schema = schema.withHeader();
+        }
+        return schema;
+    }
+}

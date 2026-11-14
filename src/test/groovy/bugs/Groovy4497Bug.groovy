@@ -16,25 +16,29 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy4497Bug extends GroovyTestCase {
+import static groovy.test.GroovyAssert.assertScript
+
+
+class Groovy4497Bug {
+    @Test
     void testAccessSuperPrivateField() {
         assertScript """
             class Base4497 {
-                def x = 1   
+                def x = 1
             }
-            
+
             class Derived4497 extends Base4497 {
-                def x = 2 
-              
-                def foo() { 
+                def x = 2
+
+                def foo() {
                     super.x
                 }
             }
-            
+
             assert new Derived4497().foo() == 1
         """
     }

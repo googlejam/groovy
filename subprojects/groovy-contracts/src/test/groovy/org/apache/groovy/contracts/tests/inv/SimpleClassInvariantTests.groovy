@@ -18,9 +18,11 @@
  */
 package org.apache.groovy.contracts.tests.inv
 
-import org.apache.groovy.contracts.tests.basic.BaseTestClass
-import org.junit.Test
 import org.apache.groovy.contracts.ClassInvariantViolation
+import org.apache.groovy.contracts.tests.basic.BaseTestClass
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.shouldFail
 
 class SimpleClassInvariantTests extends BaseTestClass {
 
@@ -276,6 +278,31 @@ class Rocket {
         }
     }
 
+    // GROOVY-12066
+    @Test
+    void class_invariant_on_static_nested_class_without_explicit_constructor() {
+
+        def c = add_class_to_classpath """
+            import groovy.contracts.*
+
+            class Outer {
+                @Invariant({ value >= 0 })
+                static class Inner {
+                    int value = 1
+                    def decrease() { value -= 2 }
+                }
+            }
+        """
+
+        def inner = c.getDeclaredClasses().find { it.simpleName == 'Inner' }
+        def instance = inner.newInstance()
+
+        // and the invariant is actually enforced on the nested class
+        shouldFail ClassInvariantViolation, {
+            instance.decrease()
+        }
+    }
+
     @Test
     void private_field_access_in_descendant_class() {
 
@@ -300,6 +327,75 @@ class Rocket {
 
         shouldFail ClassInvariantViolation, {
             betterRocket.increase()
+        }
+    }
+
+    // GROOVY-12083: multiple @Invariant annotations are AND-combined; every one must be evaluated
+    // (unlike postconditions, invariants never used inline mode, so they were not affected, but lock it in)
+    @Test
+    void multiple_class_invariants_second_is_violated() {
+
+        def source = '''
+        import groovy.contracts.*
+
+        @Invariant({ a >= 0 })
+        @Invariant({ a < 10 })
+        class C {
+            int a = 0
+            void set(int v) { a = v }
+        }
+        '''
+
+        def c = create_instance_of(source)
+        c.set(5)
+        shouldFail(ClassInvariantViolation) {
+            c.set(42)
+        }
+    }
+
+    // GROOVY-12083
+    @Test
+    void multiple_class_invariants_first_is_violated() {
+
+        def source = '''
+        import groovy.contracts.*
+
+        @Invariant({ a < 10 })
+        @Invariant({ a >= 0 })
+        class C {
+            int a = 0
+            void set(int v) { a = v }
+        }
+        '''
+
+        def c = create_instance_of(source)
+        c.set(5)
+        shouldFail(ClassInvariantViolation) {
+            c.set(-3)
+        }
+    }
+
+    @Test
+    void invariant_checked_on_trailing_implicit_return_after_early_return() {
+        // GROOVY-12463: same gap as for postconditions: the trailing value skipped the invariant
+        def source = '''
+        import groovy.contracts.*
+
+        @Invariant({ count >= 0 })
+        class A {
+            int count = 0
+            int dec(boolean early) {
+                if (early) return count
+                count -= 5
+                count
+            }
+        }
+        '''
+
+        def a = create_instance_of(source)
+        assert a.dec(true) == 0
+        shouldFail(ClassInvariantViolation) {
+            a.dec(false)
         }
     }
 }

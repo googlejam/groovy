@@ -42,27 +42,27 @@ import org.codehaus.groovy.util.ManagedConcurrentLinkedQueue;
 import org.codehaus.groovy.util.ReferenceBundle;
 import org.codehaus.groovy.vmplugin.VMPluginFactory;
 
+import java.lang.reflect.AccessibleObject;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Modifier;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
-import java.util.Set;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * A registry of MetaClass instances which caches introspection and
  * reflection information and allows methods to be dynamically added to
  * existing classes at runtime
  */
-public class MetaClassRegistryImpl implements MetaClassRegistry{
+public class MetaClassRegistryImpl implements MetaClassRegistry {
     /**
      * @deprecated Use {@link ExtensionModuleScanner#MODULE_META_INF_FILE} instead
      */
@@ -70,6 +70,11 @@ public class MetaClassRegistryImpl implements MetaClassRegistry{
     public static final String MODULE_META_INF_FILE = "META-INF/services/org.codehaus.groovy.runtime.ExtensionModule";
     private static final MetaClass[] EMPTY_METACLASS_ARRAY = new MetaClass[0];
     private static final MetaClassRegistryChangeEventListener[] EMPTY_METACLASSREGISTRYCHANGEEVENTLISTENER_ARRAY = new MetaClassRegistryChangeEventListener[0];
+
+    /**
+     * System property name used to disable specific extension modules.
+     * When set, the value should be a comma-separated list of extension module names to disable.
+     */
     public static final String EXTENSION_DISABLE_PROPERTY = "groovy.extension.disable";
 
     private final boolean useAccessible;
@@ -83,29 +88,51 @@ public class MetaClassRegistryImpl implements MetaClassRegistry{
     private final ExtensionModuleRegistry moduleRegistry = new ExtensionModuleRegistry();
     private final String disabledString = SystemUtil.getSystemPropertySafe(EXTENSION_DISABLE_PROPERTY);
     private final boolean disabling = disabledString != null;
-    private final Set<String> disabledNames = disabling ? new HashSet<>(Arrays.asList(disabledString.split(","))) : null;
+    private final List<DisabledMethodSpec> disabledSpecs = disabling ? DisabledMethodSpec.parse(disabledString) : null;
 
+    /**
+     * Flag to load default metaclasses for standard Java and Groovy types when initializing the registry.
+     */
     public static final int LOAD_DEFAULT = 0;
+
+    /**
+     * Flag to skip loading default metaclasses during registry initialization.
+     */
     public static final int DONT_LOAD_DEFAULT = 1;
     private static MetaClassRegistry instanceInclude;
     private static MetaClassRegistry instanceExclude;
 
+    /**
+     * Creates a new MetaClassRegistry with default settings.
+     * Loads default metaclasses for standard Java and Groovy types.
+     */
     public MetaClassRegistryImpl() {
         this(LOAD_DEFAULT, true);
     }
 
+    /**
+     * Creates a new MetaClassRegistry with optional default metaclass loading.
+     *
+     * @param loadDefault either LOAD_DEFAULT to load default metaclasses or DONT_LOAD_DEFAULT to skip loading
+     */
     public MetaClassRegistryImpl(int loadDefault) {
         this(loadDefault, true);
     }
 
     /**
-     * @param useAccessible defines whether or not the {@link java.lang.reflect.AccessibleObject#setAccessible(boolean)}
+     * @param useAccessible defines whether the {@link AccessibleObject#setAccessible(boolean)}
      *                      method will be called to enable access to all methods when using reflection
      */
     public MetaClassRegistryImpl(boolean useAccessible) {
         this(LOAD_DEFAULT, useAccessible);
     }
 
+    /**
+     * Creates a new MetaClassRegistry with customizable settings.
+     *
+     * @param loadDefault either LOAD_DEFAULT to load default metaclasses or DONT_LOAD_DEFAULT to skip loading
+     * @param useAccessible whether to use AccessibleObject.setAccessible() for reflection access
+     */
     public MetaClassRegistryImpl(final int loadDefault, final boolean useAccessible) {
         this.useAccessible = useAccessible;
 
@@ -132,6 +159,8 @@ public class MetaClassRegistryImpl implements MetaClassRegistry{
             ExtensionModuleScanner scanner = new ExtensionModuleScanner(new DefaultModuleListener(map), this.getClass().getClassLoader());
             scanner.scanClasspathModules();
 
+            checkForDuplicateConcurrentModule();
+
             refreshMopMethods(map);
 
         }
@@ -146,7 +175,7 @@ public class MetaClassRegistryImpl implements MetaClassRegistry{
         addNonRemovableMetaClassRegistryChangeEventListener(cmcu -> {
             // The calls to DefaultMetaClassInfo.setPrimitiveMeta and sdyn.setBoolean need to be
             // ordered. Even though metaClassInfo is thread-safe, it is included in the block
-            // so the meta classes are added to the queue in the same order.
+            // so the metaclasses are added to the queue in the same order.
             synchronized (metaClassInfo) {
                metaClassInfo.add(cmcu.getNewMetaClass());
                DefaultMetaClassInfo.getNewConstantMetaClassVersioning();
@@ -159,7 +188,6 @@ public class MetaClassRegistryImpl implements MetaClassRegistry{
                } catch (Throwable e) {
                    //DO NOTHING
                }
-
             }
         });
    }
@@ -171,18 +199,61 @@ public class MetaClassRegistryImpl implements MetaClassRegistry{
         }
     }
 
+    /**
+     * Registers extension module methods from the given properties.
+     * This method scans for extension modules defined in properties and registers their methods.
+     *
+     * @param properties the properties containing extension module definitions
+     * @param classLoader the class loader to use for loading extension modules
+     * @param map the map to store the loaded meta methods
+     */
     public void registerExtensionModuleFromProperties(final Properties properties, final ClassLoader classLoader, final Map<CachedClass, List<MetaMethod>> map) {
         ExtensionModuleScanner scanner = new ExtensionModuleScanner(new DefaultModuleListener(map), classLoader);
         scanner.scanExtensionModuleFromProperties(properties);
     }
 
+    /**
+     * Gets the extension module registry.
+     * The registry keeps track of all loaded extension modules.
+     *
+     * @return the extension module registry
+     */
     public ExtensionModuleRegistry getModuleRegistry() {
         return moduleRegistry;
     }
 
     /**
-     * Looks for a class called 'groovy.runtime.metaclass.CustomMetaClassCreationHandle' and if it exists uses it as the MetaClassCreationHandle
-     * otherwise uses the default
+     * Detects when the concurrent API classes appear in more than one
+     * classpath location — typically when both Groovy core and the
+     * standalone groovy-concurrent-java jar are present. Logs a warning
+     * so Maven users (who lack Gradle's capability mechanism) are alerted.
+     */
+    private static void checkForDuplicateConcurrentModule() {
+        try {
+            ClassLoader cl = MetaClassRegistryImpl.class.getClassLoader();
+            if (cl == null) return;
+            var locations = Collections.list(cl.getResources("groovy/concurrent/AsyncScope.class"));
+            // Only count packaged (jar) locations — a classes/ directory on the
+            // classpath alongside a jar is normal during the Groovy bootstrap
+            // build and not a deployment problem users can fix.
+            var jarLocations = locations.stream()
+                    .filter(u -> "jar".equals(u.getProtocol()))
+                    .toList();
+            if (jarLocations.size() > 1) {
+                Logger.getLogger(MetaClassRegistryImpl.class.getName()).warning(
+                        "groovy.concurrent.AsyncScope found in multiple classpath jars: " + jarLocations
+                        + ". The concurrent API classes are duplicated. "
+                        + "Remove groovy-concurrent-java when using the full Groovy runtime.");
+            }
+        } catch (Exception ignored) {
+            // SecurityManager or other restriction — skip check
+        }
+    }
+
+    /**
+     * Looks for a class called {@code groovy.runtime.metaclass.CustomMetaClassCreationHandle}
+     * and, if it exists, uses it as the meta-class creation handle.
+     * Otherwise uses the default.
      *
      * @see groovy.lang.MetaClassRegistry.MetaClassCreationHandle
      */
@@ -202,39 +273,59 @@ public class MetaClassRegistryImpl implements MetaClassRegistry{
         if (useMethodWrapper) {
             // Here we instantiate objects representing MetaMethods for DGM methods.
             // Calls for such meta methods done without reflection, so more effectively.
-
+            //
+            // Registration is lenient towards Exceptions, which an unusual environment
+            // may raise for a few receiver types (a restrictive class loader, say),
+            // and then costs only the methods concerned. An Error is not absorbed:
+            // it means the runtime itself is broken (a missing class, a static
+            // initialiser failure, or in a GraalVM native image a reflection lookup
+            // the reachability metadata does not cover), and swallowing it would
+            // leave an unpredictable subset of the default Groovy methods registered,
+            // to fail much later as MissingMethodExceptions far from the cause.
+            List<GeneratedMetaMethod.DgmMethodRecord> records;
             try {
-                List<GeneratedMetaMethod.DgmMethodRecord> records = GeneratedMetaMethod.DgmMethodRecord.loadDgmInfo();
+                records = GeneratedMetaMethod.DgmMethodRecord.loadDgmInfo();
+            } catch (Exception e) {
+                Logger.getLogger(MetaClassRegistryImpl.class.getName()).log(Level.SEVERE,
+                        "No default Groovy methods registered: the DGM records (META-INF/dgminfo) could not be read", e);
+                return;
+            }
+            int failed = 0;
+            Exception firstFailure = null;
+            for (GeneratedMetaMethod.DgmMethodRecord record : records) {
+                if (disabling && isDisabled(record.methodName, record.parameters)) continue;
+                Class[] newParams = new Class[record.parameters.length - 1];
+                System.arraycopy(record.parameters, 1, newParams, 0, newParams.length);
 
-                for (GeneratedMetaMethod.DgmMethodRecord record : records) {
-                    if (disabling && disabledNames.contains(record.methodName)) continue;
-                    Class[] newParams = new Class[record.parameters.length - 1];
-                    System.arraycopy(record.parameters, 1, newParams, 0, newParams.length);
-
-                    MetaMethod method = new GeneratedMetaMethod.Proxy(
+                MetaMethod method;
+                try {
+                    method = new GeneratedMetaMethod.Proxy(
                             record.className,
                             record.methodName,
                             ReflectionCache.getCachedClass(record.parameters[0]),
                             record.returnType,
                             newParams
                     );
-                    final CachedClass declClass = method.getDeclaringClass();
-                    List<MetaMethod> arr = map.computeIfAbsent(declClass, k -> new ArrayList<MetaMethod>(4));
-                    arr.add(method);
-                    instanceMethods.add(method);
+                } catch (Exception e) {
+                    if (firstFailure == null) firstFailure = e;
+                    failed++;
+                    continue;
                 }
-            } catch (Throwable e) {
-                e.printStackTrace();
-                // we print the error, but we don't stop with an exception here
-                // since it is more comfortable this way for development
+                final CachedClass declClass = method.getDeclaringClass();
+                List<MetaMethod> arr = map.computeIfAbsent(declClass, k -> new ArrayList<MetaMethod>(4));
+                arr.add(method);
+                instanceMethods.add(method);
+            }
+            if (failed > 0) {
+                Logger.getLogger(MetaClassRegistryImpl.class.getName()).log(Level.SEVERE,
+                        "Default Groovy method registration incomplete: " + failed + " of " + records.size()
+                        + " methods could not be registered and calls to them will fail; the first failure follows", firstFailure);
             }
         } else {
             CachedMethod[] methods = ReflectionCache.getCachedClass(theClass).getMethods();
-
             for (CachedMethod method : methods) {
-                final int mod = method.getModifiers();
-                if (Modifier.isStatic(mod) && Modifier.isPublic(mod) && method.getAnnotation(Deprecated.class) == null) {
-                    if (disabling && disabledNames.contains(method.getName())) continue;
+                if (method.isStatic() && method.isPublic() && method.getAnnotation(Deprecated.class) == null) {
+                    if (disabling && isDisabled(method.getName(), method.getParameterTypes())) continue;
                     CachedClass[] paramTypes = method.getParameterTypes();
                     if (paramTypes.length > 0) {
                         List<MetaMethod> arr = map.computeIfAbsent(paramTypes[0], k -> new ArrayList<MetaMethod>(4));
@@ -264,70 +355,100 @@ public class MetaClassRegistryImpl implements MetaClassRegistry{
         }
     }
 
+    /**
+     * Gets the MetaClass for the given class.
+     *
+     * @param theClass the class to get the metaclass for
+     * @return the metaclass for the class
+     */
     @Override
     public final MetaClass getMetaClass(Class theClass) {
         return ClassInfo.getClassInfo(theClass).getMetaClass();
     }
 
+    /**
+     * Gets the metaclass for the given object.
+     * For Class objects, returns the metaclass for that class; for other objects,
+     * returns the instance-specific metaclass if set, otherwise the metaclass for the object's class.
+     *
+     * @param obj the object to get the metaclass for
+     * @return the metaclass for the object
+     */
     public MetaClass getMetaClass(Object obj) {
-        return ClassInfo.getClassInfo(obj.getClass()).getMetaClass(obj);
+        Class theClass = obj instanceof Class c ? c : obj.getClass();
+        return ClassInfo.getClassInfo(theClass).getMetaClass(obj);
     }
 
     /**
-     * if oldMc is null, newMc will replace whatever meta class was used before.
-     * if oldMc is not null, then newMc will be used only if the stored mc is
-     * the same as oldMc
+     * If oldMC is null, newMC will replace whatever MC is present.
+     * Otherwise, newMC will be used only if the stored MC is the same as oldMC
      */
-    private void setMetaClass(Class theClass, MetaClass oldMc, MetaClass newMc) {
-        final ClassInfo info = ClassInfo.getClassInfo(theClass);
-
-        MetaClass mc = null;
+    private void setMetaClass(Class theClass, MetaClass oldMC, MetaClass newMC) {
+        ClassInfo info = ClassInfo.getClassInfo(theClass);
+        MetaClass mc;
         info.lock();
         try {
             mc = info.getStrongMetaClass();
-            info.setStrongMetaClass(newMc);
+            info.setStrongMetaClass(newMC);
         } finally {
             info.unlock();
         }
-        if ((oldMc == null && mc != newMc) || (oldMc != null && mc != newMc && mc != oldMc)) {
-            fireConstantMetaClassUpdate(null, theClass, mc, newMc);
+        if ((oldMC == null || oldMC != mc) && (newMC != mc)) {
+            fireConstantMetaClassUpdate(null, theClass, mc, newMC);
         }
     }
 
+    /**
+     * Removes the metaclass for the given class, resetting it to null.
+     * This forces a new metaclass to be created the next time one is needed.
+     *
+     * @param theClass the class to remove the metaclass for
+     */
     @Override
     public void removeMetaClass(Class theClass) {
         setMetaClass(theClass, null, null);
     }
 
     /**
-     * Registers a new MetaClass in the registry to customize the type
+     * Sets the metaclass for the given class, replacing any existing metaclass.
      *
-     * @param theClass
-     * @param theMetaClass
+     * @param theClass the class to set the metaclass for
+     * @param theMetaClass the new metaclass
      */
     @Override
     public void setMetaClass(Class theClass, MetaClass theMetaClass) {
-        setMetaClass(theClass,null,theMetaClass);
+        setMetaClass(theClass, null, theMetaClass);
     }
 
-
+    /**
+     * Sets the per-instance metaclass for the given object.
+     * This allows individual instances to have their own custom metaclass implementation.
+     *
+     * @param obj the object to set the metaclass for
+     * @param theMetaClass the new metaclass for this instance
+     */
     public void setMetaClass(Object obj, MetaClass theMetaClass) {
-        Class theClass = obj.getClass ();
-        final ClassInfo info = ClassInfo.getClassInfo(theClass);
-        MetaClass oldMC = null;
+        Class theClass = obj instanceof Class c ? c : obj.getClass();
+        ClassInfo info = ClassInfo.getClassInfo(theClass);
+        MetaClass mc;
         info.lock();
         try {
-            oldMC = info.getPerInstanceMetaClass(obj);
+            mc = info.getPerInstanceMetaClass(obj);
             info.setPerInstanceMetaClass(obj, theMetaClass);
         }
         finally {
             info.unlock();
         }
-
-        fireConstantMetaClassUpdate(obj, theClass, oldMC, theMetaClass);
+        fireConstantMetaClassUpdate(obj, theClass, mc, theMetaClass);
     }
 
-
+    /**
+     * Returns whether reflection access modifiers are being set.
+     * When true, the AccessibleObject.setAccessible(true) method will be called
+     * when using reflection to access methods and fields.
+     *
+     * @return true if using accessible reflection, false otherwise
+     */
     public boolean useAccessible() {
         return useAccessible;
     }
@@ -337,6 +458,7 @@ public class MetaClassRegistryImpl implements MetaClassRegistry{
     /**
      * Gets a handle internally used to create MetaClass implementations
      * WARNING: experimental code, likely to change soon
+     *
      * @return the handle
      */
     @Override
@@ -350,6 +472,7 @@ public class MetaClassRegistryImpl implements MetaClassRegistry{
      * reuse the old handle to keep custom logic and to use the
      * default logic as fall back.
      * WARNING: experimental code, likely to change soon
+     *
      * @param handle the handle
      */
     @Override
@@ -361,7 +484,8 @@ public class MetaClassRegistryImpl implements MetaClassRegistry{
     }
 
     /**
-     * Adds a listener for constant meta classes.
+     * Adds a listener for constant metaclasses.
+     *
      * @param listener the listener
      */
     @Override
@@ -373,7 +497,8 @@ public class MetaClassRegistryImpl implements MetaClassRegistry{
 
 
     /**
-     * Adds a listener for constant meta classes. This listener cannot be removed!
+     * Adds a listener for constant metaclasses. This listener cannot be removed!
+     *
      * @param listener the listener
      */
     @Override
@@ -384,7 +509,8 @@ public class MetaClassRegistryImpl implements MetaClassRegistry{
     }
 
     /**
-     * Removes a constant meta class listener.
+     * Removes a constant metaclass listener.
+     *
      * @param listener the listener
      */
     @Override
@@ -446,19 +572,29 @@ public class MetaClassRegistryImpl implements MetaClassRegistry{
         }
     }
 
+    /**
+     * Gets the instance methods registered in this registry.
+     *
+     * @return a FastArray of all instance methods
+     */
     public FastArray getInstanceMethods() {
         return instanceMethods;
     }
 
+    /**
+     * Gets the static methods registered in this registry.
+     *
+     * @return a FastArray of all static methods
+     */
     public FastArray getStaticMethods() {
         return staticMethods;
     }
 
     /**
-     * Returns an iterator to iterate over all constant meta classes.
+     * Returns an iterator to iterate over all constant metaclasses.
      * This iterator can be seen as making a snapshot of the current state
-     * of the registry. The snapshot will include all meta classes that has
-     * been used unless they are already collected. Collected meta classes
+     * of the registry. The snapshot will include all metaclasses that has
+     * been used unless they are already collected. Collected metaclasses
      * will be skipped automatically, so you can expect that each element
      * of the iteration is not null. Calling this method is thread safe, the
      * usage of the iterator is not.
@@ -472,7 +608,7 @@ public class MetaClassRegistryImpl implements MetaClassRegistry{
         return new Iterator() {
             // index in the ref array
             private int index = 0;
-            // the current meta class
+            // the current metaclass
             private MetaClass currentMeta;
             // used to ensure that hasNext has been called
             private boolean hasNextCalled = false;
@@ -518,6 +654,13 @@ public class MetaClassRegistryImpl implements MetaClassRegistry{
     private class DefaultModuleListener implements ExtensionModuleScanner.ExtensionModuleListener {
         private final Map<CachedClass, List<MetaMethod>> map;
 
+        /**
+         * Retains {@code map} for meta methods discovered from extension modules.
+         * The map is not copied. Registration appends each method to the list for
+         * its declaring class and creates that list when the class is absent.
+         *
+         * @param map declaring class to the meta methods registered for it
+         */
         public DefaultModuleListener(final Map<CachedClass, List<MetaMethod>> map) {
             this.map = map;
         }
@@ -547,6 +690,118 @@ public class MetaClassRegistryImpl implements MetaClassRegistry{
                     instanceMethods.add(metaMethod);
                 }
             }
+        }
+    }
+
+    // DGM records use Class[]
+    private boolean isDisabled(String methodName, Class[] parameters) {
+        for (DisabledMethodSpec spec : disabledSpecs) {
+            if (spec.matches(methodName, parameters)) return true;
+        }
+        return false;
+    }
+
+    // Extension module methods use CachedClass[]
+    private boolean isDisabled(String methodName, CachedClass[] parameters) {
+        for (DisabledMethodSpec spec : disabledSpecs) {
+            if (spec.matches(methodName, parameters)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Represents a parsed entry from the {@code groovy.extension.disable} system property.
+     * <p>
+     * Supported forms:
+     * <ul>
+     *   <li>{@code methodName} — matches all overloads</li>
+     *   <li>{@code methodName(type)} — matches by receiver type (first parameter)</li>
+     *   <li>{@code methodName(type1,type2,...)} — matches the exact parameter signature</li>
+     * </ul>
+     */
+    private static final class DisabledMethodSpec {
+        private final String name;
+        private final String[] paramTypes; // null means match all overloads
+
+        DisabledMethodSpec(String name, String[] paramTypes) {
+            this.name = name;
+            this.paramTypes = paramTypes;
+        }
+
+        boolean matches(String methodName, Class[] parameters) {
+            if (!name.equals(methodName)) return false;
+            if (paramTypes == null) return true;
+            if (paramTypes.length != parameters.length) return false;
+            for (int i = 0; i < paramTypes.length; i++) {
+                if (!matchesType(paramTypes[i], parameters[i])) return false;
+            }
+            return true;
+        }
+
+        boolean matches(String methodName, CachedClass[] parameters) {
+            if (!name.equals(methodName)) return false;
+            if (paramTypes == null) return true;
+            if (paramTypes.length != parameters.length) return false;
+            for (int i = 0; i < paramTypes.length; i++) {
+                if (!matchesType(paramTypes[i], parameters[i].getTheClass())) return false;
+            }
+            return true;
+        }
+
+        // Allows simple name ("Set"), fully qualified name ("java.util.Set"),
+        // and array notation ("Object[]", "boolean[][]", etc.).
+        // Uses Class.getCanonicalName() which produces human-readable names
+        // like "java.lang.Object[]" instead of JVM names like "[Ljava.lang.Object;".
+        private static boolean matchesType(String spec, Class<?> type) {
+            String canonical = type.getCanonicalName();
+            if (spec.equals(canonical)) return true;
+            // allow simple name to match: "Set" matches "java.util.Set",
+            // "Object[]" matches "java.lang.Object[]"
+            String simpleName = type.getSimpleName();
+            return spec.equals(simpleName);
+        }
+
+        /**
+         * Parses the comma-separated disable property value, respecting parentheses.
+         * For example: {@code "asChecked,toSorted(Set,Class),collect"} produces three specs.
+         */
+        static List<DisabledMethodSpec> parse(String input) {
+            List<DisabledMethodSpec> specs = new ArrayList<>();
+            for (String entry : splitRespectingParens(input)) {
+                entry = entry.trim();
+                if (entry.isEmpty()) continue;
+                int parenIdx = entry.indexOf('(');
+                if (parenIdx < 0) {
+                    specs.add(new DisabledMethodSpec(entry, null));
+                } else {
+                    String name = entry.substring(0, parenIdx);
+                    String paramStr = entry.substring(parenIdx + 1, entry.length() - 1);
+                    if (paramStr.isEmpty()) {
+                        specs.add(new DisabledMethodSpec(name, new String[0]));
+                    } else {
+                        String[] params = paramStr.split(",");
+                        for (int i = 0; i < params.length; i++) params[i] = params[i].trim();
+                        specs.add(new DisabledMethodSpec(name, params));
+                    }
+                }
+            }
+            return specs;
+        }
+
+        private static List<String> splitRespectingParens(String input) {
+            List<String> result = new ArrayList<>();
+            int depth = 0, start = 0;
+            for (int i = 0; i < input.length(); i++) {
+                char c = input.charAt(i);
+                if (c == '(') depth++;
+                else if (c == ')') depth--;
+                else if (c == ',' && depth == 0) {
+                    result.add(input.substring(start, i));
+                    start = i + 1;
+                }
+            }
+            result.add(input.substring(start));
+            return result;
         }
     }
 }

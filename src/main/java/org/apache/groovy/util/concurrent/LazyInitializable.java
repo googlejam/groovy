@@ -20,11 +20,14 @@ package org.apache.groovy.util.concurrent;
 
 /**
  *  A {@code LazyInitializable} is an object that can be initialized lazily.
- *  Note: the instance field {@code initialized} of sub-class should be {@code volatile} to avoid JVM instructions re-ordering
+ *  Note: the instance field {@code initialized} of subclass should be {@code volatile} to avoid JVM instructions re-ordering
  *
  * @since 3.0.0
  */
 public interface LazyInitializable {
+    /**
+     * Initializes this instance once on first access.
+     */
     default void lazyInit() {
         if (isInitialized()) return;
 

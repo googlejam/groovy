@@ -21,10 +21,10 @@ plugins {
 }
 
 dependencies {
-    api rootProject // CliBuilder uses Option...
+    api project(':') // CliBuilder uses Option...
     implementation "commons-cli:commons-cli:${versions.commonsCli}"
-    testImplementation project(':groovy-test')
-    testImplementation project(':groovy-dateutil')
+    testImplementation projects.groovyTest
+    testImplementation projects.groovyDateutil
     testRuntimeOnly testFixtures(project(":"))
 }
 

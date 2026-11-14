@@ -18,9 +18,7 @@
  */
 package groovy.swing.binding;
 
-import org.apache.groovy.swing.binding.FullBinding;
 import org.apache.groovy.swing.binding.PropertyBinding;
-import org.apache.groovy.swing.binding.SourceBinding;
 import org.apache.groovy.swing.binding.TargetBinding;
 import org.apache.groovy.swing.binding.TriggerBinding;
 
@@ -33,30 +31,47 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
+ * Supplies synthetic binding definitions for {@link AbstractButton}.
+ *
  * @since Groovy 1.1
  */
 public class AbstractButtonProperties {
+    /**
+     * Returns the synthetic trigger bindings exposed for {@link AbstractButton}.
+     *
+     * @return the synthetic trigger binding map
+     */
     public static Map<String, TriggerBinding> getSyntheticProperties() {
         Map<String, TriggerBinding> result = new HashMap<String, TriggerBinding>();
         result.put(AbstractButton.class.getName() + "#selected",
-            new TriggerBinding() {
-                @Override
-                public FullBinding createBinding(SourceBinding source, TargetBinding target) {
-                    return new AbstractButtonSelectedBinding((PropertyBinding) source, target);
-                }
-            });
+            (source, target) -> new AbstractButtonSelectedBinding((PropertyBinding) source, target));
         return result;
     }
 }
 
 
+/**
+ * Tracks the synthetic {@code selected} property on an {@link AbstractButton}.
+ */
 class AbstractButtonSelectedBinding extends AbstractSyntheticBinding implements PropertyChangeListener, ItemListener {
+    /**
+     * The currently bound button instance.
+     */
     AbstractButton boundButton;
 
-    public AbstractButtonSelectedBinding(PropertyBinding source, TargetBinding target) {
+    /**
+     * Creates a selected-property binding for an abstract button.
+     *
+     * @param source the source property binding
+     * @param target the target binding
+     */
+    AbstractButtonSelectedBinding(PropertyBinding source, TargetBinding target) {
         super(source, target, AbstractButton.class, "selected");
     }
 
+    /**
+     * Starts listening to the bound button and its current model.
+     */
     @Override
     public synchronized void syntheticBind() {
             boundButton = (AbstractButton) ((PropertyBinding) sourceBinding).getBean();
@@ -64,6 +79,9 @@ class AbstractButtonSelectedBinding extends AbstractSyntheticBinding implements 
                 boundButton.getModel().addItemListener(this);
     }
 
+    /**
+     * Stops listening to the bound button and clears the cached reference.
+     */
     @Override
     public synchronized void syntheticUnbind() {
             boundButton.removePropertyChangeListener("model", this);
@@ -71,6 +89,11 @@ class AbstractButtonSelectedBinding extends AbstractSyntheticBinding implements 
             boundButton = null;
     }
 
+    /**
+     * Refreshes the binding after the button model changes and reattaches listeners.
+     *
+     * @param event the model change event
+     */
     @Override
     public void propertyChange(PropertyChangeEvent event) {
         update();
@@ -78,6 +101,11 @@ class AbstractButtonSelectedBinding extends AbstractSyntheticBinding implements 
         ((ButtonModel)event.getNewValue()).addItemListener(this);
     }
 
+    /**
+     * Refreshes the binding after the button selection state changes.
+     *
+     * @param e the item event describing the selection change
+     */
     @Override
     public void itemStateChanged(ItemEvent e) {
         update();

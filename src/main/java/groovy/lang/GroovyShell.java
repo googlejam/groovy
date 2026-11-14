@@ -32,14 +32,13 @@ import java.io.IOException;
 import java.io.Reader;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.net.URI;
-import java.security.AccessController;
-import java.security.PrivilegedAction;
-import java.security.PrivilegedActionException;
-import java.security.PrivilegedExceptionAction;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.codehaus.groovy.control.ResolveVisitor.EMPTY_STRING_ARRAY;
 import static org.codehaus.groovy.runtime.InvokerHelper.MAIN_METHOD_NAME;
 
 /**
@@ -47,46 +46,115 @@ import static org.codehaus.groovy.runtime.InvokerHelper.MAIN_METHOD_NAME;
  */
 public class GroovyShell extends GroovyObjectSupport {
 
+    /**
+     * Default code base used for scripts evaluated by the shell.
+     */
     public static final String DEFAULT_CODE_BASE = "/groovy/shell";
-    private static final String[] EMPTY_STRING_ARRAY = new String[0];
+    private static final String CONFIGURATION_CUSTOMIZER = "org.codehaus.groovy.control.customizers.builder.CompilerCustomizationBuilder";
 
     private final Binding context;
     private final AtomicInteger counter = new AtomicInteger(0);
     private final CompilerConfiguration config;
     private final GroovyClassLoader loader;
 
-    public static void main(String[] args) {
+    /**
+     * Runs the standard {@code groovysh}-style command-line entry point.
+     *
+     * @param args command-line arguments passed to {@link GroovyMain}
+     */
+    public static void main(final String[] args) {
         GroovyMain.main(args);
     }
 
+    /**
+     * @since 4.0.3
+     */
+    public static GroovyShell withConfig(@DelegatesTo(type = CONFIGURATION_CUSTOMIZER) final Closure<Void> spec) {
+        //TODO return new GroovyShell(CompilerCustomizationBuilder.withConfig(new CompilerConfiguration(), spec));
+        CompilerConfiguration config = new CompilerConfiguration();
+        try {
+            Class.forName(CONFIGURATION_CUSTOMIZER)
+                .getDeclaredMethod("withConfig", CompilerConfiguration.class, Closure.class)
+                .invoke(null, config, spec);
+        } catch (ReflectiveOperationException e) {
+            throw new GroovyRuntimeException(e);
+        }
+        return new GroovyShell(config);
+    }
+
+    //--------------------------------------------------------------------------
+
+    /**
+     * Creates a shell with a new {@link Binding} and the default compiler configuration.
+     */
     public GroovyShell() {
         this(null, new Binding());
     }
 
+    /**
+     * Creates a shell with the supplied binding and the default compiler configuration.
+     *
+     * @param binding the binding used as the shell context
+     */
     public GroovyShell(Binding binding) {
         this(null, binding);
     }
 
+    /**
+     * Creates a shell with the supplied parent class loader and compiler configuration.
+     *
+     * @param parent the parent class loader
+     * @param config the compiler configuration to use
+     */
     public GroovyShell(ClassLoader parent, CompilerConfiguration config) {
         this(parent, new Binding(), config);
     }
 
+    /**
+     * Creates a shell with a new {@link Binding} and the supplied compiler configuration.
+     *
+     * @param config the compiler configuration to use
+     */
     public GroovyShell(CompilerConfiguration config) {
         this(new Binding(), config);
     }
 
+    /**
+     * Creates a shell with the supplied binding and compiler configuration.
+     *
+     * @param binding the binding used as the shell context
+     * @param config the compiler configuration to use
+     */
     public GroovyShell(Binding binding, CompilerConfiguration config) {
         this(null, binding, config);
     }
 
+    /**
+     * Creates a shell with the supplied parent class loader and binding.
+     *
+     * @param parent the parent class loader
+     * @param binding the binding used as the shell context
+     */
     public GroovyShell(ClassLoader parent, Binding binding) {
         this(parent, binding, CompilerConfiguration.DEFAULT);
     }
 
+    /**
+     * Creates a shell with the supplied parent class loader, a new binding and the default compiler configuration.
+     *
+     * @param parent the parent class loader
+     */
     public GroovyShell(ClassLoader parent) {
         this(parent, new Binding(), CompilerConfiguration.DEFAULT);
     }
 
+    /**
+     * Creates a shell with explicit class loader, binding and compiler configuration.
+     *
+     * @param parent the parent class loader, or {@code null} to use the shell class loader
+     * @param binding the binding used as the shell context
+     * @param config the compiler configuration to use
+     */
     public GroovyShell(ClassLoader parent, Binding binding, final CompilerConfiguration config) {
         if (binding == null) {
             throw new IllegalArgumentException("Binding must not be null.");
@@ -100,12 +168,17 @@ public class GroovyShell extends GroovyObjectSupport {
             && ((GroovyClassLoader) parentLoader).hasCompatibleConfiguration(config)) {
           this.loader = (GroovyClassLoader) parentLoader;
         } else {
-          this.loader = AccessController.doPrivileged((PrivilegedAction<GroovyClassLoader>) () -> new GroovyClassLoader(parentLoader,config));
+          this.loader = new GroovyClassLoader(parentLoader, config);
+          // each script is defined by a class loader of its own, and what the JVM refuses across them is known here
+          this.loader.enableRuntimePackageCheck();
         }
         this.context = binding;
         this.config = config;
     }
 
+    /**
+     * Clears classes previously loaded by this shell class loader.
+     */
     public void resetLoadedClasses() {
         loader.clearCache();
     }
@@ -120,14 +193,25 @@ public class GroovyShell extends GroovyObjectSupport {
         this(shell.loader, shell.context);
     }
 
+    /**
+     * Returns the binding used as this shell's execution context.
+     *
+     * @return the current binding
+     */
     public Binding getContext() {
         return context;
     }
 
+    /**
+     * Returns the class loader used to parse and load scripts.
+     *
+     * @return the shell class loader
+     */
     public GroovyClassLoader getClassLoader() {
         return loader;
     }
 
+    /** {@inheritDoc} */
     @Override
     public Object getProperty(String property) {
         Object answer = getVariable(property);
@@ -137,13 +221,16 @@ public class GroovyShell extends GroovyObjectSupport {
         return answer;
     }
 
+    /** {@inheritDoc} */
     @Override
     public void setProperty(String property, Object newValue) {
         setVariable(property, newValue);
         try {
             super.setProperty(property, newValue);
+        } catch (ReadOnlyPropertyException e) {
+            throw e;
         } catch (GroovyRuntimeException e) {
-            // ignore, was probably a dynamic property
+            // probably a dynamic property
         }
     }
 
@@ -178,7 +265,7 @@ public class GroovyShell extends GroovyObjectSupport {
         String scriptName = scriptFile.getName();
         int p = scriptName.lastIndexOf('.');
         if (p++ >= 0) {
-            if (scriptName.substring(p).equals("java")) {
+            if ("java".equals(scriptName.substring(p))) {
                 throw new CompilationFailedException(0, null);
             }
         }
@@ -187,42 +274,22 @@ public class GroovyShell extends GroovyObjectSupport {
         final Thread thread = Thread.currentThread();
         //ClassLoader currentClassLoader = thread.getContextClassLoader();
 
-        class DoSetContext implements PrivilegedAction {
-            final ClassLoader classLoader;
-
-            public DoSetContext(ClassLoader loader) {
-                classLoader = loader;
-            }
-
-            @Override
-            public Object run() {
-                thread.setContextClassLoader(classLoader);
-                return null;
-            }
-        }
-
-        AccessController.doPrivileged(new DoSetContext(loader));
+        thread.setContextClassLoader(loader);
 
         // Parse the script, generate the class, and invoke the main method.  This is a little looser than
         // if you are compiling the script because the JVM isn't executing the main method.
         Class scriptClass;
         try {
-            scriptClass = AccessController.doPrivileged((PrivilegedExceptionAction<Class>) () -> loader.parseClass(scriptFile));
-        } catch (PrivilegedActionException pae) {
-            Exception e = pae.getException();
-            if (e instanceof CompilationFailedException) {
-                throw (CompilationFailedException) e;
-            } else if (e instanceof IOException) {
-                throw (IOException) e;
-            } else {
-                throw (RuntimeException) pae.getException();
-            }
+            scriptClass = loader.parseClass(scriptFile);
+        } catch (CompilationFailedException e) {
+            throw e;
+        } catch (IOException e) {
+            throw e;
         }
 
         return runScriptOrMainOrTestOrRunnable(scriptClass, args);
 
-        // Set the context classloader back to what it was.
-        //AccessController.doPrivileged(new DoSetContext(currentClassLoader));
+        // TODO do we need to set the context classloader back to what it was.
     }
 
     /**
@@ -235,8 +302,8 @@ public class GroovyShell extends GroovyObjectSupport {
      * } else if (theClass implements Runnable) {
      * if (theClass has a constructor with String[] params)
      * instantiate theClass with this constructor and run
-     * else if (theClass has a no-args constructor)
-     * instantiate theClass with the no-args constructor and run
+     * else if (theClass has a no-arg constructor)
+     * instantiate theClass with the no-arg constructor and run
      * }
      */
     private Object runScriptOrMainOrTestOrRunnable(Class scriptClass, String[] args) {
@@ -255,41 +322,81 @@ public class GroovyShell extends GroovyObjectSupport {
             try {
                 Script script = InvokerHelper.newScript(scriptClass, context);
                 return script.run();
-            } catch (InstantiationException | InvocationTargetException | IllegalAccessException e) {
-                // ignore instantiation errors,, try to do main
+            } catch (InstantiationException | InvocationTargetException | IllegalAccessException | NoSuchMethodException e) {
+                // ignore instantiation errors, try to do main
             }
         }
-        try {
-            // let's find a main method
-            scriptClass.getMethod(MAIN_METHOD_NAME, String[].class);
-            // if that main method exist, invoke it
-            return InvokerHelper.invokeMethod(scriptClass, MAIN_METHOD_NAME, new Object[]{args});
-        } catch (NoSuchMethodException e) {
-            // if it implements Runnable, try to instantiate it
-            if (Runnable.class.isAssignableFrom(scriptClass)) {
-                return runRunnable(scriptClass, args);
-            }
-            GroovyRunnerRegistry runnerRegistry = GroovyRunnerRegistry.getInstance();
-            for (GroovyRunner runner : runnerRegistry) {
-                if (runner.canRun(scriptClass, this.loader)) {
-                    return runner.run(scriptClass, this.loader);
+        // Select main method using JEP-512 priority: static before instance, args before no-args.
+        // Uses Method.invoke() directly to avoid Groovy multimethod dispatch selecting a different overload.
+        Method selected = findMainMethod(scriptClass);
+        if (selected != null) {
+            try {
+                selected.setAccessible(true);
+                if (Modifier.isStatic(selected.getModifiers())) {
+                    return selected.getParameterCount() == 0
+                            ? selected.invoke(null)
+                            : selected.invoke(null, (Object) args);
+                } else {
+                    Object instance = InvokerHelper.invokeNoArgumentsConstructorOf(scriptClass);
+                    return selected.getParameterCount() == 0
+                            ? selected.invoke(instance)
+                            : selected.invoke(instance, (Object) args);
                 }
+            } catch (InvocationTargetException e) {
+                throw e.getCause() instanceof RuntimeException re ? re
+                        : new InvokerInvocationException(e);
+            } catch (ReflectiveOperationException e) {
+                throw new GroovyRuntimeException("Failed to invoke main method: " + e, e);
             }
-            StringBuilder message = new StringBuilder("This script or class could not be run.\n" +
-                    "It should either:\n" +
-                    "- have a main method,\n" +
-                    "- be a JUnit test or extend GroovyTestCase,\n" +
-                    "- implement the Runnable interface,\n" +
-                    "- or be compatible with a registered script runner. Known runners:\n");
-            if (runnerRegistry.isEmpty()) {
-                message.append("  * <none>");
-            } else {
-                for (String key : runnerRegistry.keySet()) {
-                    message.append("  * ").append(key).append("\n");
-                }
-            }
-            throw new GroovyRuntimeException(message.toString());
         }
+        // if it implements Runnable, try to instantiate it
+        if (Runnable.class.isAssignableFrom(scriptClass)) {
+            return runRunnable(scriptClass, args);
+        }
+        GroovyRunnerRegistry runnerRegistry = GroovyRunnerRegistry.getInstance();
+        for (GroovyRunner runner : runnerRegistry) {
+            if (runner.canRun(scriptClass, this.loader)) {
+                return runner.run(scriptClass, this.loader);
+            }
+        }
+        StringBuilder message = new StringBuilder("This script or class could not be run.\n" +
+                "It should either:\n" +
+                "- have a main method,\n" +
+                "- be a JUnit test or extend GroovyTestCase,\n" +
+                "- implement the Runnable interface,\n" +
+                "- or be compatible with a registered script runner. Known runners:\n");
+        if (runnerRegistry.isEmpty()) {
+            message.append("  * <none>");
+        } else {
+            for (String key : runnerRegistry.keySet()) {
+                message.append("  * ").append(key).append("\n");
+            }
+        }
+        throw new GroovyRuntimeException(message.toString());
+    }
+
+    /**
+     * Finds the main method to invoke using JEP-512 priority order:
+     * static main(String[]) &gt; static main(Object) &gt; static main()
+     * &gt; instance main(String[]) &gt; instance main(Object) &gt; instance main().
+     */
+    private static Method findMainMethod(Class<?> scriptClass) {
+        Class<?>[][] signatures = { {String[].class}, {Object.class}, {} };
+        // static methods first
+        for (Class<?>[] paramTypes : signatures) {
+            try {
+                Method m = scriptClass.getMethod(MAIN_METHOD_NAME, paramTypes);
+                if (Modifier.isStatic(m.getModifiers())) return m;
+            } catch (NoSuchMethodException ignore) { }
+        }
+        // then instance methods
+        for (Class<?>[] paramTypes : signatures) {
+            try {
+                Method m = scriptClass.getMethod(MAIN_METHOD_NAME, paramTypes);
+                if (!Modifier.isStatic(m.getModifiers())) return m;
+            } catch (NoSuchMethodException ignore) { }
+        }
+        return null;
     }
 
     private static Object runRunnable(Class scriptClass, String[] args) {
@@ -338,7 +445,7 @@ public class GroovyShell extends GroovyObjectSupport {
      * @param args       the command line arguments to pass in
      */
     public Object run(final String scriptText, final String fileName, String[] args) throws CompilationFailedException {
-        GroovyCodeSource gcs = AccessController.doPrivileged((PrivilegedAction<GroovyCodeSource>) () -> new GroovyCodeSource(scriptText, fileName, DEFAULT_CODE_BASE));
+        GroovyCodeSource gcs = new GroovyCodeSource(scriptText, fileName, DEFAULT_CODE_BASE);
         return run(gcs, args);
     }
 
@@ -402,19 +509,36 @@ public class GroovyShell extends GroovyObjectSupport {
      * @param args     the command line arguments to pass in
      */
     public Object run(final Reader in, final String fileName, String[] args) throws CompilationFailedException {
-        GroovyCodeSource gcs = AccessController.doPrivileged((PrivilegedAction<GroovyCodeSource>) () -> new GroovyCodeSource(in, fileName, DEFAULT_CODE_BASE));
+        GroovyCodeSource gcs = new GroovyCodeSource(in, fileName, DEFAULT_CODE_BASE);
         Class scriptClass = parseClass(gcs);
         return runScriptOrMainOrTestOrRunnable(scriptClass, args);
     }
 
+    /**
+     * Returns the value of a variable from the shell binding.
+     *
+     * @param name the variable name
+     * @return the current variable value, or {@code null} if it is not bound
+     */
     public Object getVariable(String name) {
         return context.getVariables().get(name);
     }
 
+    /**
+     * Stores a variable in the shell binding.
+     *
+     * @param name the variable name
+     * @param value the value to bind
+     */
     public void setVariable(String name, Object value) {
         context.setVariable(name, value);
     }
 
+    /**
+     * Removes a variable from the shell binding.
+     *
+     * @param name the variable name
+     */
     public void removeVariable(String name) {
         context.removeVariable(name);
     }
@@ -453,13 +577,14 @@ public class GroovyShell extends GroovyObjectSupport {
      * Evaluates some script against the current Binding and returns the result.
      * The .class file created from the script is given the supplied codeBase
      */
+    @SuppressWarnings("removal") // TODO a future Groovy version should skip security checks
     public Object evaluate(final String scriptText, final String fileName, final String codeBase) throws CompilationFailedException {
         SecurityManager sm = System.getSecurityManager();
         if (sm != null) {
             sm.checkPermission(new GroovyCodeSourcePermission(codeBase));
         }
 
-        GroovyCodeSource gcs = AccessController.doPrivileged((PrivilegedAction<GroovyCodeSource>) () -> new GroovyCodeSource(scriptText, fileName, codeBase));
+        GroovyCodeSource gcs = new GroovyCodeSource(scriptText, fileName, codeBase);
 
         return evaluate(gcs);
     }
@@ -603,11 +728,28 @@ public class GroovyShell extends GroovyObjectSupport {
         return parse(scriptText, context);
     }
 
+    /**
+     * Parses script text using an explicit logical name and binding.
+     *
+     * @param scriptText the Groovy source text
+     * @param fileName the logical script name
+     * @param binding the binding to associate with the parsed script
+     * @return the parsed script instance
+     * @throws CompilationFailedException if compilation fails
+     */
     public Script parse(final String scriptText, final String fileName, Binding binding) throws CompilationFailedException {
-        GroovyCodeSource gcs = AccessController.doPrivileged((PrivilegedAction<GroovyCodeSource>) () -> new GroovyCodeSource(scriptText, fileName, DEFAULT_CODE_BASE));
+        GroovyCodeSource gcs = new GroovyCodeSource(scriptText, fileName, DEFAULT_CODE_BASE);
         return parse(gcs, binding);
     }
 
+    /**
+     * Parses script text using an explicit logical name and this shell's binding.
+     *
+     * @param scriptText the Groovy source text
+     * @param fileName the logical script name
+     * @return the parsed script instance
+     * @throws CompilationFailedException if compilation fails
+     */
     public Script parse(final String scriptText, final String fileName) throws CompilationFailedException {
         return parse(scriptText, fileName, context);
     }
@@ -631,6 +773,11 @@ public class GroovyShell extends GroovyObjectSupport {
         return parse(in, generateScriptName(), binding);
     }
 
+    /**
+     * Generates a unique logical script name for anonymous shell evaluations.
+     *
+     * @return a unique script name ending in {@code .groovy}
+     */
     protected String generateScriptName() {
         return "Script" + counter.incrementAndGet() + ".groovy";
     }

@@ -1,0 +1,53 @@
+/*
+ *  Licensed to the Apache Software Foundation (ASF) under one
+ *  or more contributor license agreements.  See the NOTICE file
+ *  distributed with this work for additional information
+ *  regarding copyright ownership.  The ASF licenses this file
+ *  to you under the Apache License, Version 2.0 (the
+ *  "License"); you may not use this file except in compliance
+ *  with the License.  You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing,
+ *  software distributed under the License is distributed on an
+ *  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *  KIND, either express or implied.  See the License for the
+ *  specific language governing permissions and limitations
+ *  under the License.
+ */
+
+/**
+ * Design-by-contract (DbC) support with compile-time assertion generation.
+ *
+ * <p>
+ * Stable annotations:
+ * </p>
+ * <ul>
+ *   <li>{@link Requires @Requires} &ndash; method precondition</li>
+ *   <li>{@link Ensures @Ensures} &ndash; method postcondition; closures
+ *       may reference {@code result} and {@code old}</li>
+ *   <li>{@link Invariant @Invariant} &ndash; class invariant, also usable
+ *       as a loop invariant on {@code for} / {@code while} / {@code do-while} loops</li>
+ *   <li>{@link Contracted @Contracted} &ndash; package- or class-level
+ *       opt-in marker that enables contract processing</li>
+ * </ul>
+ * <p>
+ * Incubating in 6.0.0 (semantics may evolve in a subsequent 6.x release):
+ * </p>
+ * <ul>
+ *   <li>{@link Modifies @Modifies} &ndash; frame condition declaring
+ *       which fields and parameters a method may modify</li>
+ *   <li>{@link Decreases @Decreases} &ndash; a termination measure (a
+ *       strictly-decreasing, well-founded variant) for a loop (per iteration) or a
+ *       recursive method (per recursive re-entry)</li>
+ * </ul>
+ * <p>
+ * Incubating in 7.0.0:
+ * </p>
+ * <ul>
+ *   <li>{@link Spec @Spec} &ndash; a prose specification for a method, loop or
+ *       local variable declaration; an unfilled hole throws when reached</li>
+ * </ul>
+ */
+package groovy.contracts;

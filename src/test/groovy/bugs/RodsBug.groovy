@@ -16,45 +16,38 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class RodsBug extends GroovyTestCase {
+final class RodsBug {
 
+    @Test
     void testBug() {
         doTest(true)
-        /*
-         def x = 1
-         if (x > 0) {
-         String name = "Rod"
-         println(name)
-         }
-         */
     }
 
+    @Test
     void testBug2() {
         def x = 1
         if (x > 0) {
-            //String name = "Rod"
-            def name = "Rod"
+            def name = 'Rod'
         }
     }
 
-    void doTest(flag) {
+    private void doTest(flag) {
         if (flag) {
-            String name = "Rod"
-            //def name = "Rod"
+            String name = 'Rod'
             doAssert(name)
         }
     }
 
-    void doTest() {
-        String name = "Rod"
+    private void doTest() {
+        String name = 'Rod'
         doAssert(name)
     }
 
-    void doAssert(text) {
+    private void doAssert(text) {
         assert text != null
     }
 }

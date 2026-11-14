@@ -20,26 +20,47 @@ package org.codehaus.groovy.ast.expr;
 
 import org.codehaus.groovy.ast.GroovyCodeVisitor;
 
+/**
+ * Represents a logical not expression such as {@code !x}.
+ */
 public class NotExpression extends BooleanExpression {
 
-    public NotExpression(Expression expression) {
+    /**
+     * Creates a not expression for {@code expression}.
+     * The operand is stored by {@link BooleanExpression}.
+     *
+     * @param expression the operand
+     */
+    public NotExpression(final Expression expression) {
         super(expression);
     }
 
-    @Override
-    public void visit(GroovyCodeVisitor visitor) {
-        visitor.visitNotExpression(this);
-    }
-
+    /**
+     * Always returns {@code false}.
+     *
+     * @return {@code false}
+     * @deprecated always returns {@code false}
+     */
+    @Deprecated
     public boolean isDynamic() {
         return false;
     }
 
     @Override
-    public Expression transformExpression(ExpressionTransformer transformer) {
+    public String getText() {
+        return "!(" + super.getText() + ")";
+    }
+
+    @Override
+    public Expression transformExpression(final ExpressionTransformer transformer) {
         Expression ret = new NotExpression(transformer.transform(getExpression()));
         ret.setSourcePosition(this);
         ret.copyNodeMetaData(this);
         return ret;
+    }
+
+    @Override
+    public void visit(final GroovyCodeVisitor visitor) {
+        visitor.visitNotExpression(this);
     }
 }

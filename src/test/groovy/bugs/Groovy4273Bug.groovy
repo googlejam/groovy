@@ -16,7 +16,7 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
 import groovy.test.GroovyShellTestCase
 import org.codehaus.groovy.control.MultipleCompilationErrorsException
@@ -26,10 +26,10 @@ class Groovy4273Bug extends GroovyShellTestCase {
         try {
             shell.parse """
                 import java.lang.annotation.*
-                
+
                 @Retention(RetentionPolicy.Runtime)
                 @interface MyAnn {
-                  String foo()  
+                  String foo()
                 }
             """
             fail("The compilation should have failed as enum const Runtime does not exist on enum RetentionPolicy (should be RUNTIME)")
@@ -43,17 +43,17 @@ class Groovy4273Bug extends GroovyShellTestCase {
         try {
             shell.parse """
                 import java.lang.annotation.*
-                
+
                 enum RetentionPolicy4273 {
                     SOURCE, CLASS, RUNTIME
                 }
-                
+
                 @Retention(RetentionPolicy.RUNTIME)
                 @Target(ElementType.TYPE)
                 @interface Retention4273 {
                     RetentionPolicy4273 value();
                 }
-                
+
                 @Retention4273(RetentionPolicy4273.Runtime)
                 class Foo {}
             """

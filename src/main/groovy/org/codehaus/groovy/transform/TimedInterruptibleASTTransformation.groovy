@@ -19,6 +19,7 @@
 package org.codehaus.groovy.transform
 
 import groovy.transform.AutoFinal
+import groovy.transform.CompileStatic
 import groovy.transform.TimedInterrupt
 import org.codehaus.groovy.ast.ASTNode
 import org.codehaus.groovy.ast.AnnotatedNode
@@ -36,15 +37,15 @@ import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.DoWhileStatement
 import org.codehaus.groovy.ast.stmt.ForStatement
+import org.codehaus.groovy.ast.stmt.LoopingStatement
 import org.codehaus.groovy.ast.stmt.Statement
 import org.codehaus.groovy.ast.stmt.WhileStatement
-import org.codehaus.groovy.control.CompilePhase
 import org.codehaus.groovy.control.SourceUnit
 
+import java.lang.reflect.Modifier
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 
-import static org.codehaus.groovy.ast.ClassHelper.make
 import static org.codehaus.groovy.ast.tools.GeneralUtils.args
 import static org.codehaus.groovy.ast.tools.GeneralUtils.block
 import static org.codehaus.groovy.ast.tools.GeneralUtils.callX
@@ -57,8 +58,6 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.plusX
 import static org.codehaus.groovy.ast.tools.GeneralUtils.propX
 import static org.codehaus.groovy.ast.tools.GeneralUtils.throwS
 import static org.codehaus.groovy.ast.tools.GeneralUtils.varX
-import static org.objectweb.asm.Opcodes.ACC_FINAL
-import static org.objectweb.asm.Opcodes.ACC_PRIVATE
 
 /**
  * Allows "interrupt-safe" executions of scripts by adding timer expiration
@@ -68,20 +67,26 @@ import static org.objectweb.asm.Opcodes.ACC_PRIVATE
  * @see groovy.transform.ThreadInterrupt
  * @since 1.8.0
  */
-@AutoFinal @GroovyASTTransformation(phase = CompilePhase.CANONICALIZATION)
+@AutoFinal @CompileStatic @GroovyASTTransformation
 class TimedInterruptibleASTTransformation extends AbstractASTTransformation {
 
-    private static final ClassNode MY_TYPE = make(TimedInterrupt)
+    private static final ClassNode MY_TYPE = ClassHelper.make(TimedInterrupt)
     private static final String CHECK_METHOD_START_MEMBER = 'checkOnMethodStart'
     private static final String APPLY_TO_ALL_CLASSES = 'applyToAllClasses'
     private static final String APPLY_TO_ALL_MEMBERS = 'applyToAllMembers'
     private static final String THROWN_EXCEPTION_TYPE = 'thrown'
 
-    @SuppressWarnings('Instanceof')
+    /**
+     * Applies the timed interrupt transformation to the annotated target.
+     *
+     * @param nodes the annotation node and annotated AST node
+     * @param source the source unit containing the annotation
+     */
+    @Override
     void visit(ASTNode[] nodes, SourceUnit source) {
         init(nodes, source)
-        AnnotationNode node = nodes[0]
-        AnnotatedNode annotatedNode = nodes[1]
+        AnnotationNode node = (AnnotationNode) nodes[0]
+        AnnotatedNode annotatedNode = (AnnotatedNode) nodes[1]
         if (!MY_TYPE.equals(node.classNode)) {
             internalError("Transformation called from wrong annotation: $node.classNode.name")
         }
@@ -90,7 +95,7 @@ class TimedInterruptibleASTTransformation extends AbstractASTTransformation {
         def applyToAllMembers = getConstantAnnotationParameter(node, APPLY_TO_ALL_MEMBERS, Boolean.TYPE, true)
         def applyToAllClasses = applyToAllMembers ? getConstantAnnotationParameter(node, APPLY_TO_ALL_CLASSES, Boolean.TYPE, true) : false
         def maximum = getConstantAnnotationParameter(node, 'value', Long.TYPE, Long.MAX_VALUE)
-        def thrown = AbstractInterruptibleASTTransformation.getClassAnnotationParameter(node, THROWN_EXCEPTION_TYPE, make(TimeoutException))
+        def thrown = AbstractInterruptibleASTTransformation.getClassAnnotationParameter(node, THROWN_EXCEPTION_TYPE, ClassHelper.make(TimeoutException))
 
         Expression unit = node.getMember('unit') ?: propX(classX(TimeUnit), 'SECONDS')
 
@@ -132,7 +137,15 @@ class TimedInterruptibleASTTransformation extends AbstractASTTransformation {
         }
     }
 
-    @SuppressWarnings('Instanceof')
+    /**
+     * Resolves a constant annotation member, coercing it to the requested type when possible.
+     *
+     * @param node the annotation node to inspect
+     * @param parameterName the member name to resolve
+     * @param type the expected value type
+     * @param defaultValue the fallback value when the member is absent
+     * @return the resolved constant value or {@code defaultValue}
+     */
     static getConstantAnnotationParameter(AnnotationNode node, String parameterName, Class type, defaultValue) {
         def member = node.getMember(parameterName)
         if (member) {
@@ -155,6 +168,9 @@ class TimedInterruptibleASTTransformation extends AbstractASTTransformation {
     }
 
     private static class TimedInterruptionVisitor extends ClassCodeVisitorSupport {
+        /**
+         * Source unit currently being transformed.
+         */
         final SourceUnit sourceUnit
         final private boolean checkOnMethodStart
         final private boolean applyToAllClasses
@@ -166,8 +182,19 @@ class TimedInterruptibleASTTransformation extends AbstractASTTransformation {
         private final ClassNode thrown
         private final String basename
 
-        @SuppressWarnings('ParameterCount')
-        TimedInterruptionVisitor(SourceUnit source, checkOnMethodStart, applyToAllClasses, applyToAllMembers, maximum, unit, thrown, hash) {
+        /**
+         * Creates a visitor with the resolved timed-interrupt settings.
+         *
+         * @param source the source unit being transformed
+         * @param checkOnMethodStart whether to add checks at method entry
+         * @param applyToAllClasses whether all classes in the source unit should be visited
+         * @param applyToAllMembers whether all class members should be visited
+         * @param maximum the configured timeout value
+         * @param unit the timeout unit expression
+         * @param thrown the exception type to throw on timeout
+         * @param hash unique suffix used for generated member names
+         */
+        TimedInterruptionVisitor(SourceUnit source, checkOnMethodStart, applyToAllClasses, applyToAllMembers, maximum, Expression unit, ClassNode thrown, hash) {
             this.sourceUnit = source
             this.checkOnMethodStart = checkOnMethodStart
             this.applyToAllClasses = applyToAllClasses
@@ -185,7 +212,7 @@ class TimedInterruptibleASTTransformation extends AbstractASTTransformation {
             ifS(
                     ltX(
                             propX(varX('this'), basename + '$expireTime'),
-                            callX(make(System), 'nanoTime')
+                            callX(ClassHelper.make(System), 'nanoTime')
                     ),
                     throwS(
                             ctorX(thrown,
@@ -213,51 +240,59 @@ class TimedInterruptibleASTTransformation extends AbstractASTTransformation {
          * @return a {@link BlockStatement block statement}    which first element is for checking interruption, and the
          * second one the statement to be wrapped.
          */
-        private wrapBlock(statement) {
+        private BlockStatement wrapBlock(Statement statement) {
             block().tap {
                 addStatement(createInterruptStatement())
                 addStatement(statement)
             }
         }
 
+        /**
+         * Adds the timing fields to the class and visits eligible members.
+         *
+         * @param node the class being transformed
+         */
         @Override
         void visitClass(ClassNode node) {
-            if (node.getDeclaredField(basename + '$expireTime')) {
-                return
-            }
-            expireTimeField = node.addField(basename + '$expireTime',
-                    ACC_FINAL | ACC_PRIVATE,
-                    ClassHelper.long_TYPE,
-                    plusX(
-                            callX(make(System), 'nanoTime'),
-                            callX(
-                                    propX(classX(TimeUnit), 'NANOSECONDS'),
-                                    'convert',
-                                    args(constX(maximum, true), unit)
-                            )
-                    )
-            )
-            expireTimeField.synthetic = true
-            ClassNode dateClass = make(Date)
-            startTimeField = node.addField(basename + '$startTime',
-                    ACC_FINAL | ACC_PRIVATE,
-                    dateClass,
-                    ctorX(dateClass)
-            )
-            startTimeField.synthetic = true
+            String startTime = basename + '$startTime'
+            String expireTime = basename + '$expireTime'
+            if (node.getDeclaredField(expireTime) == null) {
+                expireTimeField = node.addFieldFirst(
+                        expireTime,
+                        Modifier.FINAL | Modifier.PRIVATE,
+                        ClassHelper.long_TYPE,
+                        plusX(
+                                callX(ClassHelper.make(System), 'nanoTime'),
+                                callX(
+                                        propX(classX(TimeUnit), 'NANOSECONDS'),
+                                        'convert',
+                                        args(constX(maximum, true), unit)
+                                )
+                        )
+                )
+                expireTimeField.synthetic = true
 
-            // force these fields to be initialized first
-            node.fields.remove(expireTimeField)
-            node.fields.remove(startTimeField)
-            node.fields.add(0, startTimeField)
-            node.fields.add(0, expireTimeField)
-            if (applyToAllMembers) {
-                super.visitClass node
+                ClassNode dateClass = ClassHelper.make(Date)
+                startTimeField = node.addFieldFirst(
+                        startTime,
+                        Modifier.FINAL | Modifier.PRIVATE,
+                        dateClass,
+                        ctorX(dateClass)
+                )
+                startTimeField.synthetic = true
+
+                if (applyToAllMembers) {
+                    super.visitClass(node)
+                }
             }
         }
 
+        /**
+         * Wraps closure bodies with the timeout check.
+         *
+         * @param closureExpr the closure being visited
+         */
         @Override
-        @SuppressWarnings('Instanceof')
         void visitClosureExpression(ClosureExpression closureExpr) {
             def code = closureExpr.code
             if (code instanceof BlockStatement) {
@@ -268,6 +303,11 @@ class TimedInterruptibleASTTransformation extends AbstractASTTransformation {
             super.visitClosureExpression closureExpr
         }
 
+        /**
+         * Visits eligible instance fields.
+         *
+         * @param node the field being visited
+         */
         @Override
         void visitField(FieldNode node) {
             if (!node.isStatic() && !node.isSynthetic()) {
@@ -275,6 +315,11 @@ class TimedInterruptibleASTTransformation extends AbstractASTTransformation {
             }
         }
 
+        /**
+         * Visits eligible instance properties.
+         *
+         * @param node the property being visited
+         */
         @Override
         void visitProperty(PropertyNode node) {
             if (!node.isStatic() && !node.isSynthetic()) {
@@ -286,29 +331,49 @@ class TimedInterruptibleASTTransformation extends AbstractASTTransformation {
          * Shortcut method which avoids duplicating code for every type of loop.
          * Actually wraps the loopBlock of different types of loop statements.
          */
-        private visitLoop(loopStatement) {
-            def statement = loopStatement.loopBlock
+        private visitLoop(LoopingStatement loopStatement) {
+            Statement statement = loopStatement.loopBlock
             loopStatement.loopBlock = wrapBlock(statement)
         }
 
+        /**
+         * Wraps a {@code for} loop body with the timeout check.
+         *
+         * @param forStatement the loop being visited
+         */
         @Override
         void visitForLoop(ForStatement forStatement) {
             visitLoop(forStatement)
             super.visitForLoop(forStatement)
         }
 
+        /**
+         * Wraps a {@code do/while} loop body with the timeout check.
+         *
+         * @param doWhileStatement the loop being visited
+         */
         @Override
         void visitDoWhileLoop(DoWhileStatement doWhileStatement) {
             visitLoop(doWhileStatement)
             super.visitDoWhileLoop(doWhileStatement)
         }
 
+        /**
+         * Wraps a {@code while} loop body with the timeout check.
+         *
+         * @param whileStatement the loop being visited
+         */
         @Override
         void visitWhileLoop(WhileStatement whileStatement) {
             visitLoop(whileStatement)
             super.visitWhileLoop(whileStatement)
         }
 
+        /**
+         * Wraps eligible methods with the timeout check.
+         *
+         * @param node the method being visited
+         */
         @Override
         void visitMethod(MethodNode node) {
             if (checkOnMethodStart && !node.isSynthetic() && !node.isStatic() && !node.isAbstract()) {

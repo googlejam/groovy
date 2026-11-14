@@ -22,35 +22,76 @@ import groovy.lang.Closure;
 import org.codehaus.groovy.runtime.InvokerHelper;
 
 /**
+ * Creates bindings that update whenever a named event handler property fires.
+ *
  * @since Groovy 1.1
  */
 public class EventTriggerBinding implements TriggerBinding {
 
+    /**
+     * The bean that exposes the event handler property.
+     */
     Object triggerBean;
+    /**
+     * The event handler property name to assign.
+     */
     String eventName;
 
+    /**
+     * Creates a trigger binding for the supplied bean event property.
+     *
+     * @param triggerBean the bean that exposes the event property
+     * @param eventName the event property name
+     */
     public EventTriggerBinding(Object triggerBean, String eventName) {
         this.triggerBean = triggerBean;
         this.eventName = eventName;
     }
 
+    /**
+     * Creates a full binding that reacts when the event handler is invoked.
+     *
+     * @param sourceBinding the source binding to read from
+     * @param targetBinding the target binding to update
+     * @return the created event-triggered binding
+     */
     @Override
     public FullBinding createBinding(final SourceBinding sourceBinding, final TargetBinding targetBinding) {
         return new EventTriggerFullBinding(sourceBinding, targetBinding);
     }
 
+    /**
+     * Returns the bean that exposes the event handler property.
+     *
+     * @return the trigger bean
+     */
     public Object getTriggerBean() {
         return triggerBean;
     }
 
+    /**
+     * Replaces the bean that exposes the event handler property.
+     *
+     * @param triggerBean the new trigger bean
+     */
     public void setTriggerBean(Object triggerBean) {
         this.triggerBean = triggerBean;
     }
 
+    /**
+     * Returns the event handler property name.
+     *
+     * @return the event property name
+     */
     public String getEventName() {
         return eventName;
     }
 
+    /**
+     * Replaces the event handler property name.
+     *
+     * @param eventName the new event property name
+     */
     public void setEventName(String eventName) {
         this.eventName = eventName;
     }
@@ -59,10 +100,14 @@ public class EventTriggerBinding implements TriggerBinding {
 
         Closure handler;
 
-        public EventTriggerFullBinding(final SourceBinding sourceBinding, TargetBinding targetBinding) {
+        EventTriggerFullBinding(final SourceBinding sourceBinding, TargetBinding targetBinding) {
             setSourceBinding(sourceBinding);
             setTargetBinding(targetBinding);
             handler = new Closure(triggerBean) {
+                /**
+                 * Stores {@code params} on a {@link ClosureSourceBinding} source,
+                 * runs the full binding update, and returns {@code null}.
+                 */
                 @Override
                 public Object call(Object... params) {
                     if (sourceBinding instanceof ClosureSourceBinding) {
@@ -74,16 +119,25 @@ public class EventTriggerBinding implements TriggerBinding {
             };
         }
 
+        /**
+         * Installs the handler as the bean's {@code eventName} property.
+         */
         @Override
         public void bind() {
             InvokerHelper.setProperty(triggerBean, eventName, handler);
         }
 
+        /**
+         * Not supported; the installed handler is left in place.
+         */
         @Override
         public void unbind() {
             throw new UnsupportedOperationException();
         }
 
+        /**
+         * Not supported; the installed handler is left in place.
+         */
         @Override
         public void rebind() {
             throw new UnsupportedOperationException();

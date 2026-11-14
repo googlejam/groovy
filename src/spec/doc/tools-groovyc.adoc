@@ -41,25 +41,68 @@ a number of command line switches:
 |=======================================================================
 | Short version | Long version | Description | Example
 | -cp | -classpath, --classpath | Specify the compilation classpath. Must be the first argument. | groovyc -cp lib/dep.jar MyClass.groovy
-| | --sourcepath | Directory where to find source files. Not used anymore. Specifying this parameter will have no effect. |
+| -sourcepath | --sourcepath | Accepted, and ignored. The compiler does not search this path. |
 | | --temp | Temporary directory for the compiler |
 | | --encoding | Encoding of the source files | groovyc --encoding utf-8 script.groovy
 | | --help | Displays help for the command line groovyc tool | groovyc --help
-| -d | | Specify where to place generated class files. | groovyc -d target Person.groovy 
+| -d | | Specify where to place generated class files. | groovyc -d target Person.groovy
+| | --check | Check sources for errors without writing class files. Every check runs, including class verification and bytecode generation. | groovyc --check Person.groovy
 | -v | --version | Displays the compiler version | groovyc -v
 | -e | --exception | Displays the stack trace in case of compilation error | groovyc -e script.groovy
+| -w | --warningLevel | Sets how many warnings are reported after a successful compile: `0` (none), `1` (likely errors, the default), `2` (possible errors) or `3` (all). See <<section-groovyc-warnings,Compiler warnings>>. | groovyc -w 2 MyClass.groovy
 | -j | --jointCompilation* | Enables joint compilation | groovyc -j A.groovy B.java
 | -b | --basescript | Base class name for scripts (must derive from Script)|
-| | --configscript | Advanced compiler configuration script | groovyc --configscript config/config.groovy src/Person.groovy
-| -Jproperty=value | | Properties to be passed to `javac` if joint compilation is enabled | groovyc -j -Jtarget=1.6 -Jsource=1.6 A.groovy B.java
-| -Fflag | | Flags to be passed to `javac` if joint compilation is enabled | groovyc -j -Fnowarn A.groovy B.java
-| -pa | --parameters | Generates metadata for reflection on method parameter names. Requires Java 8+. | groovyc --parameters Person.groovy
-| -pr | --enable-preview | Enable preview Java features (JEP 12) (jdk12+ only). | groovy --enable-preview Person.groovy
+| -cf | --configscript | Advanced compiler configuration script | groovyc --configscript config/config.groovy src/Person.groovy
+| | --error-format | How errors and warnings are rendered: `full` (the default, with the source line and a caret) or `short` (one `file:line:column: severity: message` line per diagnostic, for editors and CI log parsers). | groovyc --error-format=short Person.groovy
+| -t | --tolerance | The number of non-fatal errors to collect before compilation is abandoned. Defaults to `10`; use `0` for unlimited. | groovyc -t 0 Person.groovy
+| -Jname=value | | Passes `-name value` to `javac` when joint compilation is enabled | groovyc -j -Jrelease=17 A.groovy B.java
+| -Fflag | | Flag passed to `javac` when joint compilation is enabled | groovyc -j -Fnowarn A.groovy B.java
+| -pa | --parameters | Generates metadata for reflection on method parameter names. Defaults to false. | groovyc --parameters Person.groovy
+| -pr | --enable-preview | Enables preview features of the JDK running the compiler. Must follow `-cp` and precede the other arguments. | groovyc --enable-preview Person.groovy
+| -de | --debug | Prints extra information when compilation fails. | groovyc --debug Person.groovy
+| -s | --stubDirectory | Directory for the Java stubs written during joint compilation. | groovyc -j -s stubs A.groovy B.java
+| -ks | --keepStubs | Keeps the joint-compilation stubs instead of deleting them. | groovyc -j --keepStubs A.groovy B.java
+| | --compile-static | Compiles with `@CompileStatic`. | groovyc --compile-static Person.groovy
+| | --type-checked | Compiles with `@TypeChecked`. | groovyc --type-checked Person.groovy
 | @argfile | | Read options and source files from specified file. | groovyc @conf/args
 |=======================================================================
 
 *Notes:*
 * for a full description of joint compilation, see <<section-jointcompilation,the joint compilation section>>.
+
+[[section-groovyc-warnings]]
+== Compiler warnings
+
+While compiling, Groovy may report _warnings_: diagnostics that don't stop compilation
+but flag code that is suspicious or unlikely to behave as intended — for example, an
+unreachable `main` method or a property that can't override a `final` accessor. On a
+successful compile, `groovyc` prints any collected warnings to `stderr`, using the same
+format (message, source line and caret) as compilation errors, followed by a summary count.
+
+Every warning carries an _importance_, and the `-w` (`--warningLevel`) option controls how
+many are reported. Only warnings whose importance is at or below the configured level are
+kept, so a lower level is quieter:
+
+[cols="<,<,<",options="header"]
+|=======================================================================
+| Level | Name | Reports
+| `0` | none | No warnings at all.
+| `1` | likely errors | *(default)* Diagnostics that very probably indicate a mistake — for example an unreachable `main` method, a property that can't override a `final` accessor, or a duplicate constructor generated from default argument values or `@TupleConstructor`/`@MapConstructor`.
+| `2` | possible errors | The above, plus diagnostics that often have benign causes — for example a field hidden by a dynamic property under `@TypeChecked`, or problems found while scanning global AST transformation descriptors.
+| `3` | paranoia | The above, plus any remaining lower-priority warnings.
+|=======================================================================
+
+For example, to also see the level 2 warnings:
+
+----------------------
+groovyc -w 2 MyClass.groovy
+----------------------
+
+NOTE: The warning _level_ can also be set programmatically via
+`CompilerConfiguration#setWarningLevel`, or for the `groovy` command through the
+`groovy.warnings` system property. Displaying the collected warnings on a successful
+compile is done by the `groovyc` command line; other embeddings (for instance, code
+driving a `CompilationUnit` directly) can instead read them from the unit's `ErrorCollector`.
 
 == Ant task
 
@@ -119,10 +162,10 @@ different to the JRE, or the JUnit runtime.
             <scope>test</scope>
         </dependency>
         <dependency>
-            <groupId>org.codehaus.groovy</groupId>
+            <groupId>org.apache.groovy</groupId>
             <artifactId>groovy-all</artifactId>
-            <version>2.5.0</version>
-            <type>pom</type> <!-- required JUST since Groovy 2.5.0 -->
+            <version>${groovy.version}</version>
+            <type>pom</type>
         </dependency>
     </dependencies>
     <build>
@@ -134,7 +177,7 @@ different to the JRE, or the JUnit runtime.
                         <id>compile</id>
                         <phase>compile</phase>
                         <configuration>
-                            <tasks>
+                            <target>
                                 <mkdir dir="${basedir}/src/main/groovy"/>
                                 <taskdef name="groovyc"
                                     classname="org.codehaus.groovy.ant.Groovyc">
@@ -145,7 +188,7 @@ different to the JRE, or the JUnit runtime.
                                     srcdir="${basedir}/src/main/groovy/" listfiles="true">
                                     <classpath refid="maven.compile.classpath"/>
                                 </groovyc>
-                            </tasks>
+                            </target>
                         </configuration>
                         <goals>
                             <goal>run</goal>
@@ -155,7 +198,7 @@ different to the JRE, or the JUnit runtime.
                         <id>test-compile</id>
                         <phase>test-compile</phase>
                         <configuration>
-                            <tasks>
+                            <target>
                                 <mkdir dir="${basedir}/src/test/groovy"/>
                                 <taskdef name="groovyc"
                                     classname="org.codehaus.groovy.ant.Groovyc">
@@ -166,7 +209,7 @@ different to the JRE, or the JUnit runtime.
                                     srcdir="${basedir}/src/test/groovy/" listfiles="true">
                                     <classpath refid="maven.test.classpath"/>
                                 </groovyc>
-                            </tasks>
+                            </target>
                         </configuration>
                         <goals>
                             <goal>run</goal>
@@ -189,8 +232,10 @@ typical Maven build phases normally. For example, `mvn test` will
 execute the test phase, compiling Groovy source and Groovy test source
 and finally executing the unit tests. If you run `mvn jar` it will
 execute the jar phase bundling up all of your compiled production
-classes into a jar after all of the unit tests pass. For more detail on
-Maven build phases consult the Maven2 documentation.
+classes into a jar after all the unit tests pass. For more detail on
+Maven build phases consult the Maven documentation. Groovy 4 and later
+are published under the groupId `org.apache.groovy`. The `<target>` element
+is the configuration used by Maven AntRun Plugin 3; AntRun 1 used `<tasks>`.
 
 === GMaven and GMavenPlus
 [[section-gmaven]]
@@ -245,7 +290,7 @@ compilation in the normal Groovy compiler way. This allows mixing of
 Java and Groovy files without constraint.
 
 Joint compilation can be enabled using the `-j` flag with the command-line compiler,
-or using using a nested tag and all the attributes and further nested tags as required
+or using a nested tag and all the attributes and further nested tags as required
 for the Ant task.
 
 It is important to know that if you don't enable joint compilation and try to compile
@@ -256,54 +301,75 @@ syntax is compatible with Groovy, but there are a number of places where semanti
 [[section-android]]
 == Android support
 
-It is possible to write an Android application in Groovy. However this requires a special
-version of the compiler, meaning that you cannot use the regular
-<<section-groovyc-compiler,groovyc tool>> to target Android bytecode. In particular, Groovy
-provides specific JAR files for Android, which have a classifier of `grooid`. In order to make
-things easier, a https://github.com/groovy/groovy-android-gradle-plugin[Gradle plugin] adds
-support for the Groovy language in the Android Gradle toolchain.
+Groovy code can run on Android 8.0 (API level 26) and later. Groovy compiles
+dynamic calls to `invokedynamic`, which the Android toolchain only accepts from
+API level 26, so an application using Groovy must set `minSdk` to 26 or higher.
+Earlier Android versions are not supported.
 
-The plugin can be applied like this:
+NOTE: Android support is experimental. The Android runtime (ART) does not provide
+`java.lang.invoke.SwitchPoint`, which the Groovy runtime uses to invalidate call
+sites, so an application currently has to supply its own implementation of that class.
 
-```groovy
+No Groovy-specific Android Gradle plugin is needed. The
+https://github.com/groovy/groovy-android-gradle-plugin[groovy-android-gradle-plugin]
+referenced by earlier versions of this guide targets old releases of the Android
+Gradle Plugin, and older Groovy versions, and is not required with current tooling. Instead:
 
-buildscript {
-    repositories {
-        mavenCentral()
-    }
-    dependencies {
-        classpath 'com.android.tools.build:gradle:2.1.2'
-        classpath 'org.codehaus.groovy:groovy-android-gradle-plugin:1.0.0'
-    }
+* Put the Groovy code in a plain Groovy library module. The
+<<section-groovyc-compiler,groovy compiler>> compiles it on the JVM against the
+`android.jar` stubs of the Android SDK, using the regular Groovy jar.
+* Make the Android application module depend on that library like any other jar.
+D8 converts the Groovy class files to DEX.
+* At run time, use the Android flavour of the Groovy runtime, which has a classifier of
+`grooid`. It is the regular jar with the `java.beans` classes, which Android lacks,
+replaced by a repackaged copy of OpenBeans. Gradle can also select it through the
+`org.apache.groovy:groovy-grooid` capability.
+
+The library module compiles against the regular jar:
+
+[source,groovy,subs="attributes"]
+----
+plugins {
+    id 'groovy'
 }
 
-apply plugin: 'groovyx.android'
-```
-
-Then you will need to add a dependency on the `grooid` version of the Groovy compiler:
-
-```groovy
 dependencies {
-    compile 'org.codehaus.groovy:groovy:2.4.7:grooid'
+    compileOnly 'org.apache.groovy:groovy:{groovy-full-version}'
+    compileOnly files("$sdkDir/platforms/android-36/android.jar")
 }
-```
+----
 
-Note that if a Groovy jar does not provide a `grooid` classifier alternative, then it means
-that the jar is directly compatible with Android. In that case, you can add the dependency directly
-like this:
+The application module supplies the `grooid` jar at run time:
 
-```groovy
-dependencies {
-    compile 'org.codehaus.groovy:groovy:2.4.7:grooid'       // requires the grooid classifier
-    compile ('org.codehaus.groovy:groovy-json:2.4.7') {     // no grooid version available
-        transitive = false                                  // so do not depend on non-grooid version
+[source,groovy,subs="attributes"]
+----
+android {
+    defaultConfig {
+        minSdk 26
     }
 }
-```
 
-Note that the `transitive=false` parameter for `groovy-json` will let Gradle download the JSON support jar
-without adding a dependency onto the normal jar of Groovy.
+dependencies {
+    implementation project(':mylibrary')
+    runtimeOnly 'org.apache.groovy:groovy:{groovy-full-version}:grooid'
+}
+----
 
-Please make sure to go to the https://github.com/groovy/groovy-android-gradle-plugin[plugin homepage] in order to
-find the latest documentation and version.
+Only the `groovy` and `groovy-test` modules have a `grooid` variant. Other modules,
+such as `groovy-json`, are used as they are. Exclude their transitive dependency on
+the regular `groovy` jar, because the `grooid` jar takes its place:
 
+[source,groovy,subs="attributes"]
+----
+dependencies {
+    implementation('org.apache.groovy:groovy-json:{groovy-full-version}') {
+        exclude group: 'org.apache.groovy', module: 'groovy'
+    }
+}
+----
+
+When a release build shrinks the application with R8, the classes and members that
+Groovy looks up reflectively must be kept, including any type the application calls
+dynamically. The reachability metadata that the Groovy jars ship under
+`META-INF/native-image` is a good starting point for the keep rules. Statically
+compiled code (`@CompileStatic`) relies less on reflection and is easier to shrink.

@@ -19,29 +19,34 @@
 package org.apache.groovy.ast.tools;
 
 import groovy.transform.ImmutableOptions;
+import org.apache.groovy.internal.util.ImmutableTypes;
 import org.codehaus.groovy.ast.AnnotationNode;
 import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.GenericsType;
-import org.codehaus.groovy.ast.expr.ArrayExpression;
+import org.codehaus.groovy.ast.GroovyCodeVisitor;
 import org.codehaus.groovy.ast.expr.ClassExpression;
 import org.codehaus.groovy.ast.expr.ConstantExpression;
 import org.codehaus.groovy.ast.expr.Expression;
 import org.codehaus.groovy.ast.expr.ListExpression;
-import org.codehaus.groovy.runtime.ReflectionMethodInvoker;
+import org.codehaus.groovy.classgen.AsmClassGenerator;
+import org.codehaus.groovy.classgen.BytecodeExpression;
+import org.codehaus.groovy.classgen.asm.CompileStack;
+import org.codehaus.groovy.classgen.asm.OperandStack;
+import org.codehaus.groovy.control.CompilerConfiguration;
+import org.codehaus.groovy.runtime.InvokerHelper;
 import org.codehaus.groovy.transform.AbstractASTTransformation;
+import org.objectweb.asm.Handle;
+import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Opcodes;
 
-import java.lang.annotation.Annotation;
+import java.lang.invoke.CallSite;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
 import java.util.Date;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
-import static org.codehaus.groovy.ast.ClassHelper.make;
-import static org.codehaus.groovy.ast.ClassHelper.makeWithoutCaching;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.args;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.callX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.castX;
@@ -49,116 +54,110 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.constX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.ctorX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.isOrImplements;
 
+/**
+ * Utility methods for immutable-property analysis and code generation.
+ */
 public class ImmutablePropertyUtils {
-    private static final ClassNode CLONEABLE_TYPE = make(Cloneable.class);
-    private static final ClassNode DATE_TYPE = make(Date.class);
-    private static final ClassNode REFLECTION_INVOKER_TYPE = make(ReflectionMethodInvoker.class);
-    private static final Class<? extends Annotation> IMMUTABLE_OPTIONS_CLASS = ImmutableOptions.class;
-    public static final ClassNode IMMUTABLE_OPTIONS_TYPE = makeWithoutCaching(IMMUTABLE_OPTIONS_CLASS, false);
+    private static final ClassNode DATE_TYPE = ClassHelper.make(Date.class);
+    /**
+     * The {@link ImmutableOptions} annotation type used to configure immutable-property handling.
+     */
+    public  static final ClassNode IMMUTABLE_OPTIONS_TYPE = ClassHelper.makeWithoutCaching(ImmutableOptions.class, false);
+
     private static final String MEMBER_KNOWN_IMMUTABLE_CLASSES = "knownImmutableClasses";
     private static final String MEMBER_KNOWN_IMMUTABLES = "knownImmutables";
-    /*
-     * Currently leaving BigInteger and BigDecimal in list but see:
-     * http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=6348370
-     *
-     * Also, Color is not final so while not normally used with child
-     * classes, it isn't strictly immutable. Use at your own risk.
-     *
-     * This list can by extended by providing "known immutable" classes
-     * via Immutable.knownImmutableClasses
-     */
-    private static final Set<String> BUILTIN_IMMUTABLES = new HashSet<>(Arrays.asList(
-            "boolean",
-            "byte",
-            "char",
-            "double",
-            "float",
-            "int",
-            "long",
-            "short",
-            "java.lang.Class",
-            "java.lang.Boolean",
-            "java.lang.Byte",
-            "java.lang.Character",
-            "java.lang.Double",
-            "java.lang.Float",
-            "java.lang.Integer",
-            "java.lang.Long",
-            "java.lang.Short",
-            "java.lang.String",
-            "java.math.BigInteger",
-            "java.math.BigDecimal",
-            "java.awt.Color",
-            "java.net.URI",
-            "java.util.UUID",
-            "java.time.DayOfWeek",
-            "java.time.Duration",
-            "java.time.Instant",
-            "java.time.LocalDate",
-            "java.time.LocalDateTime",
-            "java.time.LocalTime",
-            "java.time.Month",
-            "java.time.MonthDay",
-            "java.time.OffsetDateTime",
-            "java.time.OffsetTime",
-            "java.time.Period",
-            "java.time.Year",
-            "java.time.YearMonth",
-            "java.time.ZonedDateTime",
-            "java.time.ZoneOffset",
-            "java.time.ZoneRegion",
-            "java.time.chrono.ChronoLocalDate",
-            "java.time.chrono.ChronoLocalDateTime",
-            "java.time.chrono.Chronology",
-            "java.time.chrono.ChronoPeriod",
-            "java.time.chrono.ChronoZonedDateTime",
-            "java.time.chrono.Era",
-            "java.time.format.DecimalStyle",
-            "java.time.format.FormatStyle",
-            "java.time.format.ResolverStyle",
-            "java.time.format.SignStyle",
-            "java.time.format.TextStyle",
-            "java.time.temporal.IsoFields",
-            "java.time.temporal.JulianFields",
-            "java.time.temporal.ValueRange",
-            "java.time.temporal.WeekFields",
-            "java.io.File"
-    ));
 
-    private static final Set<String> BUILTIN_IMMUTABLE_ANNOTATIONS = new HashSet<>(Arrays.asList(
-            "groovy.transform.Immutable",
-            "groovy.transform.KnownImmutable",
-          //"javax.annotation.concurrent.Immutable", // its RetentionPolicy is CLASS, can not be got via reflection
-            "net.jcip.annotations.Immutable" // supported by Findbugs and IntelliJ IDEA
-    ));
 
     private ImmutablePropertyUtils() { }
 
-    public static Expression cloneArrayOrCloneableExpr(final Expression fieldExpr, final ClassNode type) {
-        Expression smce = callX(
-                REFLECTION_INVOKER_TYPE,
-                "invoke",
-                args(
-                        fieldExpr,
-                        constX("clone"),
-                        new ArrayExpression(ClassHelper.OBJECT_TYPE.makeArray(), Collections.emptyList())
-                )
-        );
-        return castX(type, smce);
+    //--------------------------------------------------------------------------
+
+    /**
+     * Creates an expression that clones an array or {@link Cloneable} value and casts it back to the requested type.
+     *
+     * @param expr the expression producing the original value
+     * @param type the expected result type
+     * @return an expression that performs the clone operation
+     */
+    public static Expression cloneArrayOrCloneableExpr(final Expression expr, final ClassNode type) {
+        Expression clone;
+        if (!CompilerConfiguration.DEFAULT.isIndyEnabled()) {
+            clone = callX(new ClassNode(InvokerHelper.class), "invokeMethod", args(expr, constX("clone"), ConstantExpression.NULL));
+        } else { // GROOVY-10319, GROOVY-10733
+            clone = new BytecodeExpression() {
+                @Override
+                public void visit(final GroovyCodeVisitor visitor) {
+                    if (!(visitor instanceof AsmClassGenerator)) {
+                        expr.visit(visitor);
+                        super.visit(visitor);
+                    } else {
+                        CompileStack compileStack = ((AsmClassGenerator)visitor).getController().getCompileStack();
+                        OperandStack operandStack = ((AsmClassGenerator)visitor).getController().getOperandStack();
+                        compileStack.pushLHS(false);
+
+                        compileStack.pushImplicitThis(false);
+                        expr.visit(visitor);
+                        compileStack.popImplicitThis();
+                        operandStack.remove(1);
+                        super.visit(visitor);
+
+                        compileStack.popLHS();
+                    }
+                }
+                @Override
+                public void visit(final MethodVisitor mv) {
+                    Handle bootstrap = new Handle(
+                            Opcodes.H_INVOKESTATIC,
+                            "org/codehaus/groovy/vmplugin/v8/IndyInterface",
+                            "bootstrap",
+                            MethodType.methodType(CallSite.class, MethodHandles.Lookup.class, String.class, MethodType.class, String.class, int.class).toMethodDescriptorString(),
+                            false);
+                    mv.visitInvokeDynamicInsn("invoke", "(Ljava/lang/Object;)Ljava/lang/Object;", bootstrap, new Object[]{"clone", 0});
+                }
+            };
+        }
+        return castX(type, clone);
     }
 
+    /**
+     * Checks whether the supplied type implements {@link Cloneable}.
+     *
+     * @param fieldType the type to inspect
+     * @return {@code true} if the type implements {@link Cloneable}
+     */
     public static boolean implementsCloneable(final ClassNode fieldType) {
-        return isOrImplements(fieldType, CLONEABLE_TYPE);
+        return isOrImplements(fieldType, ClassHelper.CLONEABLE_TYPE);
     }
 
+    /**
+     * Creates an expression that clones a {@link Date} value.
+     *
+     * @param origDate the date expression to clone
+     * @return an expression that creates a defensive date copy
+     */
     public static Expression cloneDateExpr(final Expression origDate) {
         return ctorX(DATE_TYPE, callX(origDate, "getTime"));
     }
 
+    /**
+     * Checks whether the supplied type derives from {@link Date}.
+     *
+     * @param fieldType the type to inspect
+     * @return {@code true} if the type derives from {@link Date}
+     */
     public static boolean derivesFromDate(final ClassNode fieldType) {
         return fieldType.isDerivedFrom(DATE_TYPE);
     }
 
+    /**
+     * Creates the standard error message for an unsupported immutable property type.
+     *
+     * @param className the immutable class being processed
+     * @param fieldName the property name
+     * @param typeName the unsupported type name
+     * @param mode the operation being performed
+     * @return the formatted error message
+     */
     public static String createErrorMessage(final String className, final String fieldName, final String typeName, final String mode) {
         return "Unsupported type (" + prettyTypeName(typeName) + ") found for field '" + fieldName + "' while " + mode + " immutable class " + className + ".\n" +
                 "Immutable classes only support properties with effectively immutable types including:\n" +
@@ -170,9 +169,16 @@ public class ImmutablePropertyUtils {
     }
 
     private static String prettyTypeName(final String name) {
-        return name.equals("java.lang.Object") ? name + " or def" : name;
+        return "java.lang.Object".equals(name) ? name + " or def" : name;
     }
 
+    /**
+     * Checks whether the supplied type is acceptable for an immutable property.
+     *
+     * @param fieldType the type to inspect
+     * @param knownImmutableClasses additional immutable type names supplied by configuration
+     * @return {@code true} if the type is supported by immutable-property handling
+     */
     public static boolean isKnownImmutableType(final ClassNode fieldType, final List<String> knownImmutableClasses) {
         if (builtinOrDeemedType(fieldType, knownImmutableClasses))
             return true;
@@ -205,26 +211,36 @@ public class ImmutablePropertyUtils {
     }
 
     private static boolean matchingImmutableMarkerName(final String name) {
-        return BUILTIN_IMMUTABLE_ANNOTATIONS.contains(name);
+        return ImmutableTypes.isImmutableMarker(name);
     }
 
+    /**
+     * Checks whether the supplied type name is one of the built-in immutable types.
+     *
+     * @param typeName the type name to inspect
+     * @return {@code true} if the type is treated as built-in immutable
+     */
     public static boolean isBuiltinImmutable(final String typeName) {
-        return BUILTIN_IMMUTABLES.contains(typeName);
+        return ImmutableTypes.isBuiltinImmutable(typeName);
     }
 
-    private static boolean hasImmutableAnnotation(final Class<?> clazz) {
-        Annotation[] annotations = clazz.getAnnotations();
-        for (Annotation next : annotations) {
-            String name = next.annotationType().getName();
-            if (matchingImmutableMarkerName(name)) return true;
-        }
-        return false;
-    }
-
+    /**
+     * Checks whether the supplied class is built in as immutable or carries an immutable marker annotation.
+     *
+     * @param clazz the class to inspect
+     * @return {@code true} if the class is treated as immutable
+     */
     public static boolean builtinOrMarkedImmutableClass(final Class<?> clazz) {
-        return isBuiltinImmutable(clazz.getName()) || hasImmutableAnnotation(clazz);
+        return ImmutableTypes.builtinOrMarkedImmutableClass(clazz);
     }
 
+    /**
+     * Extracts configured immutable property names from {@link ImmutableOptions}.
+     *
+     * @param xform the transform reporting configuration errors
+     * @param cNode the annotated class node
+     * @return the configured immutable property names
+     */
     public static List<String> getKnownImmutables(final AbstractASTTransformation xform, final ClassNode cNode) {
         List<AnnotationNode> annotations = cNode.getAnnotations(ImmutablePropertyUtils.IMMUTABLE_OPTIONS_TYPE);
         AnnotationNode anno = annotations.isEmpty() ? null : annotations.get(0);
@@ -234,12 +250,11 @@ public class ImmutablePropertyUtils {
         final Expression expression = anno.getMember(MEMBER_KNOWN_IMMUTABLES);
         if (expression == null) return immutables;
 
-        if (!(expression instanceof ListExpression)) {
+        if (!(expression instanceof ListExpression listExpression)) {
             xform.addError("Use the Groovy list notation [el1, el2] to specify known immutable property names via \"" + MEMBER_KNOWN_IMMUTABLES + "\"", anno);
             return immutables;
         }
 
-        final ListExpression listExpression = (ListExpression) expression;
         for (Expression listItemExpression : listExpression.getExpressions()) {
             if (listItemExpression instanceof ConstantExpression) {
                 immutables.add((String) ((ConstantExpression) listItemExpression).getValue());
@@ -250,6 +265,13 @@ public class ImmutablePropertyUtils {
         return immutables;
     }
 
+    /**
+     * Extracts configured immutable helper classes from {@link ImmutableOptions}.
+     *
+     * @param xform the transform reporting configuration errors
+     * @param cNode the annotated class node
+     * @return the configured immutable class names
+     */
     public static List<String> getKnownImmutableClasses(final AbstractASTTransformation xform, final ClassNode cNode) {
         List<AnnotationNode> annotations = cNode.getAnnotations(ImmutablePropertyUtils.IMMUTABLE_OPTIONS_TYPE);
         AnnotationNode anno = annotations.isEmpty() ? null : annotations.get(0);
@@ -259,12 +281,11 @@ public class ImmutablePropertyUtils {
         final Expression expression = anno.getMember(MEMBER_KNOWN_IMMUTABLE_CLASSES);
         if (expression == null) return immutableClasses;
 
-        if (!(expression instanceof ListExpression)) {
+        if (!(expression instanceof ListExpression listExpression)) {
             xform.addError("Use the Groovy list notation [el1, el2] to specify known immutable classes via \"" + MEMBER_KNOWN_IMMUTABLE_CLASSES + "\"", anno);
             return immutableClasses;
         }
 
-        final ListExpression listExpression = (ListExpression) expression;
         for (Expression listItemExpression : listExpression.getExpressions()) {
             if (listItemExpression instanceof ClassExpression) {
                 immutableClasses.add(listItemExpression.getType().getName());

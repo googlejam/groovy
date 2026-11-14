@@ -17,15 +17,17 @@
  *  under the License.
  */
 import gls.CompilableTestSupport
+import org.junit.jupiter.api.Test
 
-class DesignPatternsTest extends CompilableTestSupport {
+final class DesignPatternsTest extends CompilableTestSupport {
 
+    @Test
     void testSimpleExample() {
         shouldCompile '''
         // tag::simple_example[]
         import groovy.swing.SwingBuilder
         import java.awt.BorderLayout as BL
-        
+
         count = 0
         new SwingBuilder().edt {
           frame(title: 'Frame', size: [250, 75], show: true) {
@@ -39,6 +41,7 @@ class DesignPatternsTest extends CompilableTestSupport {
         '''
     }
 
+    @Test
     void testMoreInvolvedExample() {
         shouldCompile '''
         // tag::more_involved_example[]
@@ -75,7 +78,8 @@ class DesignPatternsTest extends CompilableTestSupport {
         // end::more_involved_example[]
         '''
     }
-    
+
+    @Test
     void testObservableBindingExample() {
         shouldCompile '''
         // tag::observable_binding_example[]

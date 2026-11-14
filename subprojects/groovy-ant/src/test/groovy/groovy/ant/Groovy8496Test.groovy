@@ -18,8 +18,14 @@
  */
 package groovy.ant
 
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.isAtLeastJdk
+
 class Groovy8496Test extends AntTestCase {
+    @Test
     void testGetProperty() {
+        if (isAtLeastJdk("18.0")) return; // GROOVY-10479
 //        def debugLogger = new org.apache.tools.ant.DefaultLogger()
 //        debugLogger.setMessageOutputLevel(4)
 //        debugLogger.setOutputPrintStream(System.out)
@@ -36,7 +42,7 @@ class Groovy8496Test extends AntTestCase {
                     public class OverrideGetProperty extends GroovyClass8496 {
                         @Override
                         public Object getProperty(String propertyName) {
-                            return super.getProperty(propertyName).toString().toLowerCase(); 
+                            return super.getProperty(propertyName).toString().toLowerCase();
                         }
                         public static void main(String[] args) {
                             System.out.println(new OverrideGetProperty().getProperty("bar"));

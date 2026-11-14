@@ -27,7 +27,7 @@ import java.util.Properties;
 import static org.codehaus.groovy.runtime.DefaultGroovyMethodsSupport.closeQuietly;
 
 /**
- * Exposes the Groovy release information 
+ * Exposes the Groovy release information
  */
 public class ReleaseInfo {
     private static final Properties RELEASE_INFO = new Properties();
@@ -35,7 +35,7 @@ public class ReleaseInfo {
     private static final String KEY_IMPLEMENTATION_VERSION = "ImplementationVersion";
 
     static {
-        URL url = null;
+        URL url;
         ClassLoader cl = ReleaseInfo.class.getClassLoader();
         // we need no security check for getting the system class
         // loader since if we do the invoker has a null loader,
@@ -62,15 +62,25 @@ public class ReleaseInfo {
             }
         }
     }
-    
+
+    /**
+     * Returns Groovy's implementation version from the bundled release metadata.
+     *
+     * @return the implementation version, or an empty string if unavailable
+     */
     public static String getVersion() {
         return get(KEY_IMPLEMENTATION_VERSION);
     }
-    
+
+    /**
+     * Returns all loaded release metadata properties.
+     *
+     * @return the loaded release information
+     */
     public static Properties getAllProperties() {
         return RELEASE_INFO;
     }
-    
+
     private static String get(String propName) {
         String propValue = RELEASE_INFO.getProperty(propName);
         return (propValue == null ? "" : propValue);

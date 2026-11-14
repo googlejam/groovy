@@ -30,24 +30,40 @@ import java.util.Properties;
  * factory is instantiated and used instead of this factory.
  */
 public class StandardPropertiesModuleFactory extends PropertiesModuleFactory {
+
+    /**
+     * Property key in META-INF configuration file for specifying a custom module factory class.
+     * If specified, the factory class must extend PropertiesModuleFactory and have a no-arg constructor.
+     */
     public static final String MODULE_FACTORY_KEY = "moduleFactory";
 
+    /**
+     * Creates a new extension module from the given properties.
+     * If the properties contain a custom factory class name under the key
+     * {@link #MODULE_FACTORY_KEY}, that factory is instantiated and used.
+     * Otherwise, a {@link MetaInfExtensionModule} is created.
+     *
+     * @param properties the module metadata properties
+     * @param classLoader the class loader to use for loading extension classes and custom factory classes
+     * @return a new extension module
+     * @throws GroovyRuntimeException if the custom factory cannot be loaded or instantiated
+     */
     @Override
     @SuppressWarnings("unchecked")
     public ExtensionModule newModule(final Properties properties, final ClassLoader classLoader) {
         String factoryName = properties.getProperty(MODULE_FACTORY_KEY);
-        if (factoryName!=null) {
+        if (factoryName != null) {
             try {
-                Class<? extends PropertiesModuleFactory> factoryClass = (Class<? extends PropertiesModuleFactory>) classLoader.loadClass(factoryName);
+                var factoryClass = (Class<? extends PropertiesModuleFactory>) classLoader.loadClass(factoryName);
                 PropertiesModuleFactory delegate = factoryClass.getDeclaredConstructor().newInstance();
                 return delegate.newModule(properties, classLoader);
-            } catch (ClassNotFoundException | NoSuchMethodException e) {
-                throw new GroovyRuntimeException("Unable to load module factory ["+factoryName+"]",e);
-            } catch (InstantiationException | IllegalAccessException | InvocationTargetException e) {
-                throw new GroovyRuntimeException("Unable to instantiate module factory ["+factoryName+"]",e);
+            } catch (final ClassNotFoundException | NoSuchMethodException e) {
+                throw new GroovyRuntimeException("Unable to load module factory [" + factoryName + "]", e);
+            } catch (final InstantiationException | IllegalAccessException | InvocationTargetException e) {
+                throw new GroovyRuntimeException("Unable to instantiate module factory [" + factoryName + "]", e);
             }
         }
+
         return MetaInfExtensionModule.newModule(properties, classLoader);
     }
-
 }

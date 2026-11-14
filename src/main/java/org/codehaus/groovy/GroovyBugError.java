@@ -18,6 +18,8 @@
  */
 package org.codehaus.groovy;
 
+import java.io.Serial;
+
 /**
  * This class represents an error that is thrown when a bug is
  * recognized inside the runtime. Basically it is thrown when
@@ -25,7 +27,7 @@ package org.codehaus.groovy;
  */
 public class GroovyBugError extends AssertionError {
 
-    private static final long serialVersionUID = -9165076784700059275L;
+    @Serial private static final long serialVersionUID = -9165076784700059275L;
     // message string
     private String message;
     // optional exception
@@ -73,7 +75,7 @@ public class GroovyBugError extends AssertionError {
 
     /**
      * Returns the detail message string of this error. The message
-     * will consist of the bug text prefixed by "BUG! " if there this
+     * will consist of the bug text prefixed by "BUG! " if this
      * instance was created using a message. If this error was
      * constructed without using a bug text the message of the cause
      * is used prefixed by "BUG! UNCAUGHT EXCEPTION: "

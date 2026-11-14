@@ -31,25 +31,39 @@ import static org.codehaus.groovy.syntax.Types.PLUS;
  */
 public class BinaryBooleanExpressionHelper extends BinaryIntExpressionHelper {
 
+    /**
+     * Creates a boolean-specialized binary expression helper.
+     *
+     * @param wc the active writer controller
+     */
     public BinaryBooleanExpressionHelper(WriterController wc) {
         super(wc, boolArraySet, boolArrayGet);
     }
-    
-    private static final MethodCaller 
+
+    private static final MethodCaller
         boolArrayGet = MethodCaller.newStatic(BytecodeInterface8.class, "zArrayGet"),
         boolArraySet = MethodCaller.newStatic(BytecodeInterface8.class, "zArraySet");
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected ClassNode getArrayGetResultType() {
         return ClassHelper.boolean_TYPE;
     }
-    
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public boolean writePostOrPrefixMethod(int operation, boolean simulate) {
         if (simulate) return false;
         throw new GroovyBugError("should not reach here");
     }
-    
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected boolean writeStdOperators(int type, boolean simulate) {
         type = type - PLUS;
@@ -57,48 +71,75 @@ public class BinaryBooleanExpressionHelper extends BinaryIntExpressionHelper {
         if (simulate) return false;
         throw new GroovyBugError("should not reach here");
     }
-    
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected boolean writeDivision(boolean simulate) {
         if (simulate) return false;
         throw new GroovyBugError("should not reach here");
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected ClassNode getNormalOpResultType() {
         return ClassHelper.boolean_TYPE;
     }
-    
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected ClassNode getDevisionOpResultType() {
         return ClassHelper.boolean_TYPE;
     }
-    
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected int getShiftOperationBytecode(int type) {
         return -1;
     }
-    
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected int getStandardOperationBytecode(int type) {
         return -1;
     }
-    
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void removeTwoOperands(MethodVisitor mv) {
         throw new GroovyBugError("should not reach here");
     }
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void writePlusPlus(MethodVisitor mv) {
         throw new GroovyBugError("should not reach here");
     }
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void writeMinusMinus(MethodVisitor mv) {
         throw new GroovyBugError("should not reach here");
     }
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void doubleTwoOperands(MethodVisitor mv) {
         throw new GroovyBugError("should not reach here");
     }
-    
+
 }

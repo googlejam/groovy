@@ -28,13 +28,20 @@ import org.openjdk.jmh.annotations.Warmup;
 
 import java.util.concurrent.TimeUnit;
 
-@Warmup(iterations = 5, time = 2, timeUnit = TimeUnit.SECONDS)
+/**
+ * Benchmark for generated hashCode on instances with null properties.
+ */
+@Warmup(iterations = 3, time = 2, timeUnit = TimeUnit.SECONDS)
 @Measurement(iterations = 5, time = 2, timeUnit = TimeUnit.SECONDS)
-@Fork(3)
+@Fork(2)
 @BenchmarkMode(Mode.Throughput)
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
 public class GeneratedHashCodeBench {
 
+    /**
+     * Tests hashCode performance on a freshly-created instance with null properties.
+     * @return the computed hash code
+     */
     @Benchmark
     public int generated_hashcode_on_instance_with_null_properties() {
         return new GeneratedHashCode().hashCode();

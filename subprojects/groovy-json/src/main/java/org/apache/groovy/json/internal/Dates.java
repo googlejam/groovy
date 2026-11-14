@@ -18,14 +18,30 @@
  */
 package org.apache.groovy.json.internal;
 
+import org.codehaus.groovy.runtime.DefaultGroovyMethods;
+
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.TimeZone;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
+/**
+ * Date helpers used by the JSON parser for supported timestamp formats.
+ */
 public class Dates {
 
     private static TimeZone UTC_TIME_ZONE = TimeZone.getTimeZone("UTC");
 
+    /**
+     * Returns the epoch milliseconds for the supplied instant using a UTC-based calendar.
+     *
+     * @param time epoch milliseconds
+     * @return UTC-normalized epoch milliseconds
+     */
     public static long utc(long time) {
         Calendar calendar = Calendar.getInstance();
         calendar.setTimeInMillis(time);
@@ -34,7 +50,7 @@ public class Dates {
     }
 
     private static Date internalDate(TimeZone tz, int year, int month, int day, int hour,
-                                     int minute, int second, int miliseconds) {
+                                     int minute, int second, int milliseconds) {
 
         Calendar calendar = Calendar.getInstance();
 
@@ -44,27 +60,127 @@ public class Dates {
         calendar.set(Calendar.HOUR_OF_DAY, hour);
         calendar.set(Calendar.MINUTE, minute);
         calendar.set(Calendar.SECOND, second);
-        calendar.set(Calendar.MILLISECOND, miliseconds);
+        calendar.set(Calendar.MILLISECOND, milliseconds);
 
         calendar.setTimeZone(tz);
 
         return calendar.getTime();
     }
 
+    /**
+     * Creates a {@link Date} from date-time fields in the supplied time zone.
+     *
+     * @param tz time zone to apply
+     * @param year year value
+     * @param month month value from {@code 1} to {@code 12}
+     * @param day day of month
+     * @param hour hour of day
+     * @param minute minute of hour
+     * @param second second of minute
+     * @return created date
+     */
     public static Date toDate(TimeZone tz, int year, int month, int day,
                               int hour, int minute, int second) {
         return internalDate(tz, year, month, day, hour, minute, second, 0);
     }
 
+    /**
+     * Creates a {@link Date} from date-time fields including milliseconds.
+     *
+     * @param tz time zone to apply
+     * @param year year value
+     * @param month month value from {@code 1} to {@code 12}
+     * @param day day of month
+     * @param hour hour of day
+     * @param minute minute of hour
+     * @param second second of minute
+     * @param milliseconds millisecond value
+     * @return created date
+     */
     public static Date toDate(TimeZone tz, int year, int month, int day,
-                              int hour, int minute, int second, int miliseconds) {
-        return internalDate(tz, year, month, day, hour, minute, second, miliseconds);
+                              int hour, int minute, int second, int milliseconds) {
+        return internalDate(tz, year, month, day, hour, minute, second, milliseconds);
     }
 
+    /**
+     * Length of an ISO-8601 timestamp that ends with {@code Z}.
+     */
     static final int SHORT_ISO_8601_TIME_LENGTH = "1994-11-05T08:15:30Z".length();
+    /**
+     * Length of an ISO-8601 timestamp that carries a numeric offset.
+     */
     static final int LONG_ISO_8601_TIME_LENGTH = "1994-11-05T08:15:30-05:00".length();
+    /**
+     * Length of a JSON timestamp with millisecond precision.
+     */
     public static final int JSON_TIME_LENGTH = "2013-12-14T01:55:33.412Z".length();
 
+    /**
+     * Reads an ISO-8601 form as an offset date-time, keeping the offset the text carried.
+     * Reads the same fields as {@link #fromISO8601(char[], int, int)} rather than handing the
+     * text to a formatter, so that the scan stays as cheap as the one the parsers already do.
+     *
+     * @param charArray buffer holding the token
+     * @param from start index, inclusive
+     * @param to end index, exclusive
+     * @return the value, or {@code null} if the text is not in this form
+     */
+    public static OffsetDateTime offsetDateTimeFromISO8601(char[] charArray, int from, int to) {
+        try {
+            if (!isISO8601(charArray, from, to)) {
+                return null;
+            }
+            int year = CharScanner.parseIntFromTo(charArray, from, from + 4);
+            int month = CharScanner.parseIntFromTo(charArray, from + 5, from + 7);
+            int day = CharScanner.parseIntFromTo(charArray, from + 8, from + 10);
+            int hour = CharScanner.parseIntFromTo(charArray, from + 11, from + 13);
+            int minute = CharScanner.parseIntFromTo(charArray, from + 14, from + 16);
+            int second = CharScanner.parseIntFromTo(charArray, from + 17, from + 19);
+            ZoneOffset offset = charArray[from + 19] == 'Z'
+                    ? ZoneOffset.UTC
+                    : ZoneOffset.of(String.valueOf(charArray, from + 19, 6));
+            return OffsetDateTime.of(year, month, day, hour, minute, second, 0, offset);
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+    /**
+     * Reads a JSON-date form as an offset date-time. That form carries no offset of its own
+     * and is read as UTC, as {@link #fromJsonDate(char[], int, int)} reads it.
+     *
+     * @param charArray buffer holding the token
+     * @param from start index, inclusive
+     * @param to end index, exclusive
+     * @return the value, or {@code null} if the text is not in this form
+     */
+    public static OffsetDateTime offsetDateTimeFromJsonDate(char[] charArray, int from, int to) {
+        try {
+            if (!isJsonDate(charArray, from, to)) {
+                return null;
+            }
+            int year = CharScanner.parseIntFromTo(charArray, from, from + 4);
+            int month = CharScanner.parseIntFromTo(charArray, from + 5, from + 7);
+            int day = CharScanner.parseIntFromTo(charArray, from + 8, from + 10);
+            int hour = CharScanner.parseIntFromTo(charArray, from + 11, from + 13);
+            int minute = CharScanner.parseIntFromTo(charArray, from + 14, from + 16);
+            int second = CharScanner.parseIntFromTo(charArray, from + 17, from + 19);
+            int milliseconds = CharScanner.parseIntFromTo(charArray, from + 20, from + 23);
+            return OffsetDateTime.of(year, month, day, hour, minute, second,
+                    (int) TimeUnit.MILLISECONDS.toNanos(milliseconds), ZoneOffset.UTC);
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+    /**
+     * Parses a supported ISO-8601 timestamp without milliseconds.
+     *
+     * @param charArray source character buffer
+     * @param from inclusive start index
+     * @param to exclusive end index
+     * @return parsed date, or {@code null} when the slice is not a supported ISO-8601 value
+     */
     public static Date fromISO8601(char[] charArray, int from, int to) {
         try {
             if (isISO8601(charArray, from, to)) {
@@ -76,7 +192,7 @@ public class Dates {
                 int minute = CharScanner.parseIntFromTo(charArray, from + 14, from + 16);
 
                 int second = CharScanner.parseIntFromTo(charArray, from + 17, from + 19);
-                TimeZone tz = null;
+                TimeZone tz;
 
                 if (charArray[from + 19] == 'Z') {
                     tz = TimeZone.getTimeZone("GMT");
@@ -93,6 +209,14 @@ public class Dates {
         }
     }
 
+    /**
+     * Parses a supported JSON timestamp with millisecond precision.
+     *
+     * @param charArray source character buffer
+     * @param from inclusive start index
+     * @param to exclusive end index
+     * @return parsed date, or {@code null} when the slice is not a supported JSON date value
+     */
     public static Date fromJsonDate(char[] charArray, int from, int to) {
         try {
             if (isJsonDate(charArray, from, to)) {
@@ -105,11 +229,11 @@ public class Dates {
 
                 int second = CharScanner.parseIntFromTo(charArray, from + 17, from + 19);
 
-                int miliseconds = CharScanner.parseIntFromTo(charArray, from + 20, from + 23);
+                int milliseconds = CharScanner.parseIntFromTo(charArray, from + 20, from + 23);
 
                 TimeZone tz = TimeZone.getTimeZone("GMT");
 
-                return toDate(tz, year, month, day, hour, minute, second, miliseconds);
+                return toDate(tz, year, month, day, hour, minute, second, milliseconds);
             } else {
                 return null;
             }
@@ -118,6 +242,14 @@ public class Dates {
         }
     }
 
+    /**
+     * Checks whether a slice matches the parser's supported ISO-8601 layouts.
+     *
+     * @param charArray source character buffer
+     * @param start inclusive start index
+     * @param to exclusive end index
+     * @return {@code true} when the slice matches a supported ISO-8601 layout
+     */
     public static boolean isISO8601(char[] charArray, int start, int to) {
         boolean valid = true;
         final int length = to - start;
@@ -143,6 +275,14 @@ public class Dates {
         return valid;
     }
 
+    /**
+     * Performs a quick length and separator check for ISO-8601-like values.
+     *
+     * @param charArray source character buffer
+     * @param start inclusive start index
+     * @param to exclusive end index
+     * @return {@code true} when the slice looks like an ISO-8601 value
+     */
     public static boolean isISO8601QuickCheck(char[] charArray, int start, int to) {
         final int length = to - start;
 
@@ -151,11 +291,22 @@ public class Dates {
                     || length == SHORT_ISO_8601_TIME_LENGTH || (length >= 17 && (charArray[start + 16] == ':'));
 
         } catch (Exception ex) {
-            ex.printStackTrace();
+            Logger logger = Logger.getLogger(Dates.class.getName());
+            if (logger.isLoggable(Level.WARNING)) {
+                logger.warning(DefaultGroovyMethods.asString(ex));
+            }
             return false;
         }
     }
 
+    /**
+     * Checks whether a slice matches the parser's JSON date layout.
+     *
+     * @param charArray source character buffer
+     * @param start inclusive start index
+     * @param to exclusive end index
+     * @return {@code true} when the slice matches the JSON date layout
+     */
     public static boolean isJsonDate(char[] charArray, int start, int to) {
         boolean valid = true;
         final int length = to - start;

@@ -22,15 +22,20 @@ import java.awt.GridBagConstraints;
 import java.util.ArrayList;
 import java.util.List;
 
-/** 
- * Represents a row in a table layout
+/**
+ * Represents a single row in a {@link TableLayout}.
  */
 public class TableLayoutRow {
 
     private final TableLayout parent;
-    private final List<groovy.swing.impl.TableLayoutCell> cells = new ArrayList<groovy.swing.impl.TableLayoutCell>();
+    private final List<TableLayoutCell> cells = new ArrayList<TableLayoutCell>();
     private int rowIndex;
-    
+
+    /**
+     * Creates a row for the supplied table layout.
+     *
+     * @param tableLayoutTag the owning table layout
+     */
     public TableLayoutRow(TableLayout tableLayoutTag) {
         this.parent = tableLayoutTag;
     }
@@ -39,7 +44,7 @@ public class TableLayoutRow {
      * Adds a new cell to this row
      * @param tag the td element
      */
-    public void addCell(groovy.swing.impl.TableLayoutCell tag) {
+    public void addCell(TableLayoutCell tag) {
         int gridx = 0;
         for (TableLayoutCell cell : cells) {
             gridx += cell.getColspan();
@@ -47,7 +52,10 @@ public class TableLayoutRow {
         tag.getConstraints().gridx = gridx;
         cells.add(tag);
     }
-    
+
+    /**
+     * Materializes the row into the parent layout by assigning row coordinates to each cell.
+     */
     public void addComponentsForRow() {
         rowIndex = parent.nextRowIndex();
 
@@ -57,7 +65,7 @@ public class TableLayoutRow {
             c.gridy = rowIndex;
             // add the cell to the table
             parent.addCell(cell);
-        }        
+        }
     }
 
     /**

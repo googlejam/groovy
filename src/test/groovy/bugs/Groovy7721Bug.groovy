@@ -18,13 +18,14 @@
  */
 
 
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
 import org.codehaus.groovy.control.CompilerConfiguration
 import org.codehaus.groovy.tools.javac.JavaAwareCompilationUnit
+import org.junit.jupiter.api.Test
 
-class Groovy7721Bug extends GroovyTestCase {
+class Groovy7721Bug {
+    @Test
     void testCovariantArrayAtOverriding() {
         def config = new CompilerConfiguration()
         config.with {

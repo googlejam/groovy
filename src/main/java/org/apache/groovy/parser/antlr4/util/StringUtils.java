@@ -18,11 +18,11 @@
  */
 package org.apache.groovy.parser.antlr4.util;
 
-import groovy.lang.Closure;
 import org.apache.groovy.util.Maps;
-import org.codehaus.groovy.runtime.StringGroovyMethods;
 
 import java.util.Map;
+import java.util.function.Function;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -30,147 +30,156 @@ import java.util.regex.Pattern;
  *
  */
 public class StringUtils {
-	private static final String BACKSLASH = "\\";
-	private static final Pattern HEX_ESCAPES_PATTERN = Pattern.compile("(\\\\*)\\\\u([0-9abcdefABCDEF]{4})");
-	private static final Pattern OCTAL_ESCAPES_PATTERN = Pattern.compile("(\\\\*)\\\\([0-3]?[0-7]?[0-7])");
-	private static final Pattern STANDARD_ESCAPES_PATTERN = Pattern.compile("(\\\\*)\\\\([btnfrs\"'])");
-	private static final Pattern LINE_ESCAPE_PATTERN = Pattern.compile("(\\\\*)\\\\\r?\n");
+    /**
+     * Slashy kind for an ordinary string. {@link #replaceEscapes} then
+     * rewrites hex, octal, and standard escapes, drops a backslash that
+     * continues a line, and turns {@code \$} into {@code $}.
+     */
+    public static final int NONE_SLASHY = 0;
+    /**
+     * Slashy kind for a {@code /.../} string. {@link #replaceEscapes}
+     * rewrites hex escapes, drops a backslash that continues a line, and
+     * turns {@code \/} into {@code /}.
+     */
+    public static final int SLASHY = 1;
+    /**
+     * Slashy kind for a {@code $/.../$} string. {@link #replaceEscapes}
+     * rewrites hex escapes, drops a backslash that continues a line, turns
+     * {@code $/} into {@code /}, and turns {@code $$} into {@code $}.
+     */
+    public static final int DOLLAR_SLASHY = 2;
 
-	public static String replaceHexEscapes(String text) {
-		if (!text.contains(BACKSLASH)) {
-			return text;
-		}
+    /**
+     * Rewrites escapes in {@code text} according to {@code slashyType}.
+     * {@link #NONE_SLASHY} applies the full set used for an ordinary
+     * string. {@link #SLASHY} and {@link #DOLLAR_SLASHY} apply the smaller
+     * slashy sets. Any other {@code slashyType} is rejected.
+     *
+     * @param text source text, still containing escape sequences
+     * @param slashyType {@link #NONE_SLASHY}, {@link #SLASHY}, or
+     *        {@link #DOLLAR_SLASHY}
+     * @return {@code text} with those escapes replaced
+     */
+    public static String replaceEscapes(String text, int slashyType) {
+        if (slashyType == NONE_SLASHY) {
+            text = replaceEscapes(text);
+        } else if (slashyType == SLASHY || slashyType == DOLLAR_SLASHY) {
+            text = replaceHexEscapes(text);
+            text = replaceLineEscape(text);
 
-		return StringGroovyMethods.replaceAll((CharSequence) text, HEX_ESCAPES_PATTERN, new Closure<Void>(null, null) {
-			Object doCall(String _0, String _1, String _2) {
-				if (isLengthOdd(_1)) {
-					return _0;
-				}
+            if (slashyType == SLASHY) {
+                text = replace(text,"\\/", "/");
+            } else if (slashyType == DOLLAR_SLASHY) {
+                text = replace(text,"$/", "/");
+                text = replace(text,"$$", "$");
+            }
+        } else  {
+            throw new IllegalArgumentException("Invalid slashyType: " + slashyType);
+        }
 
-				return _1 + new String(Character.toChars(Integer.parseInt(_2, 16)));
-			}
-		});
+        return text;
+    }
+
+    /**
+     * Replaces each <code>&#92;uXXXX</code> whose leading backslashes are even with
+     * the corresponding character. A match with an odd run of backslashes
+     * is left unchanged. A string that contains no backslash is returned
+     * as it was given.
+     *
+     * @param text source text
+     * @return {@code text} with those hex escapes replaced
+     */
+    public static String replaceHexEscapes(String text) {
+		if (!text.contains(BACKSLASH)) return text;
+		return replaceAll(text, HEX_ESCAPES_PATTERN, m -> {
+            final String _0 = m.group(0), _1 = m.group(1), _2 = m.group(2);
+            if (isLengthOdd(_1)) return _0;
+            return _1 + new String(Character.toChars(Integer.parseInt(_2, 16)));
+        });
 	}
 
+    /**
+     * Replaces an octal escape of up to three digits, when its leading
+     * backslashes are even, with the corresponding character. A match with
+     * an odd run of backslashes is left unchanged. A string that contains
+     * no backslash is returned as it was given.
+     *
+     * @param text source text
+     * @return {@code text} with those octal escapes replaced
+     */
 	public static String replaceOctalEscapes(String text) {
-		if (!text.contains(BACKSLASH)) {
-			return text;
-		}
-
-		return StringGroovyMethods.replaceAll((CharSequence) text, OCTAL_ESCAPES_PATTERN, new Closure<Void>(null, null) {
-			Object doCall(String _0, String _1, String _2) {
-				if (isLengthOdd(_1)) {
-					return _0;
-				}
-
-				return _1 + new String(Character.toChars(Integer.parseInt(_2, 8)));
-			}
-		});
+		if (!text.contains(BACKSLASH)) return text;
+		return replaceAll(text, OCTAL_ESCAPES_PATTERN, m -> {
+            final String _0 = m.group(0), _1 = m.group(1), _2 = m.group(2);
+            if (isLengthOdd(_1)) return _0;
+            return _1 + new String(Character.toChars(Integer.parseInt(_2, 8)));
+        });
 	}
 
-	private static final Map<Character, Character> STANDARD_ESCAPES = Maps.of(
-			'b', '\b',
-			't', '\t',
-			'n', '\n',
-			'f', '\f',
-			'r', '\r',
-			's', ' '
-	);
-
-	public static String replaceStandardEscapes(String text) {
-		if (!text.contains(BACKSLASH)) {
-			return text;
-		}
-
-		String result = StringGroovyMethods.replaceAll((CharSequence) text, STANDARD_ESCAPES_PATTERN, new Closure<Void>(null, null) {
-			Object doCall(String _0, String _1, String _2) {
-				if (isLengthOdd(_1)) {
-					return _0;
-				}
-
-				Character character = STANDARD_ESCAPES.get(_2.charAt(0));
-				return _1 + (character != null ? character : _2);
-			}
-		});
-
+    /**
+     * Replaces {@code \b}, {@code \t}, {@code \n}, {@code \f}, {@code \r},
+     * {@code \s} (a space), {@code \"}, and {@code \'} when the leading
+     * backslashes are even. Any other escaped character is kept. Each
+     * remaining {@code \\} then becomes one backslash. A string that
+     * contains no backslash is returned as it was given.
+     *
+     * @param text source text
+     * @return {@code text} with those standard escapes replaced
+     */
+    public static String replaceStandardEscapes(String text) {
+		if (!text.contains(BACKSLASH)) return text;
+		final String result = replaceAll(text, STANDARD_ESCAPES_PATTERN, m -> {
+            final String _0 = m.group(0), _1 = m.group(1), _2 = m.group(2);
+            if (isLengthOdd(_1)) return _0;
+            final Character character = STANDARD_ESCAPES.get(_2.charAt(0));
+            return _1 + (character != null ? character : _2);
+        });
 		return replace(result,"\\\\", "\\");
 	}
 
-	public static final int NONE_SLASHY = 0;
-	public static final int SLASHY = 1;
-	public static final int DOLLAR_SLASHY = 2;
-
-	public static String replaceEscapes(String text, int slashyType) {
-		if (slashyType == SLASHY || slashyType == DOLLAR_SLASHY) {
-			text = StringUtils.replaceHexEscapes(text);
-			text = StringUtils.replaceLineEscape(text);
-
-			if (slashyType == SLASHY) {
-				text = replace(text,"\\/", "/");
-			}
-
-			if (slashyType == DOLLAR_SLASHY) {
-				text = replace(text,"$/", "/");
-				text = replace(text,"$$", "$");
-			}
-
-		} else if (slashyType == NONE_SLASHY) {
-			text = StringUtils.replaceEscapes(text);
-		} else {
-			throw new IllegalArgumentException("Invalid slashyType: " + slashyType);
-		}
-
-		return text;
-	}
-
-	private static String replaceEscapes(String text) {
-		if (!text.contains(BACKSLASH)) {
-			return text;
-		}
-
-		text = replace(text,"\\$", "$");
-
-		text = StringUtils.replaceLineEscape(text);
-
-		return StringUtils.replaceStandardEscapes(replaceHexEscapes(replaceOctalEscapes(text)));
-	}
-
-	private static String replaceLineEscape(String text) {
-		if (!text.contains(BACKSLASH)) {
-			return text;
-		}
-
-		text = StringGroovyMethods.replaceAll((CharSequence) text, LINE_ESCAPE_PATTERN, new Closure<Void>(null, null) {
-			Object doCall(String _0, String _1) {
-				if (isLengthOdd(_1)) {
-					return _0;
-				}
-
-				return _1;
-			}
-		});
-
-		return text;
-	}
-
-	private static boolean isLengthOdd(String str) {
-		return null != str && str.length() % 2 == 1;
-	}
-
+    /**
+     * Replaces every {@code \r\n} in {@code text} with {@code \n}. A lone
+     * {@code \r} is left in place.
+     *
+     * @param text source text
+     * @return {@code text} with CRLF pairs folded to LF
+     */
 	public static String removeCR(String text) {
 		return replace(text,"\r\n", "\n");
 	}
 
+    /**
+     * Counts how many UTF-16 code units in {@code text} equal {@code c}.
+     *
+     * @param text source text
+     * @param c code unit to count
+     * @return how many times {@code c} occurs
+     */
 	public static long countChar(String text, char c) {
 		return text.chars().filter(e -> c == e).count();
 	}
 
+    /**
+     * Drops {@code quotationLength} characters from each end of
+     * {@code text}. When {@code text} is exactly twice that long, the
+     * result is empty.
+     *
+     * @param text quoted text, including the quote characters
+     * @param quotationLength number of characters in one quote delimiter
+     * @return the characters between the two delimiters
+     */
 	public static String trimQuotations(String text, int quotationLength) {
 		int length = text.length();
-
 		return length == quotationLength << 1 ? "" : text.substring(quotationLength, length - quotationLength);
 	}
 
+    /**
+     * Reports whether the whole of {@code text} matches {@code pattern}.
+     *
+     * @param text text to test
+     * @param pattern pattern applied with {@link Matcher#matches}
+     * @return {@code true} when {@code pattern} matches all of {@code text}
+     */
 	public static boolean matches(String text, Pattern pattern) {
 		return pattern.matcher(text).matches();
 	}
@@ -200,9 +209,8 @@ public class StringUtils {
 	 *  {@code null} if null String input
 	 */
 	public static String replace(final String text, String searchString, final String replacement) {
-		if (isEmpty(text) || isEmpty(searchString) || replacement == null) {
-			return text;
-		}
+		if (isEmpty(text) || isEmpty(searchString) || replacement == null) return text;
+
 		int start = 0;
 		int end = text.indexOf(searchString, start);
 		if (end == INDEX_NOT_FOUND) {
@@ -245,10 +253,55 @@ public class StringUtils {
 		return cs == null || cs.length() == 0;
 	}
 
-	/**
+    private static String replaceEscapes(String text) {
+        if (!text.contains(BACKSLASH)) return text;
+        text = replace(text,"\\$", "$");
+        text = replaceLineEscape(text);
+        return replaceStandardEscapes(replaceHexEscapes(replaceOctalEscapes(text)));
+    }
+
+    private static String replaceLineEscape(String text) {
+        if (!text.contains(BACKSLASH)) return text;
+        text = replaceAll(text, LINE_ESCAPE_PATTERN, m -> {
+            final String _0 = m.group(0), _1 = m.group(1);
+            if (isLengthOdd(_1)) return _0;
+            return _1;
+        });
+        return text;
+    }
+
+    private static String replaceAll(final CharSequence input, final Pattern pattern, final Function<? super Matcher, String> replaceFunction) {
+        final Matcher matcher = pattern.matcher(input);
+        final StringBuilder result = new StringBuilder(input.length() + matcher.groupCount() * 8);
+        while (matcher.find()) {
+            final String replacement = replaceFunction.apply(matcher);
+            matcher.appendReplacement(result, Matcher.quoteReplacement(replacement));
+        }
+        matcher.appendTail(result);
+        return result.toString();
+    }
+
+    private static boolean isLengthOdd(String str) {
+        return null != str && str.length() % 2 == 1;
+    }
+
+    /**
 	 * Copied from Apache commons-lang3-3.6
 	 *
 	 * Represents a failed index search.
 	 */
 	private static final int INDEX_NOT_FOUND = -1;
+    private static final String BACKSLASH = "\\";
+    private static final Pattern HEX_ESCAPES_PATTERN = Pattern.compile("(\\\\*)\\\\u([0-9abcdefABCDEF]{4})");
+    private static final Pattern OCTAL_ESCAPES_PATTERN = Pattern.compile("(\\\\*)\\\\([0-3]?[0-7]?[0-7])");
+    private static final Pattern STANDARD_ESCAPES_PATTERN = Pattern.compile("(\\\\*)\\\\([btnfrs\"'])");
+    private static final Pattern LINE_ESCAPE_PATTERN = Pattern.compile("(\\\\*)\\\\\r?\n");
+    private static final Map<Character, Character> STANDARD_ESCAPES = Maps.of(
+        'b', '\b',
+        't', '\t',
+        'n', '\n',
+        'f', '\f',
+        'r', '\r',
+        's', ' '
+    );
 }

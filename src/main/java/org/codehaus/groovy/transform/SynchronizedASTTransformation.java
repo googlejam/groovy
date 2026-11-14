@@ -60,8 +60,7 @@ public class SynchronizedASTTransformation extends AbstractASTTransformation {
         if (!MY_TYPE.equals(node.getClassNode())) return;
         String value = getMemberStringValue(node, "value");
 
-        if (parent instanceof MethodNode) {
-            MethodNode mNode = (MethodNode) parent;
+        if (parent instanceof MethodNode mNode) {
             if (mNode.isAbstract()) {
                 addError("Error during " + MY_TYPE_NAME + " processing: annotation not allowed on abstract method '" + mNode.getName() + "'", mNode);
                 return;
@@ -77,7 +76,7 @@ public class SynchronizedASTTransformation extends AbstractASTTransformation {
 
     private String determineLock(String value, ClassNode cNode, MethodNode mNode) {
         boolean isStatic = mNode.isStatic();
-        if (value != null && value.length() > 0 && !value.equalsIgnoreCase("$lock")) {
+        if (value != null && !value.isEmpty() && !"$lock".equalsIgnoreCase(value)) {
             if (cNode.getDeclaredField(value) == null) {
                 addError("Error during " + MY_TYPE_NAME + " processing: lock field with name '" + value + "' not found in class " + cNode.getName(), mNode);
                 return null;

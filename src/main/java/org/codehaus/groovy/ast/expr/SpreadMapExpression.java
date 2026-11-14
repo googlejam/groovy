@@ -25,40 +25,49 @@ import org.codehaus.groovy.ast.GroovyCodeVisitor;
  * Represents a spread map expression *:m
  * in the map expression [1, *:m, 2, "c":100]
  * or in the method invoke expression func(1, *:m, 2, "c":100).
- *
  */
 public class SpreadMapExpression extends Expression {
 
     private final Expression expression;
 
-    public SpreadMapExpression(Expression expression) {
+    /**
+     * Creates a spread-map expression for {@code expression}, as in {@code *:m}.
+     *
+     * @param expression the map being spread
+     */
+    public SpreadMapExpression(final Expression expression) {
         this.expression = expression;
     }
 
+    /**
+     * Returns the expression being spread.
+     *
+     * @return the spread operand
+     */
     public Expression getExpression() {
         return expression;
     }
 
     @Override
-    public void visit(GroovyCodeVisitor visitor) {
-        visitor.visitSpreadMapExpression(this);
+    public String getText() {
+        return "*:" + getExpression().getText();
     }
 
     @Override
-    public Expression transformExpression(ExpressionTransformer transformer) {
-        Expression ret = new SpreadMapExpression(transformer.transform(expression));
+    public ClassNode getType() {
+        return getExpression().getType();
+    }
+
+    @Override
+    public Expression transformExpression(final ExpressionTransformer transformer) {
+        Expression ret = new SpreadMapExpression(transformer.transform(getExpression()));
         ret.setSourcePosition(this);
         ret.copyNodeMetaData(this);
         return ret;
     }
 
     @Override
-    public String getText() {
-        return "*:" + expression.getText();
-    }
-
-    @Override
-    public ClassNode getType() {
-        return expression.getType();
+    public void visit(final GroovyCodeVisitor visitor) {
+        visitor.visitSpreadMapExpression(this);
     }
 }

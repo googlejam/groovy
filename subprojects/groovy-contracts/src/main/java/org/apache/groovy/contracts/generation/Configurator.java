@@ -18,6 +18,8 @@
  */
 package org.apache.groovy.contracts.generation;
 
+import org.apache.groovy.lang.annotation.GroovyABI;
+
 import java.lang.management.ManagementFactory;
 import java.lang.management.RuntimeMXBean;
 import java.util.HashMap;
@@ -29,12 +31,34 @@ import java.util.Map;
  */
 public final class Configurator {
 
+    /**
+     * JVM argument prefix that disables assertions.
+     */
     public static final String DISABLED_ASSERTIONS = "-da";
+
+    /**
+     * JVM argument prefix that enables assertions.
+     */
     public static final String ENABLED_ASSERTIONS = "-ea";
 
+    /**
+     * Separator between assertion flags and package or class names.
+     */
     public static final String PACKAGE_PREFIX = ":";
+
+    /**
+     * JVM argument prefix that enables assertions for a package or class.
+     */
     public static final String ENABLE_PACKAGE_ASSERTIONS = ENABLED_ASSERTIONS + PACKAGE_PREFIX;
+
+    /**
+     * JVM argument prefix that disables assertions for a package or class.
+     */
     public static final String DISABLE_PACKAGE_ASSERTIONS = DISABLED_ASSERTIONS + PACKAGE_PREFIX;
+
+    /**
+     * Suffix used by the JVM to denote package-wide assertion configuration.
+     */
     public static final String PACKAGE_POSTFIX = "...";
 
     private static Map<String, Boolean> assertionConfiguration;
@@ -45,7 +69,7 @@ public final class Configurator {
 
     private static void initAssertionConfiguration() {
 
-        assertionConfiguration = new HashMap<String, Boolean>();
+        assertionConfiguration = new HashMap<>();
         // per default assertion are enabled (Groovy like)
         assertionConfiguration.put(null, Boolean.TRUE);
 
@@ -63,11 +87,11 @@ public final class Configurator {
 
                 assertionConfiguration.put(packageName, Boolean.FALSE);
             } else if (arg.startsWith(ENABLE_PACKAGE_ASSERTIONS)) {
-                final String className = arg.substring(ENABLE_PACKAGE_ASSERTIONS.length(), arg.length());
+                final String className = arg.substring(ENABLE_PACKAGE_ASSERTIONS.length());
                 assertionConfiguration.put(className, Boolean.TRUE);
 
             } else if (arg.startsWith(DISABLE_PACKAGE_ASSERTIONS)) {
-                final String className = arg.substring(DISABLE_PACKAGE_ASSERTIONS.length(), arg.length());
+                final String className = arg.substring(DISABLE_PACKAGE_ASSERTIONS.length());
 
                 assertionConfiguration.put(className, Boolean.FALSE);
             }
@@ -80,12 +104,13 @@ public final class Configurator {
      * @param className the class name to look up in the assertion configuration
      * @return whether assertion checking is enabled or not
      */
+    @GroovyABI(since = "4.0.0")
     public static boolean checkAssertionsEnabled(final String className) {
         return internalMethod(className);
     }
 
     private static boolean internalMethod(String className) {
-        if (className == null || className.length() == 0) return false;
+        if (className == null || className.isEmpty()) return false;
 
         if (assertionConfiguration.containsKey(className)) return assertionConfiguration.get(className);
         if (className.lastIndexOf('.') < 0) return assertionConfiguration.get(null);

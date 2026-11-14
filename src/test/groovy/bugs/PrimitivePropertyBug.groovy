@@ -16,15 +16,16 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
+
 
 /**
  * Fix Bug GROOVY-683
  */
-class PrimitivePropertyBug extends GroovyTestCase {
-     
+class PrimitivePropertyBug {
+
     double x1
     float x2
     long x3
@@ -33,6 +34,7 @@ class PrimitivePropertyBug extends GroovyTestCase {
     byte x6
     char x7
 
+    @Test
     void testBug() {
         def y = new PrimitivePropertyBug()
         y.x1 = 10.0
@@ -42,7 +44,7 @@ class PrimitivePropertyBug extends GroovyTestCase {
         y.x5 = 10.0
         y.x6 = 10.0
         y.x7 = 10.0
-        
+
         assert y.x1 == 10.0
         assert y.x2 == 10.0
         assert y.x3 == 10.0

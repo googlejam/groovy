@@ -16,7 +16,7 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
 import groovy.test.GroovyShellTestCase
 import org.codehaus.groovy.control.MultipleCompilationErrorsException
@@ -31,7 +31,8 @@ class Groovy4252Bug extends GroovyShellTestCase {
         } catch (MultipleCompilationErrorsException e) {
             def syntaxError = e.errorCollector.getSyntaxError(0)
             assert syntaxError.message.contains("Expression list of the form (a; b; c) is not supported in this context") ||
-                    syntaxError.message.contains("Unexpected input: '('")
+                    syntaxError.message.contains("Unexpected input: '('") ||
+                    syntaxError.message.contains("Unexpected '('")
         }
     }
 
@@ -44,7 +45,8 @@ class Groovy4252Bug extends GroovyShellTestCase {
         } catch (MultipleCompilationErrorsException e) {
             def syntaxError = e.errorCollector.getSyntaxError(0)
             assert syntaxError.message.contains("Expression list of the form (a; b; c) is not supported in this context") ||
-                    syntaxError.message.contains("Unexpected input: ';'")
+                    syntaxError.message.contains("Unexpected input: ';'") ||
+                    syntaxError.message.contains("Unexpected ';'")
         }
     }
 
@@ -57,7 +59,8 @@ class Groovy4252Bug extends GroovyShellTestCase {
         } catch (MultipleCompilationErrorsException e) {
             def syntaxError = e.errorCollector.getSyntaxError(0)
             assert syntaxError.message.contains("Expression list of the form (a; b; c) is not supported in this context") ||
-                    syntaxError.message.contains("Unexpected input: '('")
+                    syntaxError.message.contains("Unexpected input: '('") ||
+                    syntaxError.message.contains("Unexpected '('")
         }
     }
 
@@ -69,8 +72,8 @@ class Groovy4252Bug extends GroovyShellTestCase {
                         def fields = [1,2,3]
                         def expectedFieldNames = ["patentnumber", "status"].
                         for (int i=0; i<fields.size(); i++) {
-                            Object f = fields[i] 
-                            System.out.println(f); 
+                            Object f = fields[i]
+                            System.out.println(f);
                         }
                     }
                 }

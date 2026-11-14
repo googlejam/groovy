@@ -19,8 +19,15 @@
 package org.codehaus.groovy.classgen.asm;
 
 /**
- * A non static factory to get alternative writer controller to be stored in the meta data
+ * A non-static factory to get alternative writer controller to be stored in the metadata
  */
+@FunctionalInterface
 public interface WriterControllerFactory {
+    /**
+     * Creates a writer controller based on the given normal controller.
+     *
+     * @param normalController the standard writer controller
+     * @return a customized writer controller
+     */
     WriterController makeController(WriterController normalController);
 }

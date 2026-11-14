@@ -16,12 +16,12 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
 import org.codehaus.groovy.control.CompilationUnit
 import org.codehaus.groovy.control.CompilerConfiguration
 import org.codehaus.groovy.tools.javac.JavaAwareCompilationUnit
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 import static groovy.test.GroovyAssert.shouldFail
 
@@ -63,7 +63,7 @@ final class Groovy8361 {
             def err = shouldFail {
                 cu.compile()
             }
-            assert err =~ /unable to resolve class AA/
+            assert err.message =~ /unable to resolve class AA/
         } finally {
             config.targetDirectory.deleteDir()
             parentDir.deleteDir()
@@ -105,7 +105,7 @@ final class Groovy8361 {
             def err = shouldFail {
                 cu.compile()
             }
-            assert err =~ /unable to resolve class AA/
+            assert err.message =~ /unable to resolve class AA/
         } finally {
             config.targetDirectory.deleteDir()
             parentDir.deleteDir()

@@ -22,7 +22,7 @@ import groovy.transform.CompileDynamic
 import groovy.transform.CompileStatic
 import groovy.transform.EqualsAndHashCode
 import groovy.transform.ToString
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 import java.util.stream.Collectors
 import java.util.stream.Stream
@@ -873,6 +873,27 @@ class QueryableCollectionTest {
                         )
                         .toList()
         assert [null] == result
+    }
+
+    @Test
+    void testGroupByIntoSelect0() {
+        def nums = [1, 2, 2, 3, 3, 4, 4, 5]
+        def result = from(nums).groupByInto(e -> e).select((g, q) -> Tuple.tuple(g.key, g.toList())).toList()
+        assert [[1, [1]], [2, [2, 2]], [3, [3, 3]], [4, [4, 4]], [5, [5]]] == result
+    }
+
+    @Test
+    void testGroupByIntoSelect1() {
+        def nums = [1, 2, 2, 3, 3, 4, 4, 5]
+        def result = from(nums).groupByInto(e -> e).select((g, q) -> Tuple.tuple(g.key, g.count())).toList()
+        assert [[1, 1], [2, 2], [3, 2], [4, 2], [5, 1]] == result
+    }
+
+    @Test
+    void testGroupByIntoWithHaving() {
+        def nums = [1, 2, 2, 3, 3, 4, 4, 5]
+        def result = from(nums).groupByInto(e -> e, g -> g.count() > 1).select((g, q) -> Tuple.tuple(g.key, g.count())).toList()
+        assert [[2, 2], [3, 2], [4, 2]] == result
     }
 
     @Test

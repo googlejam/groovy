@@ -16,11 +16,16 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
 
-class Groovy7520Bug extends GroovyTestCase {
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.shouldFail
+
+
+class Groovy7520Bug {
+    @Test
     void testShouldSeeConflictUsingAbstractMethod() {
         def msg = shouldFail '''
             abstract class DefinesMethod {
@@ -32,6 +37,6 @@ class Groovy7520Bug extends GroovyTestCase {
             new Foo().name
             '''
 
-        assert msg.contains("Abstract method 'java.lang.String getName()' is not implemented but a method of the same name but different return type is defined: static method 'int getName()'")
+        assert msg.message.contains("Abstract method 'java.lang.String getName()' is not implemented but a method of the same name but different return type is defined: static method 'int getName()'")
     }
 }

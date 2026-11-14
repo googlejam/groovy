@@ -38,28 +38,33 @@ Here is a UML representation:
 
 [plantuml, ChainOfResponsibilityClasses, png]
 ....
-skinparam nodesep 100
-hide <<HIDDEN>>
+!pragma layout smetana
+skinparam nodesep 200
+skinparam ObjectBorderColor<<Hidden>> Transparent
+skinparam ObjectBackgroundColor<<Hidden>> Transparent
+skinparam ObjectFontColor<<Hidden>> Transparent
+skinparam ObjectStereotypeFontColor<<Hidden>> Transparent
 class UnixLister {
     nextInLine : Object
     +listFiles(dir)
 }
-object dummy1<<HIDDEN>>
+object dummy1<<Hidden>>
 class WindowsLister {
     nextInLine : Object
     +listFiles(dir)
 }
-object dummy2<<HIDDEN>>
-hide DefaultLister fields
+object dummy2<<Hidden>>
 class DefaultLister {
     +listFiles(dir)
 }
+hide DefaultLister fields
 object script
 script ..r..> "<<use>>" UnixLister
 UnixLister --> "forwardIfRequired" WindowsLister
 UnixLister <-[hidden]- dummy1
 WindowsLister <-[hidden]- dummy2
 WindowsLister --> "forwardIfRequired" DefaultLister
+hide <<Hidden>>
 ....
 
 == Example using simplifying strategies

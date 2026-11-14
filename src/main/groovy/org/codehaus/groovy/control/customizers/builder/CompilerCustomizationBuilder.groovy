@@ -19,6 +19,7 @@
 
 package org.codehaus.groovy.control.customizers.builder
 
+import groovy.transform.AutoFinal
 import groovy.transform.CompileStatic
 import org.codehaus.groovy.control.CompilerConfiguration
 
@@ -27,22 +28,45 @@ import org.codehaus.groovy.control.CompilerConfiguration
  * various compilation customizers by hand, you may use this builder instead, which provides a
  * shorter syntax and removes most of the verbosity.
  */
-@CompileStatic
+@AutoFinal @CompileStatic
 class CompilerCustomizationBuilder extends FactoryBuilderSupport {
-    CompilerCustomizationBuilder() {
-        registerFactories()
-    }
 
-    static CompilerConfiguration withConfig(CompilerConfiguration config,
-                                            @DelegatesTo(type = 'org.codehaus.groovy.control.customizers.builder.CompilerCustomizationBuilder') Closure code) {
-        CompilerCustomizationBuilder builder = new CompilerCustomizationBuilder()
-        config.invokeMethod('addCompilationCustomizers', builder.invokeMethod('customizers', code))
+    /**
+     * Applies compilation customizers declared by the builder DSL to the supplied configuration.
+     *
+     * @param config the compiler configuration to customize
+     * @param spec the customization DSL
+     * @return the same {@link CompilerConfiguration} instance for chaining
+     */
+    static CompilerConfiguration withConfig(CompilerConfiguration config, @DelegatesTo(type='org.codehaus.groovy.control.customizers.builder.CompilerCustomizationBuilder') Closure spec) {
+        config.invokeMethod('addCompilationCustomizers', new CompilerCustomizationBuilder().invokeMethod('customizers', spec))
         config
     }
 
+    //--------------------------------------------------------------------------
+
+    /**
+     * Creates a builder and registers the supported customization factories.
+     */
+    CompilerCustomizationBuilder() {
+        registerFactory('customizers', new CustomizersFactory()) // root
+
+        registerFactory('ast', new ASTTransformationCustomizerFactory())
+        registerFactory('imports', new ImportCustomizerFactory())
+        registerFactory('inline', new InlinedASTCustomizerFactory())
+        registerFactory('secureAst', new SecureASTCustomizerFactory())
+        registerFactory('source', new SourceAwareCustomizerFactory())
+    }
+
+    /**
+     * Finalizes a node and gives post-completion factories a chance to replace it.
+     *
+     * @param parent the parent builder node
+     * @param node the node being completed
+     * @return the completed node, possibly replaced by the active factory
+     */
     @Override
-    @SuppressWarnings('Instanceof')
-    protected Object postNodeCompletion(final Object parent, final Object node) {
+    protected Object postNodeCompletion(Object parent, Object node) {
         Object value = super.postNodeCompletion(parent, node)
         Object factory = getContextAttribute(CURRENT_FACTORY)
         if (factory instanceof PostCompletionFactory) {
@@ -50,14 +74,5 @@ class CompilerCustomizationBuilder extends FactoryBuilderSupport {
             setParent(parent, value)
         }
         value
-    }
-
-    private void registerFactories() {
-        registerFactory('ast', new ASTTransformationCustomizerFactory())
-        registerFactory('customizers', new CustomizersFactory())
-        registerFactory('imports', new ImportCustomizerFactory())
-        registerFactory('inline', new InlinedASTCustomizerFactory())
-        registerFactory('secureAst', new SecureASTCustomizerFactory())
-        registerFactory('source', new SourceAwareCustomizerFactory())
     }
 }

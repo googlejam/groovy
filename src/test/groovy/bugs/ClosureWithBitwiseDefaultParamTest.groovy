@@ -16,11 +16,13 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class ClosureWithBitwiseDefaultParamTest extends GroovyTestCase {
+final class ClosureWithBitwiseDefaultParamTest {
+
+    @Test
     void testAmbiguousStuff() {
         def c = { x, y = 1 | 2, z = 0->
             println x

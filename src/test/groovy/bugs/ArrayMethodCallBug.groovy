@@ -16,16 +16,20 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-class ArrayMethodCallBug extends TestSupport {
+import groovy.bugs.TestSupport
+import org.junit.jupiter.api.Test
 
+final class ArrayMethodCallBug extends TestSupport {
+
+    @Test
     void testMethodCallingWithArrayBug() {
         def array = getMockArguments()
-        
+
         dummyMethod(array)
     }
-    
+
     protected void dummyMethod(array) {
     }
 }

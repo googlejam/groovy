@@ -20,6 +20,7 @@ package org.codehaus.groovy.transform;
 
 import groovy.transform.AutoClone;
 import groovy.transform.AutoCloneStyle;
+import org.apache.groovy.ast.tools.AnnotatedNodeUtils;
 import org.codehaus.groovy.ast.ASTNode;
 import org.codehaus.groovy.ast.AnnotatedNode;
 import org.codehaus.groovy.ast.AnnotationNode;
@@ -27,10 +28,12 @@ import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.ConstructorNode;
 import org.codehaus.groovy.ast.FieldNode;
+import org.codehaus.groovy.ast.MethodNode;
 import org.codehaus.groovy.ast.Parameter;
 import org.codehaus.groovy.ast.VariableScope;
 import org.codehaus.groovy.ast.expr.ClassExpression;
 import org.codehaus.groovy.ast.expr.ClosureExpression;
+import org.codehaus.groovy.ast.expr.ConstructorCallExpression;
 import org.codehaus.groovy.ast.expr.Expression;
 import org.codehaus.groovy.ast.expr.MethodCallExpression;
 import org.codehaus.groovy.ast.expr.PropertyExpression;
@@ -47,10 +50,14 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 
 import static org.apache.groovy.ast.tools.ClassNodeUtils.addGeneratedConstructor;
 import static org.apache.groovy.ast.tools.ClassNodeUtils.addGeneratedMethod;
+import static org.codehaus.groovy.ast.ClassHelper.CLONEABLE_TYPE;
+import static org.codehaus.groovy.ast.ClassHelper.isObjectType;
 import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveType;
 import static org.codehaus.groovy.ast.ClassHelper.make;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.args;
@@ -80,6 +87,8 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.returnS;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.stmt;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.ternaryX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.varX;
+import static org.codehaus.groovy.transform.sc.StaticCompilationVisitor.COMPILESTATIC_CLASSNODE;
+import static org.codehaus.groovy.transform.stc.StaticTypesMarker.DIRECT_METHOD_CALL_TARGET;
 import static org.objectweb.asm.Opcodes.ACC_FINAL;
 import static org.objectweb.asm.Opcodes.ACC_PROTECTED;
 import static org.objectweb.asm.Opcodes.ACC_PUBLIC;
@@ -92,7 +101,6 @@ public class AutoCloneASTTransformation extends AbstractASTTransformation {
     static final Class MY_CLASS = AutoClone.class;
     static final ClassNode MY_TYPE = make(MY_CLASS);
     static final String MY_TYPE_NAME = "@" + MY_TYPE.getNameWithoutPackage();
-    private static final ClassNode CLONEABLE_TYPE = make(Cloneable.class);
     private static final ClassNode BAOS_TYPE = make(ByteArrayOutputStream.class);
     private static final ClassNode BAIS_TYPE = make(ByteArrayInputStream.class);
     private static final ClassNode OOS_TYPE = make(ObjectOutputStream.class);
@@ -106,9 +114,18 @@ public class AutoCloneASTTransformation extends AbstractASTTransformation {
         AnnotationNode anno = (AnnotationNode) nodes[0];
         if (!MY_TYPE.equals(anno.getClassNode())) return;
 
-        if (parent instanceof ClassNode) {
-            ClassNode cNode = (ClassNode) parent;
+        if (parent instanceof ClassNode cNode) {
             if (!checkNotInterface(cNode, MY_TYPE_NAME)) return;
+            // GEP-21 Shape C: discard any stubber-emitted placeholder methods
+            // (e.g. the placeholder clone()) so the create*Clone paths add
+            // fresh real methods without tripping duplicate-method detection.
+            // Use removeMethod() rather than removeIf() on the list, since
+            // ClassNode keeps a parallel name->methods map.
+            List<MethodNode> stubs = new ArrayList<>();
+            for (MethodNode m : cNode.getMethods()) {
+                if (StubberSupport.isStub(m)) stubs.add(m);
+            }
+            stubs.forEach(cNode::removeMethod);
             cNode.addInterface(CLONEABLE_TYPE);
             boolean includeFields = memberHasValue(anno, "includeFields", true);
             AutoCloneStyle style = getStyle(anno, "style");
@@ -138,8 +155,8 @@ public class AutoCloneASTTransformation extends AbstractASTTransformation {
 
     private void createCloneSerialization(ClassNode cNode) {
         final BlockStatement body = new BlockStatement();
-        // def baos = new ByteArrayOutputStream()
-        final Expression baos = localVarX("baos");
+        // ByteArrayOutputStream baos = new ByteArrayOutputStream()
+        final Expression baos = localVarX("baos", BAOS_TYPE);
         body.addStatement(declS(baos, ctorX(BAOS_TYPE)));
 
         // baos.withObjectOutputStream{ it.writeObject(this) }
@@ -149,8 +166,8 @@ public class AutoCloneASTTransformation extends AbstractASTTransformation {
         writeClos.setVariableScope(new VariableScope());
         body.addStatement(stmt(callX(baos, "withObjectOutputStream", args(writeClos))));
 
-        // def bais = new ByteArrayInputStream(baos.toByteArray())
-        final Expression bais = localVarX("bais");
+        // ByteArrayInputStream bais = new ByteArrayInputStream(baos.toByteArray())
+        final Expression bais = localVarX("bais", BAIS_TYPE);
         body.addStatement(declS(bais, ctorX(BAIS_TYPE, args(callX(baos, "toByteArray")))));
 
         // return bais.withObjectInputStream(getClass().classLoader){ (<type>) it.readObject() }
@@ -162,7 +179,7 @@ public class AutoCloneASTTransformation extends AbstractASTTransformation {
         body.addStatement(returnS(callX(bais, "withObjectInputStream", args(classLoader, readClos))));
 
         new VariableScopeVisitor(sourceUnit, true).visitClass(cNode);
-        ClassNode[] exceptions = {make(CloneNotSupportedException.class)};
+        ClassNode[] exceptions = cloneExceptionsFor(cNode);
         addGeneratedMethod(cNode, "clone", ACC_PUBLIC, GenericsUtils.nonGeneric(cNode), Parameter.EMPTY_ARRAY, exceptions, body);
     }
 
@@ -184,7 +201,7 @@ public class AutoCloneASTTransformation extends AbstractASTTransformation {
             BlockStatement initBody = new BlockStatement();
             Parameter initParam = param(GenericsUtils.nonGeneric(cNode), "other");
             final Expression other = varX(initParam);
-            boolean hasParent = cNode.getSuperClass() != ClassHelper.OBJECT_TYPE;
+            boolean hasParent = !isObjectType(cNode.getSuperClass());
             if (hasParent) {
                 initBody.addStatement(stmt(ctorX(ClassNode.SUPER, other)));
             }
@@ -207,7 +224,7 @@ public class AutoCloneASTTransformation extends AbstractASTTransformation {
             }
             addGeneratedConstructor(cNode, ACC_PROTECTED, params(initParam), ClassNode.EMPTY_ARRAY, initBody);
         }
-        ClassNode[] exceptions = {make(CloneNotSupportedException.class)};
+        ClassNode[] exceptions = cloneExceptionsFor(cNode);
         addGeneratedMethod(cNode, "clone", ACC_PUBLIC, GenericsUtils.nonGeneric(cNode), Parameter.EMPTY_ARRAY, exceptions, block(stmt(ctorX(cNode, args(varX("this"))))));
     }
 
@@ -233,10 +250,17 @@ public class AutoCloneASTTransformation extends AbstractASTTransformation {
             addGeneratedConstructor(cNode, ACC_PUBLIC, Parameter.EMPTY_ARRAY, ClassNode.EMPTY_ARRAY, block(EmptyStatement.INSTANCE));
         }
         addSimpleCloneHelperMethod(cNode, fieldNodes, excludes);
-        final Expression result = localVarX("_result");
-        ClassNode[] exceptions = {make(CloneNotSupportedException.class)};
+        final Expression result = localVarX("_result", cNode);
+        ClassNode[] exceptions = cloneExceptionsFor(cNode);
+        ConstructorCallExpression init = ctorX(cNode);
+        if (AnnotatedNodeUtils.hasAnnotation(cNode, COMPILESTATIC_CLASSNODE) && cNode.getDeclaredConstructor(Parameter.EMPTY_ARRAY) == null) {
+            // constructor may not be added yet which confuses type checking, so add manually
+            MethodNode cons = new ConstructorNode(ACC_PUBLIC, Parameter.EMPTY_ARRAY, ClassNode.EMPTY_ARRAY, EmptyStatement.INSTANCE);
+            cons.setDeclaringClass(cNode);
+            init.putNodeMetaData(DIRECT_METHOD_CALL_TARGET, cons);
+        }
         addGeneratedMethod(cNode, "clone", ACC_PUBLIC, GenericsUtils.nonGeneric(cNode), Parameter.EMPTY_ARRAY, exceptions, block(
-            declS(result, ctorX(cNode)),
+            declS(result, init),
             stmt(callThisX("cloneOrCopyMembers", args(result))),
             returnS(result)));
     }
@@ -244,7 +268,7 @@ public class AutoCloneASTTransformation extends AbstractASTTransformation {
     private static void addSimpleCloneHelperMethod(ClassNode cNode, List<FieldNode> fieldNodes, List<String> excludes) {
         Parameter methodParam = new Parameter(GenericsUtils.nonGeneric(cNode), "other");
         final Expression other = varX(methodParam);
-        boolean hasParent = cNode.getSuperClass() != ClassHelper.OBJECT_TYPE;
+        boolean hasParent = !isObjectType(cNode.getSuperClass());
         BlockStatement methodBody = new BlockStatement();
         if (hasParent) {
             methodBody.addStatement(stmt(callSuperX("cloneOrCopyMembers", args(other))));
@@ -273,8 +297,8 @@ public class AutoCloneASTTransformation extends AbstractASTTransformation {
     private static void createClone(ClassNode cNode, List<FieldNode> fieldNodes, List<String> excludes) {
         final BlockStatement body = new BlockStatement();
 
-        // def _result = super.clone() as cNode
-        final Expression result = localVarX("_result");
+        // Type _result = (Type) super.clone()
+        final Expression result = localVarX("_result", cNode);
         body.addStatement(declS(result, castX(cNode, callSuperX("clone"))));
 
         for (FieldNode fieldNode : fieldNodes) {
@@ -294,18 +318,40 @@ public class AutoCloneASTTransformation extends AbstractASTTransformation {
         // return _result
         body.addStatement(returnS(result));
 
-        ClassNode[] exceptions = {make(CloneNotSupportedException.class)};
+        ClassNode[] exceptions = cloneExceptionsFor(cNode);
         addGeneratedMethod(cNode, "clone", ACC_PUBLIC, GenericsUtils.nonGeneric(cNode), Parameter.EMPTY_ARRAY, exceptions, body);
+    }
+
+    /**
+     * Returns the {@code throws} clause to use for a generated {@code clone()}
+     * override. Java overrides may narrow checked exceptions but cannot add new
+     * ones, so the nearest superclass-declared {@code clone()} dictates the
+     * shape: if it does not declare {@link CloneNotSupportedException}, neither
+     * may we (e.g. a subclass of {@link HashMap}, whose {@code clone()}
+     * is silenced). Defaults to {@code throws CloneNotSupportedException} when
+     * no narrowing parent intervenes, matching {@link Object#clone()}.
+     */
+    static ClassNode[] cloneExceptionsFor(ClassNode cNode) {
+        for (ClassNode sc = cNode.getSuperClass(); sc != null && !isObjectType(sc); sc = sc.getSuperClass()) {
+            MethodNode parent = sc.getDeclaredMethod("clone", Parameter.EMPTY_ARRAY);
+            if (parent != null) {
+                for (ClassNode ex : parent.getExceptions()) {
+                    if ("java.lang.CloneNotSupportedException".equals(ex.getName())) {
+                        return new ClassNode[]{make(CloneNotSupportedException.class)};
+                    }
+                }
+                return ClassNode.EMPTY_ARRAY;
+            }
+        }
+        return new ClassNode[]{make(CloneNotSupportedException.class)};
     }
 
     private static AutoCloneStyle getStyle(AnnotationNode node, String name) {
         final Expression member = node.getMember(name);
-        if (member instanceof PropertyExpression) {
-            PropertyExpression prop = (PropertyExpression) member;
+        if (member instanceof PropertyExpression prop) {
             Expression oe = prop.getObjectExpression();
-            if (oe instanceof ClassExpression) {
-                ClassExpression ce = (ClassExpression) oe;
-                if (ce.getType().getName().equals("groovy.transform.AutoCloneStyle")) {
+            if (oe instanceof ClassExpression ce) {
+                if ("groovy.transform.AutoCloneStyle".equals(ce.getType().getName())) {
                     return AutoCloneStyle.valueOf(prop.getPropertyAsString());
                 }
             }

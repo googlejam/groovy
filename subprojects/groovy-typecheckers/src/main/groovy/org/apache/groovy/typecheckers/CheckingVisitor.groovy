@@ -18,6 +18,8 @@
  */
 package org.apache.groovy.typecheckers
 
+import groovy.transform.AutoFinal
+import groovy.transform.CompileStatic
 import org.codehaus.groovy.ast.ClassCodeVisitorSupport
 import org.codehaus.groovy.ast.FieldNode
 import org.codehaus.groovy.ast.Variable
@@ -26,38 +28,74 @@ import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.control.SourceUnit
 
+/**
+ * Base visitor support for type-checker extensions that need lightweight constant propagation
+ * and access to the underlying variable represented by a {@link VariableExpression}.
+ */
+@AutoFinal @CompileStatic
 class CheckingVisitor extends ClassCodeVisitorSupport {
-    protected final Map<Expression, Expression> localConstVars = new HashMap<>()
 
+    /**
+     * Returns no backing source unit because subclasses report errors through the enclosing
+     * type-checking extension rather than this visitor.
+     */
+    @Override
+    protected SourceUnit getSourceUnit() {
+        null
+    }
+
+    /**
+     * Tracks local variables whose values are known constant expressions during the current visit.
+     */
+    protected final Map<Expression,Expression> localConstVars = [:]
+
+    /**
+     * Resolves a constant expression of the requested type from an expression, following tracked
+     * locals and field initializers when possible.
+     *
+     * @param exp expression to inspect
+     * @param type required runtime type for the constant value
+     * @return the matching constant expression, or {@code null} when none can be resolved
+     */
     protected Expression findConstExp(Expression exp, Class type) {
-        if (exp instanceof ConstantExpression && exp.value.getClass().isAssignableFrom(type)) {
+        findConstExp(exp, type, new HashSet<Variable>())
+    }
+
+    // seen holds the variables already followed, so initializers that refer back to one of them
+    // (static final String A = B; static final String B = A) end the search rather than recurse
+    private Expression findConstExp(Expression exp, Class type, Set<Variable> seen) {
+        if (exp instanceof ConstantExpression && type.isAssignableFrom(exp.value.getClass())) {
             return exp
         }
         if (exp instanceof VariableExpression) {
             def var = findTargetVariable(exp)
+            if (!seen.add(var)) {
+                return null
+            }
             if (var instanceof FieldNode && var.hasInitialExpression()) {
-                return findConstExp(var.initialExpression, type)
+                return findConstExp(var.initialExpression, type, seen)
             }
             if (localConstVars.containsKey(var)) {
-                return findConstExp(localConstVars.get(var), type)
+                return findConstExp(localConstVars.get(var), type, seen)
             }
         }
-        return null
+        null
     }
 
-    @Override
-    protected SourceUnit getSourceUnit() {
-        return null
-    }
-
-    static Variable findTargetVariable(final VariableExpression ve) {
-        Variable accessedVariable = ve.getAccessedVariable()
+    /**
+     * Follows {@link VariableExpression#accessedVariable} links until the original variable or field is found.
+     *
+     * @param ve variable expression to resolve
+     * @return the underlying target variable
+     */
+    protected Variable findTargetVariable(VariableExpression ve) {
+        def accessedVariable = ve.accessedVariable
         if (accessedVariable != null && accessedVariable != ve) {
             if (accessedVariable instanceof VariableExpression) {
-                return findTargetVariable((VariableExpression) accessedVariable)
+                return findTargetVariable(accessedVariable)
             }
             return accessedVariable
         }
-        return ve
+        ve
     }
 }

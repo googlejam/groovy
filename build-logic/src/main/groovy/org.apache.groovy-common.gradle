@@ -1,0 +1,99 @@
+/*
+ *  Licensed to the Apache Software Foundation (ASF) under one
+ *  or more contributor license agreements.  See the NOTICE file
+ *  distributed with this work for additional information
+ *  regarding copyright ownership.  The ASF licenses this file
+ *  to you under the Apache License, Version 2.0 (the
+ *  "License"); you may not use this file except in compliance
+ *  with the License.  You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing,
+ *  software distributed under the License is distributed on an
+ *  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *  KIND, either express or implied.  See the License for the
+ *  specific language governing permissions and limitations
+ *  under the License.
+ */
+import org.apache.groovy.gradle.Versions
+import org.apache.groovy.gradle.SharedConfiguration
+
+/**
+ * This is the base plugin for all modules in the Groovy build.
+ * Here you should ONLY apply thing which make sense on ALL projects.
+ * For example it doesn't make sense to apply the `java` plugin because
+ * not all projects are using it.
+ *
+ * Currently limited to repositories, shared extensions and license checks
+ */
+
+plugins {
+    id 'org.apache.groovy-bad-practices-detection'
+    id 'org.nosphere.apache.rat'
+}
+
+if (project == rootProject) {
+    def sharedConfiguration = project.extensions.create('sharedConfiguration', SharedConfiguration, project.objects, rootProject.layout, project.providers, rootProject.layout.buildDirectory.get().asFile, rootProject.logger, gradle.startParameter)
+    project.extensions.create('versions', Versions, sharedConfiguration, project.providers, project.layout)
+} else {
+    // declare the root's shared extensions locally so references resolve without
+    // the implicit parent-project property lookup removed in Gradle 10
+    project.extensions.add(SharedConfiguration, 'sharedConfiguration', rootProject.extensions.getByType(SharedConfiguration))
+    project.extensions.add(Versions, 'versions', rootProject.extensions.getByType(Versions))
+}
+
+group = 'org.apache.groovy'
+version = sharedConfiguration.groovyVersion.get()
+
+tasks.named('rat') {
+    verbose = true
+    inputDir = projectDir
+    excludes = ['subprojects/**', // covered above
+                'benchmark/**', // benchmarking files excluded from src zip
+                '.asf.yaml', // ASF metadata for github integration excluded from src zip
+                'config/**',
+                'src/install/**', // CI file excluded from src zip
+                'src/test/groovy/org/codehaus/groovy/ast/LineColumnCheck.txt', // test file
+                '**/.gradle/**', '**/wrapper/**', 'gradlew*',  // gradle wrapper files excluded from src zip
+                'artifactory.properties',  // potential file on CI server
+                'gradle.properties',  // artifactory release plugin removes header when bumping version
+                'gradle/verification-keyring.keys', // PGP keyring for dependency verification
+                'gradle/verification-keyring.dryrun.keys', // dry-run variant of the above
+                '.claude/**', // local AI-assistant session state
+                '**/build/**', '**/target/**', 'licenses/**', 'notices/**',
+                'out/**', '*.ipr', '**/*.iml', '*.iws', '.idea/**', // Intellij files
+                '**/style.css', // MIT license as per NOTICE/LICENSE files
+                '**/jquery-2.1.1.min.js', // MIT license as per NOTICE/LICENSE files
+                '**/fontawesome.min.css', '**/fonts/fa701/**', // Font Awesome Free, CC BY 4.0/SIL OFL 1.1/MIT as per NOTICE/LICENSE files
+                '**/js/prettify/**', // google-code-prettify, Apache 2.0 as per NOTICE/LICENSE files
+                '**/css/webfonts.css', '**/fonts/googlefonts/**', // Open Sans/Source Code Pro, SIL OFL 1.1 as per NOTICE/LICENSE files
+                '**/dashboard/vendor/**', // third-party MIT JS vendored for the gh-pages perf dashboard only; excluded from source zip
+                '**/groovy/console/ui/icons/*.svg', // Material Symbols, Apache 2.0 (see credits.txt)
+                '**/META-INF/native-image/**/*.json', // GraalVM reachability metadata; JSON cannot carry a license header
+                '.classpath', '.project', '.settings/**', 'bin/**', // Eclipse files
+                'bootstrap/settings.gradle', // empty file
+                '**/hs_err_pid**.log', // sometimes left over error files
+                '.jqwik-database'
+    ]
+}
+
+// ASF release policy requires each bundled component's license to be either appended
+// to LICENSE or stored in the package with a pointer to it from LICENSE. Groovy's
+// generated LICENSE files use pointers of the form "licenses/<name>.txt", so every
+// archive packaging one of them must also ship the texts it points at, or the pointer
+// dangles. Deriving that list from the LICENSE itself keeps the two from drifting.
+ext.licensePointerTexts = { licenseFile ->
+    def source = rootProject.file(licenseFile)
+    if (!source.isFile()) {
+        return []
+    }
+    def referenced = (source.text =~ /licenses\/([A-Za-z0-9._-]+\.txt)/).collect { it[1] }
+    (referenced.unique() - 'LICENSE-2.0.txt').collect { name ->
+        def text = rootProject.file("licenses/$name")
+        if (!text.isFile()) {
+            throw new GradleException("$source refers to licenses/$name, which does not exist")
+        }
+        text
+    }
+}

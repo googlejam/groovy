@@ -20,13 +20,18 @@ package org.codehaus.groovy.vmplugin;
 
 import groovy.lang.MetaClass;
 import groovy.lang.MetaMethod;
+import org.apache.groovy.lang.annotation.Incubating;
+import org.codehaus.groovy.GroovyBugError;
 import org.codehaus.groovy.ast.AnnotationNode;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.CompileUnit;
 
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
 import java.lang.reflect.AccessibleObject;
 import java.lang.reflect.Method;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -35,13 +40,57 @@ import java.util.Set;
  * This interface is for internal use only!
  */
 public interface VMPlugin {
-    void setAdditionalClassInformation(ClassNode c);
+
+    /**
+     * Returns plugin-specific default Groovy methods.
+     *
+     * @return the default Groovy method classes contributed by this plugin
+     */
     Class[] getPluginDefaultGroovyMethods();
+
+    /**
+     * Returns plugin-specific static Groovy methods.
+     *
+     * @return the static Groovy method classes contributed by this plugin
+     */
     Class[] getPluginStaticGroovyMethods();
-    void configureAnnotationNodeFromDefinition(AnnotationNode definition, AnnotationNode root);
-    void configureAnnotation(AnnotationNode an);
-    void configureClassNode(CompileUnit compileUnit, ClassNode classNode);
+
+    /**
+     * Adds VM-specific metadata to the given class node.
+     *
+     * @param node the class node to enrich
+     */
+    void setAdditionalClassInformation(ClassNode node);
+
+    /**
+     * Configures the supplied class node from its runtime type information.
+     *
+     * @param unit the compile unit that owns the class node
+     * @param node the class node to configure
+     */
+    void configureClassNode(CompileUnit unit, ClassNode node);
+
+    /**
+     * Copies runtime annotation metadata into the supplied annotation node.
+     *
+     * @param node the annotation node to configure
+     */
+    void configureAnnotation(AnnotationNode node);
+
+    /**
+     * Copies values from an annotation definition onto another annotation node.
+     *
+     * @param definition the source annotation definition
+     * @param node the annotation node to update
+     */
+    default void configureAnnotationNodeFromDefinition(AnnotationNode definition, AnnotationNode node) {
+    }
+
+    /**
+     * Invalidates cached call sites maintained by the plugin.
+     */
     void invalidateCallSites();
+
     /**
      * Returns a handle with bound receiver to invokeSpecial the given method.
      * This method will require at least Java 7, but since the source has to compile
@@ -65,6 +114,37 @@ public interface VMPlugin {
      * @return 7 for jdk7, 8 for jdk8, 9 for jdk9 or higher
      */
     int getVersion();
+
+    /**
+     * Returns java version, e.g. 1.8, 9, 11, 17
+     *
+     * @return java version
+     * @since 4.0.0
+     * @deprecated
+     */
+    @Deprecated
+    static String getJavaVersion() {
+        try {
+            return System.getProperty("java.specification.version");
+        } catch (SecurityException se) {
+            Class<?> versionClass;
+            try {
+                versionClass = Class.forName("java.lang.Runtime$Version"); // `Version` has been added since Java 9
+            } catch (ClassNotFoundException e) {
+                return "1.8";
+            }
+
+            try {
+                MethodHandles.Lookup lookup = MethodHandles.lookup();
+                MethodHandle versionMethodHandle = lookup.unreflect(Runtime.class.getMethod("version"));
+                Object version = versionMethodHandle.invoke();
+                MethodHandle majorMethodHandle = lookup.unreflect(versionClass.getMethod("major"));
+                return String.valueOf(majorMethodHandle.invoke(version));
+            } catch (Throwable t) {
+                throw new GroovyBugError(t.getMessage()); // should never happen
+            }
+        }
+    }
 
     /**
      * Check whether invoking {@link AccessibleObject#setAccessible(boolean)} on the accessible object will be completed successfully
@@ -92,14 +172,14 @@ public interface VMPlugin {
      * @param ao the accessible object
      * @return {@code true} if the {@code accessible} flag is set to {@code true};
      *         {@code false} if access cannot be enabled.
-     * @throws SecurityException if the request is denied by the security manager
+     * @throws SecurityException if the request is denied by the security manager (legacy comment)
      */
     boolean trySetAccessible(AccessibleObject ao);
 
     /**
      * transform meta method
      *
-     * @param metaClass meta class
+     * @param metaClass metaclass
      * @param metaMethod the original meta method
      * @param caller caller class, whose method sets accessible for methods
      * @return the transformed meta method
@@ -109,7 +189,7 @@ public interface VMPlugin {
     /**
      * transform meta method.
      *
-     * @param metaClass meta class
+     * @param metaClass metaclass
      * @param metaMethod the original meta method
      * @return the transformed meta method
      */
@@ -124,5 +204,18 @@ public interface VMPlugin {
      */
     default Map<String, Set<String>> getDefaultImportClasses(String[] packageNames) {
         return Collections.emptyMap();
+    }
+
+    /**
+     * Returns the list of record component names or the empty list if
+     * the class is not a record or running on a pre16 JDK.
+     *
+     * @param maybeRecord the class in question
+     * @return the default list of names
+     * @since 4.0.15
+     */
+    @Incubating
+    default List<String> getRecordComponentNames(Class<?> maybeRecord) {
+        return Collections.emptyList();
     }
 }

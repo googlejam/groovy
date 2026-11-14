@@ -39,9 +39,18 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.getInstancePropertyFiel
 import static org.objectweb.asm.Opcodes.ACC_FINAL;
 import static org.objectweb.asm.Opcodes.ACC_TRANSIENT;
 
-@org.codehaus.groovy.transform.GroovyASTTransformation(phase = CompilePhase.CLASS_GENERATION)
-public class ExternalizeVerifierASTTransformation extends org.codehaus.groovy.transform.AbstractASTTransformation {
-    static final Class MY_CLASS = ExternalizeVerifier.class;
+/**
+ * Checks a class annotated with {@link ExternalizeVerifier} during class generation.
+ * The class must have a no-arg constructor and implement {@link Externalizable}.
+ * A non-transient property that is not named in {@code excludes} cannot be final.
+ * When {@code includeFields} is true, instance fields that are not properties are
+ * checked the same way. When {@code checkPropertyTypes} is true, a non-primitive
+ * type must implement {@link Externalizable} or {@link Serializable}.
+ */
+@GroovyASTTransformation(phase = CompilePhase.CLASS_GENERATION)
+public class ExternalizeVerifierASTTransformation extends AbstractASTTransformation {
+
+    static final Class<?> MY_CLASS = ExternalizeVerifier.class;
     static final ClassNode MY_TYPE = make(MY_CLASS);
     static final String MY_TYPE_NAME = "@" + MY_TYPE.getNameWithoutPackage();
     private static final ClassNode EXTERNALIZABLE_TYPE = make(Externalizable.class);
@@ -54,8 +63,7 @@ public class ExternalizeVerifierASTTransformation extends org.codehaus.groovy.tr
         AnnotationNode anno = (AnnotationNode) nodes[0];
         if (!MY_TYPE.equals(anno.getClassNode())) return;
 
-        if (parent instanceof ClassNode) {
-            ClassNode cNode = (ClassNode) parent;
+        if (parent instanceof ClassNode cNode) {
             if (!hasNoArgConstructor(cNode)) {
                 addError(MY_TYPE_NAME + ": An Externalizable class requires a no-arg constructor but none found", cNode);
             }

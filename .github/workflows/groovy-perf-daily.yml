@@ -1,0 +1,178 @@
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: perf-daily
+
+on:
+  schedule:
+    - cron: '30 6 * * *'   # 06:30 UTC daily (after jmh-daily 06:00)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    if: github.repository == 'apache/groovy'   # don't run (or comment on commits) in forks
+    permissions:
+      contents: write         # gh-pages push
+      deployments: write
+      issues: write           # commit comments
+    runs-on: ubuntu-latest
+    env:
+      DEVELOCITY_ACCESS_KEY: ${{ secrets.DEVELOCITY_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-java@v6.1.0
+        with:
+          distribution: 'zulu'
+          java-version: 21
+          check-latest: true
+      # Cache downloaded dependency jars/poms + wrapper dists, keyed per
+      # branch; see groovy-build-test.yml (lts job) for the full rationale.
+      # The `perf` key segment keeps a cache lineage for the perf/JMH
+      # workflow family, whose dependency set differs from the main build.
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        # The action's own caching is disabled: dependency jars and wrapper
+        # dists are cached by the explicit branch-keyed cache step below instead.
+        with:
+          cache-disabled: true
+      # On Windows setup-gradle may set GRADLE_USER_HOME=D:\a\.gradle, so
+      # caching ~/.gradle never hits and the save fails path validation.
+      - name: "🗄 Cache Gradle dependencies (GRADLE_USER_HOME modules-2 + wrapper)"
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ env.GRADLE_USER_HOME }}/caches/modules-2
+            ${{ env.GRADLE_USER_HOME }}/wrapper
+          key: gradle-deps-${{ runner.os }}-perf-${{ github.base_ref || github.ref_name }}-${{ hashFiles('versions.properties', 'gradle/wrapper/gradle-wrapper.properties', 'settings.gradle', 'build-logic/build.gradle') }}
+          restore-keys: |
+            gradle-deps-${{ runner.os }}-perf-${{ github.base_ref || github.ref_name }}-
+
+      # Compiles a fixed set of source files using current + latest 3.x/4.x/5.x/6.x.
+      # Versions tracked are configured in subprojects/performance/build.gradle
+      # via `versions 'current', versions.latest3, versions.latest4, versions.latest5, versions.latest6`.
+      - name: Compiler performance tests
+        run: ./gradlew :perf:performanceTests
+        timeout-minutes: 120
+
+      # Dashboard: https://apache.github.io/groovy/dev/bench/perf/compiler/
+      # Data is appended to dev/bench/perf/compiler/data.js on the gh-pages branch.
+      # To remove a noisy run for commit <BAD_SHA>:
+      #   git checkout gh-pages
+      #   F=dev/bench/perf/compiler/data.js
+      #   sed 's/^window\.BENCHMARK_DATA = //; s/;[[:space:]]*$//' "$F" > /tmp/d.json
+      #   jq 'del(.entries[][] | select(.commit.id == "<BAD_SHA>"))' /tmp/d.json > /tmp/c.json
+      #   { printf 'window.BENCHMARK_DATA = '; cat /tmp/c.json; printf ';\n'; } > "$F"
+      #   git commit -am "Drop noisy perf run for <BAD_SHA>" && git push
+      - name: Publish to dashboard
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
+        with:
+          name: 'Compiler Performance'
+          tool: 'customSmallerIsBetter'
+          output-file-path: subprojects/performance/build/performance-results.json
+          benchmark-data-dir-path: dev/bench/perf/compiler
+          gh-pages-branch: gh-pages
+          auto-push: true
+          comment-always: true
+          alert-threshold: '140%'
+          fail-on-alert: false
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Deterministic dispatch metrics: class-loading and bytecode-size
+      # counters from a fixed cold-dispatch workload. Values are exact for a
+      # given JDK + Groovy build (no timing), so they are comparable across
+      # runner hardware and get a tight alert threshold.
+      # Dashboard data: dev/bench/perf/dispatch/data.js on gh-pages.
+      - name: Dispatch metrics
+        run: ./gradlew :perf:dispatchMetrics
+        timeout-minutes: 20
+      - name: "🛑 Stop Gradle daemon before cache save"
+        if: always()
+        continue-on-error: true
+        run: ./gradlew --stop
+      - name: "🧹 Scrub Gradle cache lock files before save"
+        if: always()
+        shell: bash
+        run: |
+          dir="${GRADLE_USER_HOME:-$HOME/.gradle}/caches"
+          [ -d "$dir" ] || { echo "No $dir — nothing to scrub."; exit 0; }
+          deleted=0
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            echo "lock: $f"
+            if rm -f "$f"; then
+              deleted=$((deleted + 1))
+            else
+              echo "skipped busy lock: $f"
+            fi
+          done < <(find "$dir" -name '*.lock' 2>/dev/null)
+          echo "Scrubbed $deleted Gradle cache lock file(s) before cache save."
+
+      - name: Publish dispatch metrics
+        uses: benchmark-action/github-action-benchmark@4322e5726e6334590d251fc4f92bec0efafc45dc # v1.22.2
+        with:
+          name: 'Dispatch Metrics'
+          tool: 'customSmallerIsBetter'
+          output-file-path: subprojects/performance/build/dispatch-metrics.json
+          benchmark-data-dir-path: dev/bench/perf/dispatch
+          gh-pages-branch: gh-pages
+          auto-push: true
+          comment-always: true
+          alert-threshold: '110%'
+          fail-on-alert: false
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The action writes a default index.html on first run and leaves it in
+      # place after that. We overlay our custom (4-series, normalised) page
+      # every run, but only commit if it has actually changed. The gh-pages
+      # root landing page is synced from source control here too, so new
+      # dashboards get linked via normal review rather than manual gh-pages
+      # edits.
+      - name: Install custom dashboard pages
+        run: |
+          set -euo pipefail
+          # Sync the custom page AND its locally-vendored JS (vendor/) so the
+          # published dashboard has no third-party CDN runtime dependency.
+          SRC_DIR=subprojects/performance/dashboard
+          DEST_DIR=dev/bench/perf/compiler
+          git fetch origin gh-pages
+          git worktree add /tmp/gh-pages gh-pages
+          mkdir -p "/tmp/gh-pages/$DEST_DIR/vendor"
+          cp "$SRC_DIR/index.html" "/tmp/gh-pages/$DEST_DIR/index.html"
+          # Mirror vendor/ exactly (drop files removed upstream, e.g. on a
+          # version bump) but keep data.js and other generated siblings.
+          rsync -a --delete "$SRC_DIR/vendor/" "/tmp/gh-pages/$DEST_DIR/vendor/"
+          # Landing page for apache.github.io/groovy — source of truth is
+          # root-index.html on master; the gh-pages copy is overwritten.
+          cp "$SRC_DIR/root-index.html" /tmp/gh-pages/index.html
+          cd /tmp/gh-pages
+          git add "$DEST_DIR/index.html" "$DEST_DIR/vendor" index.html
+          if git diff --cached --quiet; then
+            echo 'Dashboard pages and vendored assets already up to date.'
+          else
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m 'Update dashboard pages'
+            git push origin gh-pages
+          fi
+
+      - name: Upload reports-perf-compiler
+        uses: actions/upload-artifact@v7
+        with:
+          name: reports-perf-compiler
+          path: |
+            subprojects/performance/build/performance-results.json
+            subprojects/performance/build/compilation-stats-*.csv

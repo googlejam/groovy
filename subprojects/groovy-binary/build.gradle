@@ -16,7 +16,6 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-import org.apache.tools.ant.filters.ReplaceTokens
 
 plugins {
     id 'org.apache.groovy-distribution'
@@ -24,27 +23,39 @@ plugins {
     id 'org.apache.groovy-asciidoctor'
 }
 
+//only used when testing locally built artifacts, not for publishing
+//repositories {
+//    mavenLocal()
+//    mavenCentral()
+//}
+
 docAggregation {
     excludeFromJavadoc '**/*.html',
             '**/*.groovy',
-            '**/GroovyRecognizer.java' // generated file
+            '*.g4',
+            '**/GroovyRecognizer.java', // generated file
+            '**/*.tokens', // Antlr generated file
+            '**/*.interp' // Antlr generated file
 }
 
 tasks.named('asciidoctor') {
     attributes reldir_root: '.',
             reldir_jmx: '.',
             reldir_swing: '.',
-            reldir_console: '.'
+            reldir_console: '.',
+            reldir_groovysh: '.'
 }
 
 distribution {
-    docs ':', 'org.codehaus.groovy.runtime.DefaultGroovyMethods',
+    docs ':', 'org.codehaus.groovy.runtime.ArrayGroovyMethods',
+            'org.codehaus.groovy.runtime.DefaultGroovyMethods',
             'org.codehaus.groovy.runtime.DefaultGroovyStaticMethods',
             'org.codehaus.groovy.runtime.EncodingGroovyMethods',
             'org.codehaus.groovy.runtime.IOGroovyMethods',
             'org.codehaus.groovy.runtime.ProcessGroovyMethods',
             'org.codehaus.groovy.runtime.ResourceGroovyMethods',
             'org.codehaus.groovy.runtime.SocketGroovyMethods',
+            'org.codehaus.groovy.runtime.StreamGroovyMethods',
             'org.codehaus.groovy.runtime.StringGroovyMethods',
             'org.codehaus.groovy.vmplugin.v8.PluginDefaultGroovyMethods',
             'org.codehaus.groovy.vmplugin.v9.PluginDefaultGroovyMethods',
@@ -59,6 +70,12 @@ distribution {
     docs ':groovy-jsr223', 'org.codehaus.groovy.jsr223.ScriptExtensions',
             'org.codehaus.groovy.jsr223.ScriptStaticExtensions'
 
+    // Exclude groovy-concurrent-java from doc classpath — its classes
+    // already exist in core and would trigger the duplicate warning
+    configurations.allSourcesRuntimeClasspath {
+        exclude module: 'groovy-concurrent-java'
+    }
+
     distSpec = copySpec {
         from rootProject.file("licenses/LICENSE-BINZIP")
         from rootProject.file("notices/NOTICE-BINZIP")
@@ -67,6 +84,8 @@ distribution {
             from(configurations.distributionsRuntimeClasspath) {
                 exclude {
                     it.file.name.contains('activation') ||
+                            it.file.name.contains('groovy-raw') ||
+                            it.file.name.contains('groovy-concurrent-java') ||
                             it.file.name.contains('livetribe-jsr223') ||
                             it.file.name.startsWith('openbeans-') ||
                             it.file.name.startsWith('asm-') ||
@@ -90,22 +109,34 @@ distribution {
         }
         into('bin') {
             from(rootProject.file('src/bin')) {
-                filter(ReplaceTokens, tokens: [GROOVYJAR: "groovy-${versions.groovy}.jar".toString()])
-                fileMode = 0755
+                def groovyJar = "groovy-${versions.groovy}.jar".toString()
+                filter { String line -> line.replace('@GROOVYJAR@', groovyJar) }
+                filePermissions { unix('rwxr-xr-x') }
                 exclude 'groovy.icns'
             }
-            from project(':groovy-docgenerator').file('src/main/resources/org/apache/groovy/docgenerator/groovy.ico')
+            from project.project(projects.groovyDocgenerator.path).file('src/main/resources/org/apache/groovy/docgenerator/groovy.ico')
         }
         into('licenses') {
             from rootProject.file('licenses')
+            // keep in sync with the licenses/*.txt files referenced from LICENSE-BINZIP
             include 'antlr4-license.txt'
             include 'asm-license.txt'
+            include 'commonmark-license.txt'
             include 'hamcrest-license.txt'
-            include 'jline2-license.txt'
-            include 'jsr166y-license.txt'
+            include 'jline3-license.txt'
+            include 'lsp4j-license.txt'
+            include 'jquery-js-license.txt'
             include 'jsr223-license.txt'
+            include 'jsvg-license.txt'
             include 'junit4-license.txt'
             include 'junit5-license.txt'
+            include 'mxparser-license.txt'
+            include 'normalize-stylesheet-license.txt'
+            include 'prism-license.txt'
+            include 'reactive-streams-license.txt'
+            include 'slf4j-license.txt'
+            include 'stax2-license.txt'
+            include 'treelayout-license.txt'
             include 'xstream-license.txt'
         }
     }
@@ -128,9 +159,11 @@ distribution {
         }
         into('licenses') {
             from rootProject.file('licenses')
+            // keep in sync with the licenses/*.txt files referenced from LICENSE-DOC
             include 'asciidoc-style-license.txt'
             include 'jquery-js-license.txt'
             include 'normalize-stylesheet-license.txt'
+            include 'prism-license.txt'
         }
         from rootProject.file("licenses/LICENSE-DOC")
         from rootProject.file("notices/NOTICE-BASE")
@@ -150,13 +183,24 @@ distribution {
                             '**/*.iws',        // used by Intellij IDEA
                             '.settings',       // used by Eclipse
                             '.classpath',      // used by Eclipse
-                            '.gradle'          // used by Gradle
+                            '.gradle',         // used by Gradle
+                            '**/*.dryrun.*',   // gitignored output of `--write-verification-metadata --dry-run`
+                            '**/.jqwik-database', // gitignored jqwik test-run state
+                            '**/*.class'       // a source release should never bundle bytecode
+                                               // even from stale output dirs in a dirty checkout
+                    if (project.projectDir.name == 'performance') {
+                        // The dashboard is only for the gh-pages published view
+                        // (it bundles third-party JS); it plays no part in
+                        // running performance tests from the source release, so
+                        // keep it out of the source distribution.
+                        exclude 'dashboard'
+                    }
                 }
             }
         }
         ['xdocs',
          'config',
-         'buildSrc',
+         'build-logic',
          'licenses',
          'notices',
          'security',
@@ -183,9 +227,17 @@ distribution {
                             '.settings',      // used by Eclipse
                             '.classpath',     // used by Eclipse
                             '.gradle',        // used by Gradle
-                            '*.gpg'           // used by Gradle
+                            '*.gpg',          // used by Gradle
+                            '**/*.dryrun.*',  // gitignored output of `--write-verification-metadata --dry-run`
+                            '**/.jqwik-database', // gitignored jqwik test-run state
+                            '**/*.class'      // a source release should never bundle bytecode
                 }
             }
         }
     }
+}
+
+tasks.withType(AbstractArchiveTask).configureEach {
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
 }

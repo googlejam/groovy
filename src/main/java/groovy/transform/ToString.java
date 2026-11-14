@@ -20,6 +20,7 @@ package groovy.transform;
 
 import org.codehaus.groovy.transform.GroovyASTTransformationClass;
 
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -64,7 +65,7 @@ import java.lang.annotation.Target;
  * Customer(first:Tom, last:Jones, age:21, answer:42)
  * </pre>
  * If you have this example:
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * import groovy.transform.ToString
  * {@code @ToString} class NamedThing {
  *     String name
@@ -79,7 +80,7 @@ import java.lang.annotation.Target;
  * {@code @ToString} can also be used in conjunction with {@code @Canonical} and {@code @Immutable}.
  * <p>
  * If you want to omit fields or properties referring to <tt>null</tt>, you can use the <tt>ignoreNulls</tt> flag:
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * import groovy.transform.ToString
  * {@code @ToString(ignoreNulls = true)} class NamedThing {
  *     String name
@@ -106,8 +107,8 @@ import java.lang.annotation.Target;
  * my.company.NamedThing(name: Lassie)
  * </pre>
  * <p>More examples:</p>
- * <pre class="groovyTestCase">
- * //--------------------------------------------------------------------------    
+ * <pre class="language-groovy groovyTestCase">
+ * //--------------------------------------------------------------------------
  * // Most simple implementation of toString.
  * import groovy.transform.ToString
  *
@@ -122,8 +123,8 @@ import java.lang.annotation.Target;
  *
  * assert person.toString() == 'Person(mrhaki, [Groovy, Java])'
  * </pre>
- * <pre class="groovyTestCase">
- * //--------------------------------------------------------------------------    
+ * <pre class="language-groovy groovyTestCase">
+ * //--------------------------------------------------------------------------
  * // includeNames to output the names of the properties.
  * import groovy.transform.ToString
  *
@@ -138,7 +139,7 @@ import java.lang.annotation.Target;
  *
  * assert person.toString() == 'Person(name:mrhaki, likes:[Groovy, Java])'
  * </pre>
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * //--------------------------------------------------------------------------
  * // includeFields to not only output properties, but also field values.
  * import groovy.transform.ToString
@@ -155,7 +156,7 @@ import java.lang.annotation.Target;
  * assert person.toString() == 'Person(name:mrhaki, likes:[Groovy, Java], active:false)'
  * </pre>
  * <pre>
- * //--------------------------------------------------------------------------    
+ * //--------------------------------------------------------------------------
  * // Use includeSuper to include properties from super class in output.
  * import groovy.transform.ToString
  *
@@ -175,8 +176,8 @@ import java.lang.annotation.Target;
  *
  * assert student.toString() == 'Student(courses:[IT, Business], super:Person(name:mrhaki, likes:[Groovy, Java]))'
  * </pre>
- * <pre class="groovyTestCase">
- * //--------------------------------------------------------------------------    
+ * <pre class="language-groovy groovyTestCase">
+ * //--------------------------------------------------------------------------
  * // excludes active field and likes property from output
  * import groovy.transform.ToString
  *
@@ -191,7 +192,7 @@ import java.lang.annotation.Target;
  *
  * assert person.toString() == 'Person(name:mrhaki)'
  * </pre>
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * //--------------------------------------------------------------------------
  * // Don't include the package name in the output
  * package com.mrhaki.blog.groovy
@@ -208,7 +209,7 @@ import java.lang.annotation.Target;
  *
  * assert course.toString() == 'Course(Groovy 101, 200)'
  * </pre>
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * //--------------------------------------------------------------------------
  * // Don't use properties with null value.
  * package com.mrhaki.blog.groovy
@@ -225,7 +226,7 @@ import java.lang.annotation.Target;
  *
  * assert course.toString() == 'com.mrhaki.blog.groovy.Course(Groovy 101)'
  * </pre>
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * //--------------------------------------------------------------------------
  * // Cache toString() result.
  * package com.mrhaki.blog.groovy
@@ -247,16 +248,19 @@ import java.lang.annotation.Target;
  *
  * assert course.toString() == 'com.mrhaki.blog.groovy.Course(Groovy 101, 200)'
  * assert course.title == 'Grails with REST'
- * </pre> 
+ * </pre>
  *
  * @see groovy.transform.Immutable
  * @see groovy.transform.Canonical
  * @since 1.8.0
  */
-@java.lang.annotation.Documented
-@Retention(RetentionPolicy.RUNTIME)
-@Target({ElementType.TYPE})
-@GroovyASTTransformationClass("org.codehaus.groovy.transform.ToStringASTTransformation")
+@Documented
+@Retention(RetentionPolicy.SOURCE)
+@Target(ElementType.TYPE)
+@GroovyASTTransformationClass({
+        "org.codehaus.groovy.transform.ToStringASTStubber",
+        "org.codehaus.groovy.transform.ToStringASTTransformation"
+})
 public @interface ToString {
     /**
      * List of field and/or property names to exclude from generated toString.
@@ -363,4 +367,39 @@ public @interface ToString {
      * @since 4.0.0
      */
     boolean pojo() default false;
+
+    /**
+     * The String to use after the classname and before the list of properties/fields.
+     *
+     * @since 4.0.0
+     */
+    String leftDelimiter() default "(";
+
+    /**
+     * The String to use after the list of properties/fields.
+     *
+     * @since 4.0.0
+     */
+    String rightDelimiter() default ")";
+
+    /**
+     * The string to use between the name of the property/field and its value when {@code includeNames} is true.
+     *
+     * @since 4.0.0
+     */
+    String nameValueSeparator() default ":";
+
+    /**
+     * The string to use between each property/field.
+     *
+     * @since 4.0.0
+     */
+    String fieldSeparator() default ", ";
+
+    /**
+     * Whether to access properties directly by their fields (faster) or via their getters.
+     *
+     * @since 4.0.12
+     */
+    boolean useGetters() default true;
 }

@@ -16,14 +16,15 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
 import org.codehaus.groovy.ast.ClassHelper
 import org.codehaus.groovy.ast.ModuleNode
 import org.codehaus.groovy.control.SourceUnit
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 final class Groovy9666 {
+
     @Test
     void testCanIterateImportsWhileAdding() {
         def mn = new ModuleNode((SourceUnit)null)
@@ -40,9 +41,9 @@ final class Groovy9666 {
     void testSimulateImportCaseChangingTransform() {
         def mn = new ModuleNode((SourceUnit)null)
 
-        mn.addStarImport('foo.bar')
+        mn.addStarImport('foo.bar.')
         assert mn.starImports.size() == 1
-        assert mn.starImports*.text == ['import foo.bar*']
+        assert mn.starImports*.text == ['import foo.bar.*']
 
         // simulate xform that manipulates imports as per some DSL context
         def copy = mn.starImports.clone()
@@ -52,6 +53,6 @@ final class Groovy9666 {
         }
 
         assert mn.starImports.size() == 1
-        assert mn.starImports*.text == ['import FOO.BAR*']
+        assert mn.starImports*.text == ['import FOO.BAR.*']
     }
 }

@@ -16,23 +16,28 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-class SubscriptOnStringArrayBug extends TestSupport {
+import groovy.bugs.TestSupport
+import org.junit.jupiter.api.Test
 
+final class SubscriptOnStringArrayBug extends TestSupport {
+
+    @Test
     void testArraySubscript() {
         def array = getMockArguments()
- 
-        assert array[1] == "b"
-        
-        array[0] = "d"
-        
-        assert array[0] == "d"
+
+        assert array[1] == 'b'
+
+        array[0] = 'd'
+
+        assert array[0] == 'd'
     }
-    
+
+    @Test
     void testRobsTestCase() {
-        def array = "one two three".split(" ")
-        
-        assert array[1] == "two"
+        def array = 'one two three'.split(' ')
+
+        assert array[1] == 'two'
     }
 }

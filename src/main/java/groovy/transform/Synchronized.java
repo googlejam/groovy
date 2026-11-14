@@ -20,6 +20,7 @@ package groovy.transform;
 
 import org.codehaus.groovy.transform.GroovyASTTransformationClass;
 
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -43,7 +44,7 @@ import java.lang.annotation.Target;
  * parameter to the {@code @Synchronized} annotation. In this usage variant, the lock field
  * will not be created automatically, and you must explicitly create it yourself.
  * <p>
- * <em>Rationale:</em> Locking on <code>this</code> or your own class object can have unfortunate side-effects,
+ * <em>Rationale:</em> Locking on <code>this</code> or your own class object can have unfortunate side effects,
  * as other code not under your control can lock on these objects as well, which can
  * cause race conditions and other nasty threading-related bugs.
  * <p>
@@ -105,7 +106,7 @@ import java.lang.annotation.Target;
  * a 0-size array is. Therefore, using {@code @Synchronized} will not prevent your
  * object from being serialized.
  * <p>More examples:</p>
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * import groovy.transform.Synchronized
  *
  * class Util {
@@ -138,7 +139,7 @@ import java.lang.annotation.Target;
  * def tc1 = Thread.start {
  *     100.times {
  *         util.workOnCounter()
- *         sleep 20 
+ *         sleep 20
  *         util.workOnList()
  *         sleep 10
  *     }
@@ -146,7 +147,7 @@ import java.lang.annotation.Target;
  * def tc2 = Thread.start {
  *     100.times {
  *         util.workOnCounter()
- *         sleep 10 
+ *         sleep 10
  *         util.workOnList()
  *         sleep 15
  *     }
@@ -157,9 +158,9 @@ import java.lang.annotation.Target;
  *
  * @since 1.7.3
  */
-@java.lang.annotation.Documented
+@Documented
 @Retention(RetentionPolicy.SOURCE)
-@Target({ElementType.METHOD})
+@Target(ElementType.METHOD)
 @GroovyASTTransformationClass("org.codehaus.groovy.transform.SynchronizedASTTransformation")
 public @interface Synchronized {
     /**

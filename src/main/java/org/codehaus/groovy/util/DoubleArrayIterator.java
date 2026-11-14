@@ -18,38 +18,44 @@
  */
 package org.codehaus.groovy.util;
 
-import java.lang.reflect.Array;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
 
 /**
- * Allow a double array to be used where an Iterator is expected.
+ * Allows a double array to be used where an Iterator is expected.
  *
  * @since 3.0.8
  */
 public class DoubleArrayIterator implements Iterator<Double> {
     private final double[] array;
-    private final int length;
     private int index;
 
-    public DoubleArrayIterator(double[] array) {
+    /**
+     * Creates an iterator that traverses the supplied array in index order.
+     *
+     * @param array the backing array to iterate
+     */
+    public DoubleArrayIterator(final double[] array) {
         this.array = array;
-        length = Array.getLength(array);
     }
 
+    /** {@inheritDoc} */
     @Override
     public boolean hasNext() {
-        return index < length;
+        return array.length > index;
     }
 
+    /** {@inheritDoc} */
     @Override
     public Double next() {
-        if (!hasNext()) {
-            throw new NoSuchElementException();
+        try {
+            return array[index++];
+        } catch (IndexOutOfBoundsException e) {
+            throw new NoSuchElementException(e.getMessage());
         }
-        return array[index++];
     }
 
+    /** {@inheritDoc} */
     @Override
     public void remove() {
         throw new UnsupportedOperationException("Remove not supported for arrays");

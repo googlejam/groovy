@@ -19,8 +19,8 @@
 package groovy.test;
 
 import groovy.lang.Closure;
-import groovy.test.GroovyAssert;
 import junit.framework.TestCase;
+import org.codehaus.groovy.runtime.FormatHelper;
 import org.codehaus.groovy.runtime.InvokerHelper;
 import org.codehaus.groovy.runtime.typehandling.DefaultTypeTransformation;
 
@@ -30,16 +30,22 @@ import java.util.logging.Logger;
 /**
  * A JUnit 3 {@link junit.framework.TestCase} base class in Groovy.
  *
- * In case JUnit 4 is used, see {@link groovy.test.GroovyAssert}.
+ * In case JUnit 4 is used, see {@link GroovyAssert}.
  *
- * @see groovy.test.GroovyAssert
+ * @see GroovyAssert
  */
 public class GroovyTestCase extends TestCase {
 
+    /**
+     * Logger available to this test case and its subclasses.
+     */
     protected static Logger log = Logger.getLogger(GroovyTestCase.class.getName());
 
     private static final AtomicInteger scriptFileNameCounter = new AtomicInteger(0);
 
+    /**
+     * Prefix used when generating temporary script names for test helpers.
+     */
     public static final String TEST_SCRIPT_NAME_PREFIX = "TestScript";
 
     private boolean useAgileDoxNaming = false;
@@ -57,6 +63,11 @@ public class GroovyTestCase extends TestCase {
         }
     }
 
+    /**
+     * Returns the underlying JUnit method name before any AgileDox formatting is applied.
+     *
+     * @return the declared test method name
+     */
     public String getMethodName() {
         return super.getName();
     }
@@ -69,7 +80,7 @@ public class GroovyTestCase extends TestCase {
      */
     protected void assertArrayEquals(Object[] expected, Object[] value) {
         String message =
-                "expected array: " + InvokerHelper.toString(expected) + " value array: " + InvokerHelper.toString(value);
+                "expected array: " + FormatHelper.toString(expected) + " value array: " + FormatHelper.toString(value);
         assertNotNull(message + ": expected should not be null", expected);
         assertNotNull(message + ": value should not be null", value);
         assertEquals(message, expected.length, value.length);
@@ -193,46 +204,54 @@ public class GroovyTestCase extends TestCase {
     }
 
     /**
-     * see {@link groovy.test.GroovyAssert#assertScript(String)}
+     * see {@link GroovyAssert#assertScript(String)}
      */
     protected void assertScript(final String script) throws Exception {
         GroovyAssert.assertScript(script);
     }
 
+    /**
+     * Builds a unique script name for the current test method.
+     *
+     * @return a synthetic script name suitable for shell-based assertions
+     */
     protected String getTestClassName() {
         return TEST_SCRIPT_NAME_PREFIX + getMethodName() + (scriptFileNameCounter.getAndIncrement()) + ".groovy";
     }
 
     /**
-     * see {@link groovy.test.GroovyAssert#shouldFail(groovy.lang.Closure)}
+     * see {@link GroovyAssert#shouldFail(Closure)}
      */
     protected String shouldFail(Closure code) {
         return GroovyAssert.shouldFail(code).getMessage();
     }
 
     /**
-     * see {@link groovy.test.GroovyAssert#shouldFail(Class, groovy.lang.Closure)}
+     * see {@link GroovyAssert#shouldFail(Class, Closure)}
      */
+    @SuppressWarnings("unchecked")
     protected String shouldFail(Class clazz, Closure code) {
         return GroovyAssert.shouldFail(clazz, code).getMessage();
     }
 
     /**
-     * see {@link groovy.test.GroovyAssert#shouldFailWithCause(Class, groovy.lang.Closure)}
+     * see {@link GroovyAssert#shouldFailWithCause(Class, Closure)}
      */
+    @SuppressWarnings("unchecked")
     protected String shouldFailWithCause(Class clazz, Closure code) {
         return GroovyAssert.shouldFailWithCause(clazz, code).getMessage();
     }
 
     /**
-     * see {@link groovy.test.GroovyAssert#shouldFail(Class, String)}
+     * see {@link GroovyAssert#shouldFail(Class, String)}
      */
+    @SuppressWarnings("unchecked")
     protected String shouldFail(Class clazz, String script) {
         return GroovyAssert.shouldFail(clazz, script).getMessage();
     }
 
     /**
-     * see {@link groovy.test.GroovyAssert#shouldFail(String)}
+     * see {@link GroovyAssert#shouldFail(String)}
      */
     protected String shouldFail(String script) {
         return GroovyAssert.shouldFail(script).getMessage();
@@ -246,7 +265,7 @@ public class GroovyTestCase extends TestCase {
     }
 
     /**
-     * see {@link groovy.test.GroovyAssert#notYetImplemented(java.lang.Object)}
+     * see {@link GroovyAssert#notYetImplemented(Object)}
      */
     public static boolean notYetImplemented(Object caller) {
         return GroovyAssert.notYetImplemented(caller);
@@ -257,12 +276,19 @@ public class GroovyTestCase extends TestCase {
      * <pre> GroovyTestCase.notYetImplemented(this); </pre>.
      *
      * @return <code>false</code> when not itself already in the call stack
-     * @see #notYetImplemented(java.lang.Object)
+     * @see #notYetImplemented(Object)
      */
     public boolean notYetImplemented() {
         return notYetImplemented(this);
     }
 
+    /**
+     * Asserts that two values compare equal using Groovy's coercion-aware equality semantics.
+     *
+     * @param message the message to use if the assertion fails
+     * @param expected the expected value
+     * @param actual the actual value
+     */
     public static void assertEquals(String message, Object expected, Object actual) {
         if (expected == null && actual == null)
             return;
@@ -271,10 +297,22 @@ public class GroovyTestCase extends TestCase {
         TestCase.assertEquals(message, expected, actual);
     }
 
+    /**
+     * Asserts that two values compare equal using Groovy's coercion-aware equality semantics.
+     *
+     * @param expected the expected value
+     * @param actual the actual value
+     */
     public static void assertEquals(Object expected, Object actual) {
         assertEquals(null, expected, actual);
     }
 
+    /**
+     * Asserts that two strings compare equal using Groovy's coercion-aware equality semantics.
+     *
+     * @param expected the expected value
+     * @param actual the actual value
+     */
     public static void assertEquals(String expected, String actual) {
         assertEquals(null, expected, actual);
     }

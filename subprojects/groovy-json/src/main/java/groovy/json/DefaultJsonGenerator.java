@@ -18,11 +18,13 @@
  */
 package groovy.json;
 
+import groovy.lang.Closure;
+import groovy.lang.MetaBeanProperty;
+import groovy.lang.MetaProperty;
+import groovy.util.Expando;
 import org.apache.groovy.json.internal.CharBuf;
 import org.apache.groovy.json.internal.Chr;
-import groovy.lang.Closure;
-import groovy.util.Expando;
-import org.codehaus.groovy.runtime.DefaultGroovyMethods;
+import org.codehaus.groovy.runtime.InvokerHelper;
 
 import java.io.File;
 import java.math.BigDecimal;
@@ -36,6 +38,7 @@ import java.util.Date;
 import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -52,6 +55,8 @@ import static groovy.json.JsonOutput.EMPTY_MAP_CHARS;
 import static groovy.json.JsonOutput.EMPTY_STRING_CHARS;
 import static groovy.json.JsonOutput.OPEN_BRACE;
 import static groovy.json.JsonOutput.OPEN_BRACKET;
+import static java.lang.reflect.Modifier.isPublic;
+import static java.lang.reflect.Modifier.isStatic;
 
 /**
  * A JsonGenerator that can be configured with various {@link JsonGenerator.Options}.
@@ -63,15 +68,28 @@ import static groovy.json.JsonOutput.OPEN_BRACKET;
  */
 public class DefaultJsonGenerator implements JsonGenerator {
 
+    /** Indicates whether {@code null} values are omitted from the output. */
     protected final boolean excludeNulls;
+    /** Indicates whether Unicode characters are emitted without escaping. */
     protected final boolean disableUnicodeEscaping;
+    /** Date format pattern used when serializing {@link Date} values. */
     protected final String dateFormat;
+    /** Locale used when formatting {@link Date} values. */
     protected final Locale dateLocale;
+    /** Time zone used when formatting {@link Date} values. */
     protected final TimeZone timezone;
+    /** Converters consulted before applying the default JSON serialization rules. */
     protected final Set<Converter> converters = new LinkedHashSet<Converter>();
+    /** Field names excluded from generated JSON objects. */
     protected final Set<String> excludedFieldNames = new HashSet<String>();
+    /** Field types excluded from generated JSON objects. */
     protected final Set<Class<?>> excludedFieldTypes = new HashSet<Class<?>>();
 
+    /**
+     * Creates a generator from the supplied serialization options.
+     *
+     * @param options configured generator options
+     */
     protected DefaultJsonGenerator(Options options) {
         excludeNulls = options.excludeNulls;
         disableUnicodeEscaping = options.disableUnicodeEscaping;
@@ -160,6 +178,12 @@ public class DefaultJsonGenerator implements JsonGenerator {
         }
     }
 
+    /**
+     * Serializes an unnamed value and writes it into the specified buffer.
+     *
+     * @param object the value to serialize
+     * @param buffer the output buffer
+     */
     protected void writeObject(Object object, CharBuf buffer) {
         writeObject(null, object, buffer);
     }
@@ -167,6 +191,7 @@ public class DefaultJsonGenerator implements JsonGenerator {
     /**
      * Serializes object and writes it into specified buffer.
      */
+    @SuppressWarnings("unchecked")
     protected void writeObject(String key, Object object, CharBuf buffer) {
 
         if (isExcludingValues(object)) {
@@ -232,12 +257,33 @@ public class DefaultJsonGenerator implements JsonGenerator {
         }
     }
 
-    protected Map<?, ?> getObjectProperties(Object object) {
-        Map<?, ?> properties = DefaultGroovyMethods.getProperties(object);
-        properties.remove("class");
-        properties.remove("declaringClass");
-        properties.remove("metaClass");
-        return properties;
+    /**
+     * Collects the public readable properties of the given object for JSON object serialization.
+     *
+     * @param object the object whose properties should be collected
+     * @return a map of property names to values
+     */
+    protected Map<?, ?> getObjectProperties(final Object object) {
+        List<MetaProperty> metaProperties = InvokerHelper.getMetaClass(object).getProperties();
+
+        Map<String, Object> namesAndValues = new LinkedHashMap<>(metaProperties.size());
+
+        for (MetaProperty mp : metaProperties) {
+            if (!isPublic(mp.getModifiers())) continue; // GROOVY-5169
+            if ( isStatic(mp.getModifiers())) continue; // GROOVY-7682
+
+            // skip write-only property: see File
+            if (mp instanceof MetaBeanProperty mbp) {
+                if (mbp.getField() == null && mbp.getGetter() == null) continue;
+            }
+
+            String name = mp.getName();
+            if ("class".equals(name) || "metaClass".equals(name) || "declaringClass".equals(name)) continue;
+
+            namesAndValues.put(name, mp.getProperty(object));
+        }
+
+        return namesAndValues;
     }
 
     /**
@@ -442,10 +488,19 @@ public class DefaultJsonGenerator implements JsonGenerator {
      */
     protected static class ClosureConverter implements Converter {
 
+        /** Type accepted by this converter. */
         protected final Class<?> type;
+        /** Closure used to convert matching values. */
         protected final Closure<?> closure;
+        /** Number of parameters expected by the conversion closure. */
         protected final int paramCount;
 
+        /**
+         * Creates a converter backed by the supplied closure.
+         *
+         * @param type the type handled by the converter
+         * @param closure the closure performing the conversion
+         */
         protected ClosureConverter(Class<?> type, Closure<?> closure) {
             if (type == null) {
                 throw new NullPointerException("Type parameter must not be null");
@@ -520,15 +575,24 @@ public class DefaultJsonGenerator implements JsonGenerator {
             return this.type == ((ClosureConverter)o).type;
         }
 
+        /**
+         * Returns a hash code based on the handled type.
+         *
+         * @return the hash code for this converter
+         */
         @Override
         public int hashCode() {
             return this.type.hashCode();
         }
 
+        /**
+         * Returns a string form that includes the handled type.
+         *
+         * @return a string representation of this converter
+         */
         @Override
         public String toString() {
             return super.toString() + "<" + this.type.toString() + ">";
         }
     }
-
 }

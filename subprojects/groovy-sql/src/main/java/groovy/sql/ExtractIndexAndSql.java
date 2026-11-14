@@ -36,6 +36,7 @@ class ExtractIndexAndSql {
 
     private static final Pattern NAMED_QUERY_PATTERN = Pattern.compile("(?<!:)(:)(\\w+)|\\?(\\d*)(?:\\.(\\w+))?");
     private static final char QUOTE = '\'';
+    private static final char DOUBLE_QUOTE = '"';
 
     private final String sql;
     private List<Tuple<?>> indexPropList;
@@ -71,10 +72,20 @@ class ExtractIndexAndSql {
         this.sql = sql;
     }
 
+    /**
+     * Returns the indexed property descriptors extracted from the original SQL.
+     *
+     * @return the indexed property descriptors in placeholder order
+     */
     List<Tuple<?>> getIndexPropList() {
         return indexPropList;
     }
 
+    /**
+     * Returns the SQL rewritten to use JDBC positional placeholders.
+     *
+     * @return the rewritten SQL
+     */
     String getNewSql() {
         return newSql;
     }
@@ -89,6 +100,11 @@ class ExtractIndexAndSql {
                     sb.append(adaptForNamedParams(currentChunk.toString(), indexPropList));
                     currentChunk = new StringBuilder();
                     appendToEndOfString(sb);
+                    break;
+                case DOUBLE_QUOTE:
+                    sb.append(adaptForNamedParams(currentChunk.toString(), indexPropList));
+                    currentChunk = new StringBuilder();
+                    appendToEndOfIdentifier(sb);
                     break;
                 case '-':
                     if (next() == '-') {
@@ -157,6 +173,27 @@ class ExtractIndexAndSql {
         return (index - 1) - pos;
     }
 
+    // Skip past a double-quoted identifier (SQL-standard delimited identifier).
+    // Contents are opaque: a doubled "" is an embedded quote; a lone " ends the identifier.
+    private void appendToEndOfIdentifier(StringBuilder buffer) {
+        buffer.append(DOUBLE_QUOTE);
+        ++index;
+        while (index < sql.length()) {
+            char c = sql.charAt(index);
+            buffer.append(c);
+            if (c == DOUBLE_QUOTE) {
+                if (next() == DOUBLE_QUOTE) {
+                    buffer.append(DOUBLE_QUOTE);
+                    ++index;
+                } else {
+                    return;
+                }
+            }
+            ++index;
+        }
+        throw new IllegalStateException("Failed to process query. Unterminated \" character?");
+    }
+
     private void appendToEndOfComment(StringBuilder buffer) {
         while (index < sql.length()) {
             char c = sql.charAt(index);
@@ -194,10 +231,10 @@ class ExtractIndexAndSql {
             newSql.append(sql, txtIndex, matcher.start()).append('?');
             String indexStr = matcher.group(1);
             if (indexStr == null) indexStr = matcher.group(3);
-            int index = (indexStr == null || indexStr.length() == 0 || ":".equals(indexStr)) ? 0 : Integer.parseInt(indexStr) - 1;
+            int index = (indexStr == null || indexStr.isEmpty() || ":".equals(indexStr)) ? 0 : Integer.parseInt(indexStr) - 1;
             String prop = matcher.group(2);
             if (prop == null) prop = matcher.group(4);
-            indexPropList.add(new Tuple<Object>(index, prop == null || prop.length() == 0 ? "<this>" : prop));
+            indexPropList.add(new Tuple<Object>(index, prop == null || prop.isEmpty() ? "<this>" : prop));
             txtIndex = matcher.end();
         }
         newSql.append(sql, txtIndex, sql.length()); // append ending SQL after last param.

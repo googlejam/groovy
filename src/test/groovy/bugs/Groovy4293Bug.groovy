@@ -16,22 +16,26 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy4293Bug extends GroovyTestCase {
+import static groovy.test.GroovyAssert.assertScript
+import static groovy.test.GroovyAssert.fail
+
+class Groovy4293Bug {
+    @Test
     void testNoBUGMessageForNullScriptPassedToCompiler() {
         try {
             assertScript """
                 def params = new Expando()
                 params.newValue = 23
                 def trendMap = ['worsening': (-2), 'slightly worsening':(-1), 'neutral':0 ,'slightly improving': 1,'improving':2]
-                
+
                 def obj = []
                 def el = [obj]
                 if (!el[1]) el[1] = "1"
-                
+
                 Eval.x(el[0],"x[1]="+ el[2] ? trendMap[params.newValue.toInteger()] : params.newValue.toInteger() )
             """
             fail('Eval call should have failed as null script is passed to it')

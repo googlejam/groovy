@@ -16,22 +16,21 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-/**
- */
-class CallingClosuresWithClosuresBug extends GroovyTestCase {
+final class CallingClosuresWithClosuresBug {
 
+    @Test
     void testBug() {
         def a = {1}
         // old workaround
         //def b = {a.call()}
         def b = {a()}
-        
+
         def value = b()
-        
+
         assert value == 1
     }
 }

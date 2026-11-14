@@ -26,18 +26,20 @@ import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.MethodNode;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
- * <p>Helper methods for reading/getting {@link org.codehaus.groovy.ast.AnnotationNode} instances.</p>
+ * <p>Helper methods for reading/getting {@link AnnotationNode} instances.</p>
  */
 public class AnnotationUtils {
 
     /**
-     * Checks whether the given {@link org.codehaus.groovy.ast.ClassNode} is annotated
+     * Checks whether the given {@link ClassNode} is annotated
      * with an annotations of the given package or full annotatedNode name.
      *
-     * @param annotatedNode     the {@link org.codehaus.groovy.ast.AnnotatedNode} to search for the given annotation
+     * @param annotatedNode     the {@link AnnotatedNode} to search for the given annotation
      * @param typeOrPackageName can either be a part of the package or the complete annotation class name
      * @return <tt>true</tt> if an annotation was found, <tt>false</tt> otherwise
      */
@@ -52,17 +54,17 @@ public class AnnotationUtils {
     }
 
     /**
-     * Gets the next {@link org.codehaus.groovy.ast.AnnotationNode} instance in the inheritance line which is annotated
+     * Gets the next {@link AnnotationNode} instance in the inheritance line which is annotated
      * with the given Annotation class <tt>anno</tt>.
      *
-     * @param type the {@link org.codehaus.groovy.ast.ClassNode} to check for the annotation
+     * @param type the {@link ClassNode} to check for the annotation
      * @param anno the annotation to watch out for
-     * @return the next {@link org.codehaus.groovy.ast.AnnotationNode} in the inheritance line, or <tt>null</tt>
+     * @return the next {@link AnnotationNode} in the inheritance line, or <tt>null</tt>
      */
     public static List<AnnotationNode> getAnnotationNodeInHierarchyWithMetaAnnotation(ClassNode type, ClassNode anno) {
-        List<AnnotationNode> result = new ArrayList<AnnotationNode>();
+        List<AnnotationNode> result = new ArrayList<>();
         for (AnnotationNode annotation : type.getAnnotations()) {
-            if (annotation.getClassNode().getAnnotations(anno).size() > 0) {
+            if (!annotation.getClassNode().getAnnotations(anno).isEmpty()) {
                 result.add(annotation);
             }
         }
@@ -84,18 +86,18 @@ public class AnnotationUtils {
      * @return a list of {@link AnnotationNode} all annotated with <tt>metaAnnotationClassNode</tt>
      */
     public static List<AnnotationNode> getAnnotationNodeInHierarchyWithMetaAnnotation(ClassNode type, MethodNode originMethodNode, ClassNode metaAnnotationClassNode) {
-        List<AnnotationNode> result = new ArrayList<AnnotationNode>();
+        List<AnnotationNode> result = new ArrayList<>();
 
         while (type != null) {
             MethodNode methodNode = type.getMethod(originMethodNode.getName(), originMethodNode.getParameters());
             if (methodNode != null) {
                 for (AnnotationNode annotation : methodNode.getAnnotations()) {
-                    if (annotation.getClassNode().getAnnotations(metaAnnotationClassNode).size() > 0) {
+                    if (!annotation.getClassNode().getAnnotations(metaAnnotationClassNode).isEmpty()) {
                         result.add(annotation);
                     }
                 }
 
-                if (result.size() > 0) return result;
+                if (!result.isEmpty()) return result;
             }
 
             type = type.getSuperClass();
@@ -105,28 +107,43 @@ public class AnnotationUtils {
     }
 
     /**
-     * Loads all annotation nodes of the given {@link org.codehaus.groovy.ast.AnnotatedNode} instance which are marked
+     * Loads all annotation nodes of the given {@link AnnotatedNode} instance which are marked
      * with the annotation <tt>metaAnnotationClassName</tt>.
      *
-     * @param annotatedNode           an {@link org.codehaus.groovy.ast.AnnotatedNode} from which the annotations are checked
+     * @param annotatedNode           an {@link AnnotatedNode} from which the annotations are checked
      * @param metaAnnotationClassName the name of the meta annotation
      * @return a list of {@link AnnotationNode} instances which implement the given <tt>metaAnnotationClass</tt>
      */
     public static List<AnnotationNode> hasMetaAnnotations(AnnotatedNode annotatedNode, String metaAnnotationClassName) {
-
-        ArrayList<AnnotationNode> result = new ArrayList<AnnotationNode>();
+        List<AnnotationNode> result = new ArrayList<>();
+        Map<ClassNode, Boolean> seen = new HashMap<>();
+        ClassNode type = ClassHelper.makeWithoutCaching(metaAnnotationClassName);
 
         for (AnnotationNode annotationNode : annotatedNode.getAnnotations()) {
-            if (CandidateChecks.isRuntimeClass(annotationNode.getClassNode())) continue;
-
-            // is the annotation marked with the given meta annotation?
-            List<AnnotationNode> metaAnnotations = annotationNode.getClassNode().getAnnotations(ClassHelper.makeWithoutCaching(metaAnnotationClassName));
-            if (metaAnnotations.isEmpty()) {
-                metaAnnotations = hasMetaAnnotations(annotationNode.getClassNode(), metaAnnotationClassName);
-            }
-
-            if (metaAnnotations.size() > 0) result.add(annotationNode);
+            if (hasMetaAnnotation(annotationNode.getClassNode(), type, seen))
+                result.add(annotationNode);
         }
+
         return result;
+    }
+
+    private static boolean hasMetaAnnotation(ClassNode annotationType, ClassNode metaAnnotationType, Map<ClassNode, Boolean> cache) {
+        if (CandidateChecks.isRuntimeClass(annotationType)) return false;
+        if (!cache.containsKey(annotationType)) {
+            boolean result = false;
+            if (!annotationType.getAnnotations(metaAnnotationType).isEmpty()) {
+                result = true;
+            } else {
+                cache.put(annotationType, false); // preliminary value to avoid cycles
+                for (AnnotationNode annotationNode : annotationType.getAnnotations()) {
+                    if (hasMetaAnnotation(annotationNode.getClassNode(), metaAnnotationType, cache)) {
+                        result = true;
+                        break;
+                    }
+                }
+            }
+            cache.put(annotationType, result);
+        }
+        return cache.get(annotationType);
     }
 }

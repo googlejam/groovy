@@ -30,15 +30,20 @@ import org.codehaus.groovy.runtime.StringGroovyMethods;
 import org.codehaus.groovy.util.ListHashMap;
 
 import java.io.PrintWriter;
+import java.io.Serial;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.Stack;
 
 /**
@@ -57,7 +62,7 @@ public class Node implements Serializable, Cloneable {
         setMetaClass(GroovySystem.getMetaClassRegistry().getMetaClass(Node.class), Node.class);
     }
 
-    private static final long serialVersionUID = 4121134753270542643L;
+    @Serial private static final long serialVersionUID = 4121134753270542643L;
 
     private Node parent;
 
@@ -76,8 +81,7 @@ public class Node implements Serializable, Cloneable {
     @Override
     public Object clone() {
         Object newValue = value;
-        if (value instanceof NodeList) {
-            NodeList nodes = (NodeList) value;
+        if (value instanceof NodeList nodes) {
             newValue = nodes.clone();
         }
         return new Node(null, name, new HashMap(attributes), newValue);
@@ -294,42 +298,78 @@ public class Node implements Serializable, Cloneable {
      * @param metaClass the original metaclass
      * @param nodeClass the class whose metaclass we wish to override (this class or a subclass)
      */
-    protected static void setMetaClass(final MetaClass metaClass, Class nodeClass) {
+    protected static void setMetaClass(final MetaClass metaClass, final Class nodeClass) {
         // TODO Is protected static a bit of a smell?
         // TODO perhaps set nodeClass to be Class<? extends Node>
-        final MetaClass newMetaClass = new DelegatingMetaClass(metaClass) {
-            @Override
-            public Object getAttribute(final Object object, final String attribute) {
-                Node n = (Node) object;
-                return n.get("@" + attribute);
-            }
+        GroovySystem.getMetaClassRegistry().setMetaClass(nodeClass, new NodeMetaClass(metaClass));
+    }
 
-            @Override
-            public void setAttribute(final Object object, final String attribute, final Object newValue) {
-                Node n = (Node) object;
-                n.attributes().put(attribute, newValue);
-            }
+    private static final class NodeMetaClass extends DelegatingMetaClass {
+        private NodeMetaClass(final MetaClass metaClass) {
+            super(metaClass);
+        }
 
-            @Override
-            public Object getProperty(Object object, String property) {
-                if (object instanceof Node) {
-                    Node n = (Node) object;
-                    return n.get(property);
-                }
-                return super.getProperty(object, property);
-            }
+        /** {@inheritDoc} */
+        @Override
+        public Object getAttribute(final Object object, final String attribute) {
+            return ((Node) object).get("@" + attribute);
+        }
 
-            @Override
-            public void setProperty(Object object, String property, Object newValue) {
-                if (property.startsWith("@")) {
-                    setAttribute(object, property.substring(1), newValue);
-                    return;
-                }
-                delegate.setProperty(object, property, newValue);
-            }
+        /** {@inheritDoc} */
+        @Override
+        public Object getAttribute(final Class sender, final Object object, final String attribute, final boolean isSuper) {
+            return getAttribute(object, attribute);
+        }
 
-        };
-        GroovySystem.getMetaClassRegistry().setMetaClass(nodeClass, newMetaClass);
+        /** {@inheritDoc} */
+        @Override
+        public void setAttribute(final Object object, final String attribute, final Object newValue) {
+            ((Node) object).attributes().put(attribute, newValue);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public void setAttribute(final Class sender, final Object object, final String attribute, final Object newValue, final boolean isSuper, final boolean isInner) {
+            setAttribute(object, attribute, newValue);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public Object getProperty(final Object object, final String property) {
+            if (object instanceof Node) {
+                return ((Node) object).get(property);
+            }
+            return super.getProperty(object, property);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public Object getProperty(final Class sender, final Object object, final String property, final boolean isSuper, final boolean isInner) {
+            if (object instanceof Node) {
+                return ((Node) object).get(property);
+            }
+            return super.getProperty(sender, object, property, isSuper, isInner);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public void setProperty(final Object object, final String property, final Object newValue) {
+            if (property.startsWith("@")) {
+                setAttribute(object, property.substring(1), newValue);
+            } else {
+                super.setProperty(object, property, newValue);
+            }
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public void setProperty(final Class sender, final Object object, final String property, final Object newValue, final boolean isSuper, final boolean isInner) {
+            if (property.startsWith("@")) {
+                setAttribute(object, property.substring(1), newValue);
+            } else {
+                super.setProperty(sender, object, property, newValue, isSuper, isInner);
+            }
+        }
     }
 
     /**
@@ -344,8 +384,7 @@ public class Node implements Serializable, Cloneable {
         if (value instanceof NodeList) {
             return ((NodeList) value).text();
         }
-        if (value instanceof Collection) {
-            Collection coll = (Collection) value;
+        if (value instanceof Collection coll) {
             String previousText = null;
             StringBuilder sb = null;
             for (Object child : coll) {
@@ -370,10 +409,7 @@ public class Node implements Serializable, Cloneable {
             if (sb != null) {
                 return sb.toString();
             } else {
-                if (previousText != null) {
-                    return previousText;
-                }
-                return "";
+                return Objects.requireNonNullElse(previousText, "");
             }
         }
         return "" + value;
@@ -503,8 +539,7 @@ public class Node implements Serializable, Cloneable {
     public NodeList getAt(QName name) {
         NodeList answer = new NodeList();
         for (Object child : children()) {
-            if (child instanceof Node) {
-                Node childNode = (Node) child;
+            if (child instanceof Node childNode) {
                 Object childNodeName = childNode.name();
                 if (name.matches(childNodeName)) {
                     answer.add(childNode);
@@ -523,11 +558,9 @@ public class Node implements Serializable, Cloneable {
     private NodeList getByName(String name) {
         NodeList answer = new NodeList();
         for (Object child : children()) {
-            if (child instanceof Node) {
-                Node childNode = (Node) child;
+            if (child instanceof Node childNode) {
                 Object childNodeName = childNode.name();
-                if (childNodeName instanceof QName) {
-                    QName qn = (QName) childNodeName;
+                if (childNodeName instanceof QName qn) {
                     if (qn.matches(name)) {
                         answer.add(childNode);
                     }
@@ -569,8 +602,7 @@ public class Node implements Serializable, Cloneable {
         List answer = new NodeList();
         for (Iterator iter = InvokerHelper.asIterator(value); iter.hasNext(); ) {
             Object child = iter.next();
-            if (child instanceof Node) {
-                Node childNode = (Node) child;
+            if (child instanceof Node childNode) {
                 List children = childNode.depthFirstRest(preorder);
                 if (preorder) answer.add(childNode);
                 if (children.size() > 1 || (children.size() == 1 && !(children.get(0) instanceof String))) answer.addAll(children);
@@ -623,8 +655,7 @@ public class Node implements Serializable, Cloneable {
     private void depthFirstRest(boolean preorder, int level, Closure c) {
         for (Iterator iter = InvokerHelper.asIterator(value); iter.hasNext(); ) {
             Object child = iter.next();
-            if (child instanceof Node) {
-                Node childNode = (Node) child;
+            if (child instanceof Node childNode) {
                 if (preorder) callClosureForNode(c, childNode, level);
                 childNode.depthFirstRest(preorder, level + 1, c);
                 if (!preorder) callClosureForNode(c, childNode, level);
@@ -671,8 +702,7 @@ public class Node implements Serializable, Cloneable {
                 } else {
                     stack.push(child);
                 }
-                if (child instanceof Node) {
-                    Node childNode = (Node) child;
+                if (child instanceof Node childNode) {
                     List children = childNode.getDirectChildren();
                     if (children.size() > 1 || (children.size() == 1 && !(children.get(0) instanceof String))) nextLevelChildren.addAll(preorder ? children : DefaultGroovyMethods.reverse(children));
                 }
@@ -709,7 +739,7 @@ public class Node implements Serializable, Cloneable {
      * @since 2.5.0
      */
     public void breadthFirst(Map<String, Object> options, Closure c) {
-        boolean preorder = Boolean.valueOf(options.get("preorder").toString());
+        boolean preorder = Boolean.parseBoolean(options.get("preorder").toString());
         if (preorder) callClosureForNode(c, this, 1);
         breadthFirstRest(preorder, 2, c);
         if (!preorder) callClosureForNode(c, this, 1);
@@ -727,8 +757,7 @@ public class Node implements Serializable, Cloneable {
                 } else {
                     stack.push(new Tuple2<Object, Integer>(child, level));
                 }
-                if (child instanceof Node) {
-                    Node childNode = (Node) child;
+                if (child instanceof Node childNode) {
                     List children = childNode.getDirectChildren();
                     if (children.size() > 1 || (children.size() == 1 && !(children.get(0) instanceof String))) nextLevelChildren.addAll(preorder ? children : DefaultGroovyMethods.reverse(children));
                 }
@@ -762,8 +791,7 @@ public class Node implements Serializable, Cloneable {
         List answer = new NodeList();
         for (Iterator iter = InvokerHelper.asIterator(value); iter.hasNext(); ) {
             Object child = iter.next();
-            if (child instanceof Node) {
-                Node childNode = (Node) child;
+            if (child instanceof Node childNode) {
                 answer.add(childNode);
             } else if (child instanceof String) {
                 answer.add(child);
@@ -772,6 +800,7 @@ public class Node implements Serializable, Cloneable {
         return answer;
     }
 
+    /** {@inheritDoc} */
     @Override
     public String toString() {
         return name + "[attributes=" + attributes + "; value=" + value + "]";
@@ -786,9 +815,8 @@ public class Node implements Serializable, Cloneable {
         new NodePrinter(out).print(this);
     }
 
-
     /**
-     * Converts the text of this GPathResult to a Integer object.
+     * Converts the text of this GPathResult to an Integer object.
      *
      * @return the GPathResult, converted to a <code>Integer</code>
      */
@@ -859,8 +887,92 @@ public class Node implements Serializable, Cloneable {
         return StringGroovyMethods.toBigInteger((CharSequence)text());
     }
 
+    /**
+     * The key used for text content when a node has both attributes and text.
+     *
+     * @since 6.0.0
+     */
+    public static final String TEXT_KEY = "_text";
+
+    /**
+     * Converts this Node tree into a nested {@code Map<String, Object>}.
+     * <p>
+     * Attributes and child elements are merged into a single map keyed by name.
+     * If a child element name collides with an attribute name, the child element wins.
+     * Leaf child elements (text only, no attributes) become String values.
+     * Non-leaf child elements and leaf elements with attributes become nested Maps (recursive).
+     * Repeated same-name sibling elements become Lists.
+     * Elements with both attributes and text content use the {@value #TEXT_KEY} key for the text.
+     *
+     * @return a Map representation of this Node
+     * @since 6.0.0
+     */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> toMap() {
+        Map<String, Object> map = new LinkedHashMap<>();
+
+        // copy attributes, tracking which keys came from attributes
+        Set<String> attributeKeys = new HashSet<>();
+        for (Map.Entry<?, ?> entry : ((Map<?, ?>) attributes()).entrySet()) {
+            String key = nameAsString(entry.getKey());
+            map.put(key, entry.getValue());
+            attributeKeys.add(key);
+        }
+
+        // process child nodes
+        boolean hasChildElements = false;
+        for (Object child : children()) {
+            if (child instanceof Node childNode) {
+                hasChildElements = true;
+                String key = nameAsString(childNode.name());
+                Object childValue;
+                if (childNode.isLeaf() && childNode.attributes().isEmpty()) {
+                    childValue = childNode.text();
+                } else {
+                    childValue = childNode.toMap();
+                }
+                Object existing = map.get(key);
+                if (existing == null || attributeKeys.remove(key)) {
+                    // first child element with this name (or replacing an attribute)
+                    map.put(key, childValue);
+                } else if (existing instanceof List) {
+                    ((List<Object>) existing).add(childValue);
+                } else {
+                    List<Object> list = new ArrayList<>();
+                    list.add(existing);
+                    list.add(childValue);
+                    map.put(key, list);
+                }
+            }
+        }
+
+        // if this node has attributes AND direct text, add _text entry
+        if (!attributes().isEmpty() && !hasChildElements) {
+            String text = text();
+            if (!text.isEmpty()) {
+                map.put(TEXT_KEY, text);
+            }
+        }
+
+        return map;
+    }
+
+    private static String nameAsString(Object name) {
+        if (name instanceof QName qn) {
+            return qn.getLocalPart();
+        }
+        return name.toString();
+    }
+
+    private boolean isLeaf() {
+        for (Object child : children()) {
+            if (child instanceof Node) return false;
+        }
+        return true;
+    }
+
     private boolean textIsEmptyOrNull() {
         String t = text();
-        return null == t || 0 == t.length();
+        return null == t || t.isEmpty();
     }
 }

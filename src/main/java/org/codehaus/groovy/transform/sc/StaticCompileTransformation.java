@@ -18,18 +18,16 @@
  */
 package org.codehaus.groovy.transform.sc;
 
+import groovy.transform.CompileStatic;
 import org.codehaus.groovy.ast.ASTNode;
-import org.codehaus.groovy.ast.AnnotatedNode;
 import org.codehaus.groovy.ast.AnnotationNode;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.MethodNode;
-import org.codehaus.groovy.ast.PropertyNode;
 import org.codehaus.groovy.ast.expr.Expression;
 import org.codehaus.groovy.classgen.asm.WriterControllerFactory;
 import org.codehaus.groovy.classgen.asm.sc.StaticTypesWriterControllerFactoryImpl;
 import org.codehaus.groovy.control.CompilePhase;
 import org.codehaus.groovy.control.SourceUnit;
-import org.codehaus.groovy.syntax.SyntaxException;
 import org.codehaus.groovy.transform.GroovyASTTransformation;
 import org.codehaus.groovy.transform.StaticTypesTransformation;
 import org.codehaus.groovy.transform.sc.transformers.StaticCompilationTransformer;
@@ -41,58 +39,81 @@ import java.util.Map;
 import static org.codehaus.groovy.transform.sc.StaticCompilationMetadataKeys.STATIC_COMPILE_NODE;
 
 /**
- * Handles the implementation of the {@link groovy.transform.CompileStatic} transformation.
+ * Handles the implementation of the {@link CompileStatic} transformation.
  */
 @GroovyASTTransformation(phase = CompilePhase.INSTRUCTION_SELECTION)
 public class StaticCompileTransformation extends StaticTypesTransformation {
 
     private final StaticTypesWriterControllerFactoryImpl factory = new StaticTypesWriterControllerFactoryImpl();
 
+    /**
+     * Applies static type checking and rewrites the annotated class or method for static compilation.
+     *
+     * @param nodes the annotation node and the annotated target node
+     * @param source the source unit being transformed
+     */
     @Override
     public void visit(final ASTNode[] nodes, final SourceUnit source) {
-        AnnotatedNode target = (AnnotatedNode) nodes[1];
+        ASTNode target = nodes[1];
         if (Boolean.TRUE.equals(target.getNodeMetaData(StaticTypeCheckingVisitor.class))) {
             return;
         }
         Map<String,Expression> members = ((AnnotationNode) nodes[0]).getMembers();
         Expression extensions = members.get("extensions");
-        StaticTypeCheckingVisitor visitor = null;
-        if (target instanceof ClassNode) {
-            ClassNode classNode = (ClassNode) target;
+        StaticTypeCheckingVisitor visitor;
+        if (target instanceof ClassNode classNode) {
             visitor = newVisitor(source, classNode);
             visitor.setCompilationUnit(compilationUnit);
             addTypeCheckingExtensions(visitor, extensions);
             classNode.putNodeMetaData(WriterControllerFactory.class, factory);
-            target.putNodeMetaData(STATIC_COMPILE_NODE, !visitor.isSkipMode(target));
+            classNode.putNodeMetaData(STATIC_COMPILE_NODE, !visitor.isSkipMode(classNode));
             visitor.initialize();
             visitor.visitClass(classNode);
-        } else if (target instanceof MethodNode) {
-            MethodNode methodNode = (MethodNode) target;
+        } else if (target instanceof MethodNode methodNode) {
             ClassNode declaringClass = methodNode.getDeclaringClass();
             visitor = newVisitor(source, declaringClass);
             visitor.setCompilationUnit(compilationUnit);
             addTypeCheckingExtensions(visitor, extensions);
-            methodNode.putNodeMetaData(STATIC_COMPILE_NODE, !visitor.isSkipMode(target));
+            methodNode.putNodeMetaData(STATIC_COMPILE_NODE, !visitor.isSkipMode(methodNode));
             if (declaringClass.getNodeMetaData(WriterControllerFactory.class) == null) {
                 declaringClass.putNodeMetaData(WriterControllerFactory.class, factory);
             }
             visitor.setMethodsToBeVisited(Collections.singleton(methodNode));
             visitor.initialize();
             visitor.visitMethod(methodNode);
-        } else if (!(target instanceof PropertyNode)) {
-            source.addError(new SyntaxException(STATIC_ERROR_PREFIX + "Unimplemented node type", target));
+        } else {
+            // GROOVY-12693: the annotation targets types, methods and constructors; any other
+            // placement (local variable, field, parameter, loop statement) is reported by
+            // ExtendedVerifier at class generation, so there is nothing to compile here
+            return;
         }
-        if (visitor != null) {
-            visitor.performSecondPass();
-        }
+        visitor.performSecondPass();
         StaticCompilationTransformer transformer = new StaticCompilationTransformer(source, visitor);
-        if (target instanceof ClassNode) {
-            transformer.visitClass((ClassNode) target);
-        } else if (target instanceof MethodNode) {
-            transformer.visitMethod((MethodNode) target);
+        if (target instanceof ClassNode classNode) {
+            transformer.visitClass(classNode);
+        } else if (target instanceof MethodNode methodNode) {
+            transformer.visitMethod(methodNode);
+            // GROOVY-12363: an anonymous inner class declared in this method is compiled
+            // statically with it (StaticCompilationVisitor marks it from the enclosing
+            // method), so its expressions need the same rewriting the class path applies
+            // to inner classes; e.g. an operator call left as a BinaryExpression fails at
+            // class generation in StaticTypesCallSiteWriter
+            methodNode.getDeclaringClass().getInnerClasses().forEachRemaining(innerClass -> {
+                if (innerClass.isAnonymous() && methodNode.equals(innerClass.getEnclosingMethod())
+                        && StaticCompilationVisitor.isStaticallyCompiled(innerClass)) {
+                    transformer.visitClass(innerClass);
+                }
+            });
         }
     }
 
+    /**
+     * Creates the type checking visitor used by this transformation.
+     *
+     * @param unit the source unit being processed
+     * @param node the class node that anchors the visit
+     * @return the static compilation visitor for the class
+     */
     @Override
     protected StaticTypeCheckingVisitor newVisitor(final SourceUnit unit, final ClassNode node) {
         return new StaticCompilationVisitor(unit, node);

@@ -19,6 +19,7 @@
 
 package org.codehaus.groovy.control.customizers.builder
 
+import groovy.transform.CompileDynamic
 import groovy.transform.CompileStatic
 import org.codehaus.groovy.control.customizers.ASTTransformationCustomizer
 
@@ -32,28 +33,46 @@ import org.codehaus.groovy.control.customizers.ASTTransformationCustomizer
  *
  * @since 2.1.0
  */
+@CompileStatic
 class ASTTransformationCustomizerFactory extends AbstractFactory {
 
+    /**
+     * Indicates that {@code ast} nodes do not accept nested builder content.
+     *
+     * @return {@code true}
+     */
     @Override
-    @CompileStatic
     boolean isLeaf() {
         true
     }
 
+    /**
+     * Leaves attribute handling to {@link #newInstance(FactoryBuilderSupport, Object, Object, Map)}.
+     *
+     * @param builder the active builder
+     * @param node the current node
+     * @param attributes the node attributes
+     * @return {@code false} to keep the attributes available for instance creation
+     */
     @Override
-    @CompileStatic
     boolean onHandleNodeAttributes(final FactoryBuilderSupport builder, final Object node, final Map attributes) {
         false
     }
 
+    /**
+     * Creates an {@link ASTTransformationCustomizer} for the supplied annotation and attributes.
+     *
+     * @param builder the active builder
+     * @param name the node name
+     * @param value the transformation annotation class
+     * @param attributes annotation member values to apply
+     * @return a configured {@link ASTTransformationCustomizer}
+     * @throws InstantiationException if the customizer cannot be instantiated
+     * @throws IllegalAccessException if the customizer cannot be accessed
+     */
     @Override
+    @CompileDynamic
     Object newInstance(final FactoryBuilderSupport builder, final Object name, final Object value, final Map attributes) throws InstantiationException, IllegalAccessException {
-        ASTTransformationCustomizer customizer
-        if (attributes) {
-            customizer = new ASTTransformationCustomizer(attributes, value)
-        } else {
-            customizer = new ASTTransformationCustomizer(value)
-        }
-        customizer
+        attributes ? new ASTTransformationCustomizer(attributes, value) : new ASTTransformationCustomizer(value)
     }
 }

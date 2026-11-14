@@ -20,6 +20,7 @@ package groovy.transform;
 
 import org.codehaus.groovy.transform.GroovyASTTransformationClass;
 
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -34,7 +35,7 @@ import java.lang.annotation.Target;
  * Limitations" for more details.
  * <p>
  * It allows you to write classes in this shortened form:
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * {@code @groovy.transform.TupleConstructor} class Customer {
  *     String first, last
  *     int age
@@ -61,7 +62,7 @@ import java.lang.annotation.Target;
  * by the fields of the class (if {@code includeFields} is set). Within each grouping the order
  * is as attributes appear within the respective class.
  * <p>More examples:</p>
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * //--------------------------------------------------------------------------
  * import groovy.transform.TupleConstructor
  *
@@ -82,7 +83,7 @@ import java.lang.annotation.Target;
  * assert person.name == 'mrhaki'
  * assert !person.likes
  * </pre>
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * //--------------------------------------------------------------------------
  * // includeFields in the constructor creation.
  * import groovy.transform.TupleConstructor
@@ -102,7 +103,7 @@ import java.lang.annotation.Target;
  * assert person.likes == ['Groovy', 'Java']
  * assert person.activated
  * </pre>
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * //--------------------------------------------------------------------------
  * // use force attribute to force creation of constructor
  * // even if we define our own constructors.
@@ -131,7 +132,7 @@ import java.lang.annotation.Target;
  *
  * assert person.activated
  * </pre>
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * //--------------------------------------------------------------------------
  * // include properties and fields from super class.
  * import groovy.transform.TupleConstructor
@@ -207,16 +208,26 @@ import java.lang.annotation.Target;
  * combining with other AST transforms which create constructors (e.g. {@code @InheritConstructors});
  * the order in which the particular transforms are processed becomes important in that case.
  * See the {@code defaults} attribute for further details about customizing this behavior.</li>
+ * <li>Under joint compilation, the constructor surface visible to Java callers is built from
+ * directly-declared properties (and fields, with {@code includeFields=true}). Trait-injected and
+ * super-class properties (used with {@code includeSuperProperties=true} or {@code includeSuperFields=true})
+ * are not visible at stub generation time; the stub's constructor signatures are a strict subset
+ * of the runtime's in those configurations. Calls using only the directly-declared property prefix
+ * compile and run; calls relying on trait or super positions need to be made from Groovy or via
+ * a hand-written constructor.</li>
  * </ul>
  *
  * @see PropertyOptions
  * @see VisibilityOptions
  * @since 1.8.0
  */
-@java.lang.annotation.Documented
+@Documented
 @Retention(RetentionPolicy.SOURCE)
-@Target({ElementType.TYPE})
-@GroovyASTTransformationClass("org.codehaus.groovy.transform.TupleConstructorASTTransformation")
+@Target(ElementType.TYPE)
+@GroovyASTTransformationClass({
+        "org.codehaus.groovy.transform.TupleConstructorASTStubber",
+        "org.codehaus.groovy.transform.TupleConstructorASTTransformation"
+})
 public @interface TupleConstructor {
     /**
      * List of field and/or property names to exclude from the constructor.
@@ -276,24 +287,45 @@ public @interface TupleConstructor {
 
     /**
      * Used to set whether default value processing is enabled (the default) or disabled.
+     * Ignored if an explicit value is given for {@code defaultsMode()}.
+     * <p>
+     * By default, every constructor parameter is given a default value.
+     * This is the equivalent of {@link DefaultsMode#ON}.
+     * <p>
+     * When set to false, default values are not allowed for properties and fields.
+     * This is the equivalent of {@link DefaultsMode#OFF}.
      *
-     * By default, every constructor parameter is given a default value. This value will
-     * be Java's default for primitive types (zero or false) and null for Objects, unless
-     * an initial value is given when declaring the property or field. A consequence of
+     * @since 2.5.0
+     */
+    boolean defaults() default true;
+
+    /**
+     * Used to set the mode for default value processing.
+     * <p>
+     * When set to {@code ON} (the default value), every constructor parameter is given a default value.
+     * This value will be Java's default for primitive types (zero or false) and null for Objects,
+     * unless an initial value is given when declaring the property or field. A consequence of
      * this design is that you can leave off parameters from the right if the default
      * value will suffice. As far as Java interoperability is concerned, Groovy will
      * create additional constructors under the covers representing the constructors
      * with parameters left off, all the way from the constructor with all arguments
      * to the no-arg constructor.
-     *
-     * However, when set to false, default values are not allowed for properties and fields.
+     * <p>
+     * When set to {@code AUTO}, default values are catered for where explicit
+     * default values are given for the respective property/field.
+     * Additional positional constructors are generated as per Groovy's normal default value processing.
+     * Properties/fields with an explicit initial value are deemed <em>optional</em> and may be dropped.
+     * Properties/fields with no initial value are deemed <em>mandatory</em> and must be supplied as an argument to the respective constructor.
+     * Optional arguments to a positional constructor are dropped from the right.
+     * <p>
+     * When set to {@code OFF}, default values are not allowed for properties and fields.
      * Only the constructor containing all arguments will be provided.
      * In particular, a no-arg constructor won't be provided and since this is currently
      * used by Groovy when using named-arguments, the named-argument style won't be available.
      *
-     * @since 2.5.0
+     * @since 4.0.0
      */
-    boolean defaults() default true;
+    DefaultsMode defaultsMode() default DefaultsMode.ON;
 
     /**
      * By default, properties are set directly using their respective field.
@@ -323,6 +355,15 @@ public @interface TupleConstructor {
      * @since 2.5.0
      */
     boolean allProperties() default false;
+
+    /**
+     * If true, add a map-based named-arg variant.
+     * Similar to using {@code @MapConstructor} but handles just the parameters handled by the generated tuple constructor.
+     * Setting {@code namedVariant=true} is incompatible with using {@code @MapConstructor}.
+     *
+     * @since 4.0.0
+     */
+    boolean namedVariant() default false;
 
     /**
      * If specified, must match the "id" attribute in a VisibilityOptions annotation to enable a custom visibility.

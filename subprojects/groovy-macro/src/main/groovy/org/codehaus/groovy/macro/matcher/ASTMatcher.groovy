@@ -33,6 +33,7 @@ import org.codehaus.groovy.ast.ModuleNode
 import org.codehaus.groovy.ast.PackageNode
 import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.PropertyNode
+import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.ArrayExpression
 import org.codehaus.groovy.ast.expr.AttributeExpression
 import org.codehaus.groovy.ast.expr.BinaryExpression
@@ -63,6 +64,7 @@ import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.UnaryMinusExpression
 import org.codehaus.groovy.ast.expr.UnaryPlusExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
+import org.codehaus.groovy.ast.query.AstQuery
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
 import org.codehaus.groovy.ast.stmt.ForStatement
@@ -72,20 +74,30 @@ import org.codehaus.groovy.ast.stmt.WhileStatement
 import org.codehaus.groovy.control.SourceUnit
 import org.codehaus.groovy.macro.matcher.internal.MatchingConstraintsBuilder
 
+import java.util.function.Predicate
+
+/**
+ * Matches AST nodes against pattern ASTs.
+ *
+ * @since 2.5.0
+ */
 @AutoFinal @CompileStatic
 class ASTMatcher extends ContextualClassCodeVisitor {
 
-    public static final String WILDCARD = "_"
+    /**
+     * Wildcard marker used in matcher patterns.
+     */
+    public static final String WILDCARD = '_'
 
-    private Object current = null
     private boolean match = true
+    private Object  current
 
     private ASTMatcher() {
     }
 
+    /** Returns no source unit because AST matching is source-independent. */
     @Override
     protected SourceUnit getSourceUnit() {
-        return null
     }
 
     /**
@@ -135,6 +147,25 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         finder.matches
     }
 
+    /**
+     * Returns a {@link Predicate} that tests whether a node matches the supplied pattern AST. This
+     * is the bridge between exemplar pattern matching and the fluent
+     * {@link AstQuery} API, letting a pattern be used as a filter:
+     * <pre>
+     * import static org.codehaus.groovy.macro.matcher.ASTMatcher.matching
+     * AstQuery.from(node).descendants(MethodCallExpression).where(matching(macro { _.foo() })).list()
+     * </pre>
+     * The predicate reports only whether the shape matches (honouring {@code _} wildcards); use
+     * {@link #find(ASTNode, ASTNode)} when placeholder bindings need to be extracted.
+     *
+     * @param pattern the pattern AST to match candidate nodes against
+     * @return a predicate that returns {@code true} when a node matches the pattern
+     * @since 6.0.0
+     */
+    static Predicate<ASTNode> matching(ASTNode pattern) {
+        { ASTNode node -> matches(node, pattern) } as Predicate<ASTNode>
+    }
+
     private void storeContraints(ASTNode src) {
         def constraints = src.getNodeMetaData(MatchingConstraints)
         if (constraints) {
@@ -142,6 +173,13 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /**
+     * Executes the supplied closure with the current matching constraints as delegate.
+     *
+     * @param defaultValue the value to return when no constraints are available
+     * @param code the code to execute with the current constraints
+     * @return the closure result, or {@code defaultValue} when no constraints are present
+     */
     def <T> T ifConstraint(T defaultValue, @DelegatesTo(value=MatchingConstraints, strategy=Closure.DELEGATE_FIRST) Closure<T> code) {
         def constraints = (List<MatchingConstraints>) treeContext.getUserdata(MatchingConstraints, true)
         if (constraints) {
@@ -160,9 +198,15 @@ class ASTMatcher extends ContextualClassCodeVisitor {
                 return exp.name
             } else if (exp instanceof ConstantExpression && placeholders.contains(exp.value)) {
                 return exp.value
-            } else {
-                return null
+            } else if (exp instanceof ArgumentListExpression && exp.size() == 1 && exp[0] instanceof VariableExpression) {
+                // TODO currently matches exactly all args, consider allowing
+                // other non-vararg nodes before the vararg one
+                VariableExpression ve = exp[0] as VariableExpression
+                if (varargPlaceholders.contains(ve.name)) {
+                    return ve.name
+                }
             }
+            return null
         }
     }
 
@@ -205,6 +249,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a class node against the current candidate. */
     @Override
     void visitClass(ClassNode node) {
         doWithNode(node, current) {
@@ -230,7 +275,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
             def nodeProps = node.properties
             def curProps = cur.properties
             if (nodeProps.size() == curProps.size()) {
-                def iter = curProps.iterator()
+                Iterator<? extends ASTNode> iter = curProps.iterator()
                 // now let's visit the contents of the class
                 for (PropertyNode pn : nodeProps) {
                     doWithNode(pn, iter.next()) {
@@ -276,6 +321,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches object initializer statements for the current class candidate. */
     @Override
     protected void visitObjectInitializerStatements(ClassNode node) {
         doWithNode(node, current) {
@@ -293,6 +339,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a package node against the current candidate. */
     @Override
     void visitPackage(PackageNode node) {
         if (node) {
@@ -303,12 +350,12 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches module imports against the current candidate. */
     @Override
     void visitImports(ModuleNode node) {
         if (node) {
             doWithNode(node, current) {
-                ModuleNode module = (ModuleNode) current
-                def imports = module.imports
+                def imports = ((ModuleNode) current).imports
                 if (imports.size() == node.imports.size()) {
                     def iter = imports.iterator()
                     for (ImportNode importNode : node.imports) {
@@ -321,38 +368,38 @@ class ASTMatcher extends ContextualClassCodeVisitor {
                     failIfNot(false)
                     return
                 }
-                imports = module.starImports
-                if (imports.size() == node.starImports.size()) {
-                    def iter = imports.iterator()
-                    for (ImportNode importNode : node.starImports) {
-                        doWithNode(importNode, iter.next()) {
-                            visitAnnotations(importNode)
-                            importNode.visit(this)
+                def starImports = ((ModuleNode) current).starImports
+                if (starImports.size() == node.starImports.size()) {
+                    def iter = starImports.iterator()
+                    for (starImport in node.starImports) {
+                        doWithNode(starImport, iter.next()) {
+                            visitAnnotations(starImport)
+                            starImport.visit(this)
                         }
                     }
                 } else {
                     failIfNot(false)
                     return
                 }
-                imports = module.staticImports
-                if (imports.size() == node.staticImports.size()) {
-                    def iter = imports.values().iterator()
-                    for (ImportNode importNode : node.staticImports.values()) {
-                        doWithNode(importNode, iter.next()) {
-                            visitAnnotations(importNode)
-                            importNode.visit(this)
+                def staticImports = ((ModuleNode) current).staticImports
+                if (staticImports.size() == node.staticImports.size()) {
+                    def iter = staticImports.values().iterator()
+                    for (staticImport in node.staticImports.values()) {
+                        doWithNode(staticImport, iter.next()) {
+                            visitAnnotations(staticImport)
+                            staticImport.visit(this)
                         }
                     }
                 } else {
                     failIfNot(false)
                 }
-                imports = module.staticStarImports
-                if (imports.size() == node.staticStarImports.size()) {
-                    def iter = imports.values().iterator()
-                    for (ImportNode importNode : node.staticStarImports.values()) {
-                        doWithNode(importNode, iter.next()) {
-                            visitAnnotations(importNode)
-                            importNode.visit(this)
+                def staticStarImports = ((ModuleNode) current).staticStarImports
+                if (staticStarImports.size() == node.staticStarImports.size()) {
+                    def iter = staticStarImports.values().iterator()
+                    for (staticStarImport in node.staticStarImports.values()) {
+                        doWithNode(staticStarImport, iter.next()) {
+                            visitAnnotations(staticStarImport)
+                            staticStarImport.visit(this)
                         }
                     }
                 } else {
@@ -362,6 +409,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches annotations on the current annotated node. */
     @Override
     void visitAnnotations(AnnotatedNode node) {
         doWithNode(node, current) {
@@ -376,14 +424,6 @@ class ASTMatcher extends ContextualClassCodeVisitor {
             def iter = curAnnotations.iterator()
             for (AnnotationNode an : refAnnotations) {
                 AnnotationNode curNext = iter.next()
-
-                // skip built-in properties
-                if (an.builtIn) {
-                    if (!curNext.builtIn) {
-                        failIfNot(false)
-                    }
-                    continue
-                }
                 failIfNot(an.classNode == curNext.classNode)
                 def refEntrySet = an.members.entrySet()
                 def curEntrySet = curNext.members.entrySet()
@@ -406,6 +446,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a class code container against the current candidate. */
     @Override
     protected void visitClassCodeContainer(Statement code) {
         doWithNode(code, current) {
@@ -415,6 +456,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a declaration expression against the current candidate. */
     @Override @CompileDynamic
     void visitDeclarationExpression(DeclarationExpression expression) {
         doWithNode(expression, current) {
@@ -422,6 +464,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a constructor or method node against the current candidate. */
     @Override
     protected void visitConstructorOrMethod(MethodNode node, boolean isConstructor) {
         doWithNode(node, current) {
@@ -444,6 +487,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a field node against the current candidate. */
     @Override
     void visitField(FieldNode node) {
         doWithNode(node, current) {
@@ -469,6 +513,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a property node against the current candidate. */
     @Override
     void visitProperty(PropertyNode node) {
         doWithNode(node, current) {
@@ -503,6 +548,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches an expression statement against the current candidate. */
     @Override
     void visitExpressionStatement(ExpressionStatement statement) {
         doWithNode(statement.expression, ((ExpressionStatement) current).expression) {
@@ -511,6 +557,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a block statement against the current candidate. */
     @Override
     void visitBlockStatement(BlockStatement block) {
         doWithNode(block, current) {
@@ -528,6 +575,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a method call expression against the current candidate. */
     @Override
     void visitMethodCallExpression(MethodCallExpression call) {
         doWithNode(call, current) {
@@ -548,6 +596,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a constructor call expression against the current candidate. */
     @Override
     void visitConstructorCallExpression(ConstructorCallExpression call) {
         doWithNode(call, current) {
@@ -559,6 +608,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a binary expression against the current candidate. */
     @Override
     void visitBinaryExpression(BinaryExpression expression) {
         doWithNode(expression, current) {
@@ -590,6 +640,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a ternary expression against the current candidate. */
     @Override
     void visitTernaryExpression(TernaryExpression expression) {
         doWithNode(expression, current) {
@@ -608,6 +659,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a postfix expression against the current candidate. */
     @Override
     void visitPostfixExpression(PostfixExpression expression) {
         doWithNode(expression, current) {
@@ -620,6 +672,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a prefix expression against the current candidate. */
     @Override
     void visitPrefixExpression(PrefixExpression expression) {
         doWithNode(expression, current) {
@@ -632,6 +685,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a boolean expression against the current candidate. */
     @Override
     void visitBooleanExpression(BooleanExpression expression) {
         doWithNode(expression, current) {
@@ -641,6 +695,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a not expression against the current candidate. */
     @Override
     void visitNotExpression(NotExpression expression) {
         doWithNode(expression, current) {
@@ -652,6 +707,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a closure expression against the current candidate. */
     @Override
     void visitClosureExpression(ClosureExpression expression) {
         doWithNode(expression, current) {
@@ -686,6 +742,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a tuple expression against the current candidate. */
     @Override
     void visitTupleExpression(TupleExpression expression) {
         doWithNode(expression, current) {
@@ -695,6 +752,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a list expression against the current candidate. */
     @Override
     void visitListExpression(ListExpression expression) {
         doWithNode(expression, current) {
@@ -705,6 +763,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches an array expression against the current candidate. */
     @Override
     void visitArrayExpression(ArrayExpression expression) {
         doWithNode(expression, current) {
@@ -723,6 +782,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a map expression against the current candidate. */
     @Override
     void visitMapExpression(MapExpression expression) {
         doWithNode(expression, current) {
@@ -734,6 +794,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a map-entry expression against the current candidate. */
     @Override
     void visitMapEntryExpression(MapEntryExpression expression) {
         doWithNode(expression, current) {
@@ -751,6 +812,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a range expression against the current candidate. */
     @Override
     void visitRangeExpression(RangeExpression expression) {
         doWithNode(expression, current) {
@@ -768,6 +830,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a spread expression against the current candidate. */
     @Override
     void visitSpreadExpression(SpreadExpression expression) {
         doWithNode(expression, current) {
@@ -778,6 +841,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a method-pointer expression against the current candidate. */
     @Override
     void visitMethodPointerExpression(MethodPointerExpression expression) {
         doWithNode(expression, current) {
@@ -795,6 +859,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a unary-minus expression against the current candidate. */
     @Override
     void visitUnaryMinusExpression(UnaryMinusExpression expression) {
         doWithNode(expression, current) {
@@ -805,6 +870,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a unary-plus expression against the current candidate. */
     @Override
     void visitUnaryPlusExpression(UnaryPlusExpression expression) {
         doWithNode(expression, current) {
@@ -815,6 +881,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a bitwise-negation expression against the current candidate. */
     @Override
     void visitBitwiseNegationExpression(BitwiseNegationExpression expression) {
         doWithNode(expression, current) {
@@ -825,6 +892,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a cast expression against the current candidate. */
     @Override
     void visitCastExpression(CastExpression expression) {
         doWithNode(expression, current) {
@@ -836,6 +904,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a constant expression against the current candidate. */
     @Override @CompileDynamic
     void visitConstantExpression(ConstantExpression expression) {
         doWithNode(expression, current) {
@@ -845,6 +914,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a class expression against the current candidate. */
     @Override @CompileDynamic
     void visitClassExpression(ClassExpression expression) {
         doWithNode(expression, current) {
@@ -854,6 +924,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a variable expression against the current candidate. */
     @Override
     void visitVariableExpression(VariableExpression expression) {
         doWithNode(expression, current) {
@@ -863,6 +934,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a property expression against the current candidate. */
     @Override
     void visitPropertyExpression(PropertyExpression expression) {
         doWithNode(expression, current) {
@@ -880,6 +952,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches an attribute expression against the current candidate. */
     @Override
     void visitAttributeExpression(AttributeExpression expression) {
         doWithNode(expression, current) {
@@ -897,6 +970,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a GString expression against the current candidate. */
     @Override
     void visitGStringExpression(GStringExpression expression) {
         doWithNode(expression, current) {
@@ -914,6 +988,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a list of expressions against the current candidate list. */
     @Override
     void visitListOfExpressions(List<? extends Expression> list) {
         if (list == null) return
@@ -931,6 +1006,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a closure-list expression against the current candidate. */
     @Override
     void visitClosureListExpression(ClosureListExpression cle) {
         doWithNode(cle, current) {
@@ -941,6 +1017,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches an if/else statement against the current candidate. */
     @Override
     void visitIfElse(IfStatement ifElse) {
         doWithNode(ifElse, current) {
@@ -962,6 +1039,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a for loop against the current candidate. */
     @Override
     void visitForLoop(ForStatement forLoop) {
         doWithNode(forLoop, current) {
@@ -978,6 +1056,7 @@ class ASTMatcher extends ContextualClassCodeVisitor {
         }
     }
 
+    /** Matches a while loop against the current candidate. */
     @Override
     void visitWhileLoop(WhileStatement loop) {
         doWithNode(loop, current) {
@@ -995,15 +1074,14 @@ class ASTMatcher extends ContextualClassCodeVisitor {
     }
 
     /**
-     * TODO: experimental!
-     *
-     * Annotates an AST node with matching contraints. This method should be called
-     * on an AST intended to be used as a pattern only. It will put node metadata on
-     * the AST node allowing customized behavior in pattern matching.
+     * Annotates an AST node with matching constraints. Call this on an AST
+     * intended to be used as a pattern only; it attaches node metadata that
+     * customises behaviour during pattern matching.
      *
      * @param pattern a pattern AST
      * @param constraintsSpec a closure specification of matching constraints
      * @return the same pattern, annotated with constraints
+     * @since 2.5.0
      */
     static ASTNode withConstraints(ASTNode pattern, @DelegatesTo(value=MatchingConstraintsBuilder, strategy=Closure.DELEGATE_ONLY) Closure constraintsSpec) {
         def builder = new MatchingConstraintsBuilder()

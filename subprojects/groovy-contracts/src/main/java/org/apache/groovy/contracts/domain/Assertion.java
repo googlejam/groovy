@@ -19,27 +19,37 @@
 package org.apache.groovy.contracts.domain;
 
 import org.apache.groovy.contracts.util.Validate;
-import org.codehaus.groovy.ast.expr.BinaryExpression;
 import org.codehaus.groovy.ast.expr.BooleanExpression;
 import org.codehaus.groovy.ast.expr.ConstantExpression;
 import org.codehaus.groovy.ast.stmt.BlockStatement;
-import org.codehaus.groovy.syntax.Token;
-import org.codehaus.groovy.syntax.Types;
+
+import static org.codehaus.groovy.ast.tools.GeneralUtils.andX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.boolX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.orX;
 
 /**
  * <p>Base class for all assertion types.</p>
  *
- * @param <T>
+ * @param <T> the concrete assertion subtype used for logical composition
  */
 public abstract class Assertion<T extends Assertion> {
 
     private BlockStatement originalBlockStatement;
     private BooleanExpression booleanExpression;
 
+    /**
+     * Creates an assertion that defaults to {@code true}.
+     */
     public Assertion() {
-        this.booleanExpression = new BooleanExpression(ConstantExpression.TRUE);
+        this.booleanExpression = boolX(ConstantExpression.TRUE);
     }
 
+    /**
+     * Creates an assertion backed by the original block and normalized boolean expression.
+     *
+     * @param blockStatement the original contract block, or {@code null} if unavailable
+     * @param booleanExpression the normalized expression to evaluate
+     */
     public Assertion(final BlockStatement blockStatement, final BooleanExpression booleanExpression) {
         Validate.notNull(booleanExpression);
 
@@ -47,14 +57,29 @@ public abstract class Assertion<T extends Assertion> {
         this.booleanExpression = booleanExpression;
     }
 
+    /**
+     * Returns the boolean expression used when generating the runtime assertion.
+     *
+     * @return the current boolean expression
+     */
     public BooleanExpression booleanExpression() {
         return booleanExpression;
     }
 
+    /**
+     * Returns the original block statement from which this assertion was derived.
+     *
+     * @return the original contract block, or {@code null} if it is unavailable
+     */
     public BlockStatement originalBlockStatement() {
         return originalBlockStatement;
     }
 
+    /**
+     * Replaces the current boolean expression while preserving the existing source mapping strategy.
+     *
+     * @param booleanExpression the new boolean expression
+     */
     public void renew(BooleanExpression booleanExpression) {
         Validate.notNull(booleanExpression);
 
@@ -64,35 +89,34 @@ public abstract class Assertion<T extends Assertion> {
         this.booleanExpression = booleanExpression;
     }
 
+    /**
+     * Conjoins this assertion with another assertion of the same kind.
+     *
+     * @param other the assertion to combine with a logical AND
+     */
     public void and(T other) {
         Validate.notNull(other);
-
-        BooleanExpression newBooleanExpression =
-                new BooleanExpression(
-                        new BinaryExpression(
-                                booleanExpression(),
-                                Token.newSymbol(Types.LOGICAL_AND, -1, -1),
-                                other.booleanExpression()
-                        )
-                );
+        BooleanExpression newBooleanExpression = boolX(andX(booleanExpression(), other.booleanExpression()));
         newBooleanExpression.setSourcePosition(booleanExpression());
-
         renew(newBooleanExpression);
+        // GROOVY-12083: the single original block (used for inline-mode assertion generation) only
+        // reflects the first condition; once combined it can no longer represent the whole expression,
+        // so drop it to force the tracker path that evaluates the combined booleanExpression
+        this.originalBlockStatement = null;
     }
 
+    /**
+     * Disjoins this assertion with another assertion of the same kind.
+     *
+     * @param other the assertion to combine with a logical OR
+     */
     public void or(T other) {
         Validate.notNull(other);
-
-        BooleanExpression newBooleanExpression =
-                new BooleanExpression(
-                        new BinaryExpression(
-                                booleanExpression(),
-                                Token.newSymbol(Types.LOGICAL_OR, -1, -1),
-                                other.booleanExpression()
-                        )
-                );
+        BooleanExpression newBooleanExpression = boolX(orX(booleanExpression(), other.booleanExpression()));
         newBooleanExpression.setSourcePosition(booleanExpression());
-
         renew(newBooleanExpression);
+        // GROOVY-12083: see and(); a combined expression can no longer be represented by the single
+        // original block, so drop it to force the combined-expression tracker path
+        this.originalBlockStatement = null;
     }
 }

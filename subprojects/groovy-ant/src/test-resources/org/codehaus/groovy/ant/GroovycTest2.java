@@ -22,17 +22,12 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 
-class GroovycTest2 {
-    static void main(String[] args) throws IOException {
-        FileOutputStream fout = new FileOutputStream(
-            new File("build/classes/groovy/test/org/codehaus/groovy/ant/GroovycTest2_Result.txt"));
-        try {
+public class GroovycTest2 {
+    public static void main(String[] args) throws IOException {
+        File file = new File("build/classes/groovy/test/org/codehaus/groovy/ant/GroovycTest2_Result.txt");
+        file.createNewFile();
+        try (FileOutputStream fout = new FileOutputStream(file)) {
             fout.write("OK.".getBytes());
-        } finally {
-            try {
-                fout.close();
-            } catch (IOException ignore) {
-            }
         }
     }
 }

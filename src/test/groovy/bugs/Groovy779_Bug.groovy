@@ -16,11 +16,13 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy779_Bug extends GroovyTestCase {
+import java.math.BigDecimal
+
+class Groovy779_Bug {
 
     def boolean exceptionCalled = false
     def boolean finallyCalled = false
@@ -32,6 +34,7 @@ class Groovy779_Bug extends GroovyTestCase {
         app.testAutoboxingProperty()
     }
 
+    @Test
     public void testFieldProperty() {
 
         try {
@@ -53,6 +56,7 @@ class Groovy779_Bug extends GroovyTestCase {
         // println("Success!")
     }
 
+    @Test
     public void testBeanProperty() {
 
         try {
@@ -74,12 +78,13 @@ class Groovy779_Bug extends GroovyTestCase {
         // println("Success!")
     }
 
+    @Test
     public void testAutoboxingProperty() {
         def p = new Groovy779OneProfit(signal: "bar", rate: 15)
         assert p.signal == "bar"
         assert p.rate == 15.0
 
-        p = new Groovy779OneProfit(signal: 111 + 22, rate: new java.math.BigDecimal("15"))
+        p = new Groovy779OneProfit(signal: 111 + 22, rate: new BigDecimal("15"))
         assert p.signal == "133"
         assert p.rate == 15.0
 
@@ -87,7 +92,7 @@ class Groovy779_Bug extends GroovyTestCase {
         assert p2.signal == "bar~"
         assert p2.rate == 15.0
 
-        p2 = new Groovy779AnotherProfit(signal: 111 - 22, rate: new java.math.BigDecimal("15"))
+        p2 = new Groovy779AnotherProfit(signal: 111 - 22, rate: new BigDecimal("15"))
         assert p2.signal == "89"
         assert p2.rate == 15.0
     }

@@ -18,6 +18,7 @@
  */
 package groovy.json;
 
+import org.apache.groovy.json.internal.BaseJsonParser;
 import org.apache.groovy.json.internal.CharBuf;
 import org.apache.groovy.json.internal.Chr;
 import groovy.lang.Closure;
@@ -34,7 +35,7 @@ import java.util.UUID;
 
 /**
  * Class responsible for the actual String serialization of the possible values of a JSON structure.
- * This class can also be used as a category, so as to add <code>toJson()</code> methods to various types.
+ * This class can also be used as a category to add <code>toJson()</code> methods to various types.
  * <p>
  * This class does not provide the ability to customize the resulting output.  A {@link JsonGenerator}
  * can be used if the ability to alter the resulting output is required.
@@ -44,21 +45,35 @@ import java.util.UUID;
  */
 public class JsonOutput {
 
+    /** Opening bracket used for JSON arrays. */
     static final char OPEN_BRACKET = '[';
+    /** Closing bracket used for JSON arrays. */
     static final char CLOSE_BRACKET = ']';
+    /** Opening brace used for JSON objects. */
     static final char OPEN_BRACE = '{';
+    /** Closing brace used for JSON objects. */
     static final char CLOSE_BRACE = '}';
+    /** Colon separator used between JSON names and values. */
     static final char COLON = ':';
+    /** Comma separator used between JSON elements. */
     static final char COMMA = ',';
+    /** Space character used when pretty-printing JSON. */
     static final char SPACE = ' ';
+    /** New line character used when pretty-printing JSON. */
     static final char NEW_LINE = '\n';
+    /** Quote character used for JSON strings. */
     static final char QUOTE = '"';
 
+    /** Precomputed character array for an empty JSON string value. */
     static final char[] EMPTY_STRING_CHARS = Chr.array(QUOTE, QUOTE);
+    /** Precomputed character array for an empty JSON object. */
     static final char[] EMPTY_MAP_CHARS = {OPEN_BRACE, CLOSE_BRACE};
+    /** Precomputed character array for an empty JSON array. */
     static final char[] EMPTY_LIST_CHARS = {OPEN_BRACKET, CLOSE_BRACKET};
 
-    /* package-private for use in builders */
+    /**
+     * Default generator used by {@code JsonOutput} and the JSON builders.
+     */
     static final JsonGenerator DEFAULT_GENERATOR = new DefaultJsonGenerator(new JsonGenerator.Options());
 
     /**
@@ -156,26 +171,92 @@ public class JsonOutput {
     /**
      * Pretty print a JSON payload.
      *
-     * @param jsonPayload
+     * <p>
+     * Nesting depth is bounded by the {@code groovy.json.maxNestingDepth} system property
+     * (default {@link BaseJsonParser#DEFAULT_MAX_NESTING_DEPTH}), matching the bound the slurpers
+     * enforce, so a payload this method will format is one {@link JsonSlurper} would parse. A
+     * payload nested deeper &mdash; or left unbalanced, which the lexer cannot distinguish from
+     * nesting &mdash; is rejected with a {@link JsonException} rather than expanded into an output
+     * quadratically larger than itself. A property value of {@code 0} or less disables the check.
+     *
+     * <p>
+     * Use {@link #prettyPrint(String, boolean, int)} to bound a single call instead.
+     *
+     * @param jsonPayload a JSON payload
      * @return a pretty representation of JSON payload.
      */
     public static String prettyPrint(String jsonPayload) {
+        return prettyPrint(jsonPayload, false);
+    }
+
+    /**
+     * Pretty print a JSON payload.
+     *
+     * <p>
+     * Nesting depth is bounded by the {@code groovy.json.maxNestingDepth} system property
+     * (default {@link BaseJsonParser#DEFAULT_MAX_NESTING_DEPTH}), matching the bound the slurpers
+     * enforce, so a payload this method will format is one {@link JsonSlurper} would parse. A
+     * payload nested deeper &mdash; or left unbalanced, which the lexer cannot distinguish from
+     * nesting &mdash; is rejected with a {@link JsonException} rather than expanded into an output
+     * quadratically larger than itself. A property value of {@code 0} or less disables the check.
+     *
+     * <p>
+     * Use {@link #prettyPrint(String, boolean, int)} to bound a single call instead.
+     *
+     * @param jsonPayload a JSON payload
+     * @param disableUnicodeEscaping whether to disable unicode escaping
+     * @return a pretty representation of JSON payload.
+     * @since 4.0.19
+     */
+    public static String prettyPrint(String jsonPayload, boolean disableUnicodeEscaping) {
+        return prettyPrint(jsonPayload, disableUnicodeEscaping,
+                Integer.getInteger("groovy.json.maxNestingDepth", BaseJsonParser.DEFAULT_MAX_NESTING_DEPTH));
+    }
+
+    /**
+     * Pretty print a JSON payload, bounding its nesting depth explicitly.
+     *
+     * <p>
+     * Every nesting level adds to the indent of each line it encloses, so output size grows with
+     * the square of the payload's nesting and an unbounded payload can exhaust memory. A payload
+     * nested deeper than {@code maxNestingDepth} &mdash; or left unbalanced, which the lexer cannot
+     * distinguish from nesting &mdash; is rejected with a {@link JsonException}. Pass {@code 0} or
+     * less to disable the check.
+     *
+     * <p>
+     * The other overloads take this bound from the {@code groovy.json.maxNestingDepth} system
+     * property, which applies process-wide; prefer this method to format a deeply nested payload
+     * without changing how the rest of the process parses JSON.
+     *
+     * @param jsonPayload a JSON payload
+     * @param disableUnicodeEscaping whether to disable unicode escaping
+     * @param maxNestingDepth the maximum nesting depth to accept; {@code 0} or less disables the check
+     * @return a pretty representation of JSON payload.
+     * @throws JsonException if the payload nests deeper than {@code maxNestingDepth}
+     * @since 6.0.0
+     */
+    public static String prettyPrint(String jsonPayload, boolean disableUnicodeEscaping, int maxNestingDepth) {
         int indentSize = 0;
+        int nestingDepth = 0;
         // Just a guess that the pretty view will take 20 percent more than original.
         final CharBuf output = CharBuf.create((int) (jsonPayload.length() * 1.2));
 
         JsonLexer lexer = new JsonLexer(new StringReader(jsonPayload));
         // Will store already created indents.
-        Map<Integer, char[]> indentCache = new HashMap<Integer, char[]>();
+        Map<Integer, char[]> indentCache = new HashMap<>();
         while (lexer.hasNext()) {
             JsonToken token = lexer.next();
             switch (token.getType()) {
                 case OPEN_CURLY:
+                    nestingDepth = enterNesting(nestingDepth, maxNestingDepth);
                     indentSize += 4;
                     output.addChars(Chr.array(OPEN_BRACE, NEW_LINE)).addChars(getIndent(indentSize, indentCache));
 
                     break;
                 case CLOSE_CURLY:
+                    if (nestingDepth > 0) {
+                        nestingDepth--;
+                    }
                     indentSize -= 4;
                     output.addChar(NEW_LINE);
                     if (indentSize > 0) {
@@ -185,11 +266,15 @@ public class JsonOutput {
 
                     break;
                 case OPEN_BRACKET:
+                    nestingDepth = enterNesting(nestingDepth, maxNestingDepth);
                     indentSize += 4;
                     output.addChars(Chr.array(OPEN_BRACKET, NEW_LINE)).addChars(getIndent(indentSize, indentCache));
 
                     break;
                 case CLOSE_BRACKET:
+                    if (nestingDepth > 0) {
+                        nestingDepth--;
+                    }
                     indentSize -= 4;
                     output.addChar(NEW_LINE);
                     if (indentSize > 0) {
@@ -209,8 +294,8 @@ public class JsonOutput {
                 case STRING:
                     String textStr = token.getText();
                     String textWithoutQuotes = textStr.substring(1, textStr.length() - 1);
-                    if (textWithoutQuotes.length() > 0) {
-                        output.addJsonEscapedString(textWithoutQuotes);
+                    if (!textWithoutQuotes.isEmpty()) {
+                        output.addJsonEscapedString(textWithoutQuotes, disableUnicodeEscaping);
                     } else {
                         output.addQuoted(Chr.array());
                     }
@@ -225,7 +310,25 @@ public class JsonOutput {
     }
 
     /**
-     * Creates new indent if it not exists in the indent cache.
+     * Records entry into a nested array or object, enforcing the configured maximum nesting depth.
+     * Bounding the depth also bounds the indent cache and the size of the output: each level adds
+     * four characters to every indent it encloses, so an unbounded document costs memory quadratic
+     * in its own nesting.
+     *
+     * @param nestingDepth the depth before this token
+     * @param maxNestingDepth the maximum permitted depth; {@code 0} or less disables the check
+     * @return the depth after this token
+     * @throws JsonException if the configured maximum nesting depth would be exceeded
+     */
+    private static int enterNesting(int nestingDepth, int maxNestingDepth) {
+        if (maxNestingDepth > 0 && nestingDepth + 1 > maxNestingDepth) {
+            throw new JsonException("Maximum JSON nesting depth of " + maxNestingDepth + " exceeded");
+        }
+        return nestingDepth + 1;
+    }
+
+    /**
+     * Creates a new indent if it doesn't exist in the indent cache.
      *
      * @return indent with the specified size.
      */
@@ -254,16 +357,31 @@ public class JsonOutput {
      * Represents unescaped JSON
      */
     public static class JsonUnescaped {
-        private CharSequence text;
+        private final CharSequence text;
 
+        /**
+         * Creates a wrapper for raw JSON text that should not be escaped.
+         *
+         * @param text the raw JSON text
+         */
         public JsonUnescaped(CharSequence text) {
             this.text = text;
         }
 
+        /**
+         * Returns the raw JSON text.
+         *
+         * @return the unescaped JSON text
+         */
         public CharSequence getText() {
             return text;
         }
 
+        /**
+         * Returns the wrapped raw JSON text.
+         *
+         * @return the unescaped JSON text
+         */
         @Override
         public String toString() {
             return text.toString();

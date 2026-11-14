@@ -21,137 +21,175 @@ package org.apache.groovy.ginq.provider.collection.runtime
 import groovy.transform.CompileStatic
 import groovy.transform.PackageScope
 
-import java.util.stream.IntStream
-
 /**
- * Make ascii table
- *
  * @since 4.0.0
  */
 @PackageScope
 @CompileStatic
 class AsciiTableMaker {
-    private static final int DEFAULT_MAX_WIDTH = Integer.MAX_VALUE
+    private static final String[] EMPTY_STRING_ARRAY = new String[0]
+    private static final int PADDING = 1
+    private static final String SPACE = " "
+    // Padding space for each cell
 
     /**
-     * make ascii table for list whose elements are of type {@link NamedRecord}
+     * Makes ASCII table for list whose elements are of type {@link NamedRecord}.
      *
      * @param queryable the {@link Queryable} instance
      * @return the string result representing the ascii table
      * @since 4.0.0
      */
     static <T> String makeAsciiTable(Queryable<T> queryable) {
-        List<T> tableData = queryable.toList()
-
-        if (!tableData.isEmpty()) {
-            List<String[]> list = new ArrayList<>(tableData.size() + 1)
+        def tableData = queryable.toList()
+        if (tableData) {
             def firstRecord = tableData.get(0)
             if (firstRecord instanceof NamedRecord) {
-                list.add(((NamedRecord) firstRecord).nameList as String[])
-                tableData.stream().forEach(e -> {
-                    if (e instanceof NamedRecord) {
-                        String[] record = ((List) e).stream().map(c -> c?.toString()).toArray(String[]::new)
-                        list.add(record)
-                    }
-                })
 
-                return "\n" + makeAsciiTable(list, DEFAULT_MAX_WIDTH, true)
+                List<String[]> data = new ArrayList<>(tableData.size())
+                for (e in tableData) {
+                    if (e instanceof NamedRecord) {
+                        String[] record = ((NamedRecord) e)*.toString()
+                        data.add(record)
+                    }
+                }
+
+                String[] headers = ((NamedRecord) firstRecord).nameList.toArray(EMPTY_STRING_ARRAY)
+                boolean[] alignLeft = new boolean[headers.length]
+                Arrays.fill(alignLeft, true)
+
+                return '\n' + buildTable(headers, data, alignLeft)
             }
         }
 
         return tableData.toString()
     }
 
-    /**
-     * Create a ascii table
-     *
-     * @param table table data
-     * @param maxWidth Maximum allowed width. Line will be wrapped beyond this width.
-     * @param leftJustifiedRows If true, it will add "-" as a flag to format string to make it left justified. Otherwise right justified.
-     * @return the string result representing the ascii table
-     * @since 4.0.0
-     */
-    static String makeAsciiTable(List<String[]> table, int maxWidth, boolean leftJustifiedRows) {
-        StringBuilder result = new StringBuilder()
+    private static String buildTable(String[] headers, List<String[]> data, boolean[] alignLeft) {
+        int[] columnWidths = calculateColumnWidths(headers, data)
 
-        if (0 == maxWidth) maxWidth = DEFAULT_MAX_WIDTH
+        def headerCnt = headers ? headers.length : 0
+        def dataElementCnt = countElements(data)
+        def allElementCnt = headerCnt + dataElementCnt
+                                            + headerCnt * 3 // 3 lines of separator
 
-        // Create new table array with wrapped rows
-        List<String[]> tableList = new ArrayList<>(table)
-        List<String[]> finalTableList = new ArrayList<>(tableList.size() + 1)
-        for (String[] row : tableList) {
-            // If any cell data is more than max width, then it will need extra row.
-            boolean needExtraRow = false
-            // Count of extra split row.
-            int splitRow = 0
-            do {
-                needExtraRow = false
-                String[] newRow = new String[row.length]
-                for (int i = 0; i < row.length; i++) {
-                    // If data is less than max width, use that as it is.
-                    def col = row[i] ?: ''
-                    if (col.length() < maxWidth) {
-                        newRow[i] = splitRow == 0 ? col : ""
-                    } else if ((col.length() > (splitRow * maxWidth))) {
-                        // If data is more than max width, then crop data at maxwidth.
-                        // Remaining cropped data will be part of next row.
-                        int end = Math.min(col.length(), ((splitRow * maxWidth) + maxWidth))
-                        newRow[i] = col.substring((splitRow * maxWidth), end)
-                        needExtraRow = true
-                    } else {
-                        newRow[i] = ""
-                    }
-                }
-                finalTableList.add(newRow)
-                if (needExtraRow) {
-                    splitRow++
-                }
-            } while (needExtraRow)
+        StringBuilder tableBuilder = new StringBuilder(allElementCnt * 10)
+        String separator = buildSeparator(columnWidths)
+        if (headers) {
+            tableBuilder.append(separator)
+            tableBuilder.append(buildRow(headers, columnWidths, alignLeft))
         }
-        String[] firstElem = finalTableList.get(0)
-        String[][] finalTable = new String[finalTableList.size()][firstElem.length]
-        for (int i = 0; i < finalTable.length; i++) {
-            finalTable[i] = finalTableList.get(i)
+        tableBuilder.append(separator)
+
+        for (String[] row : data) {
+            tableBuilder.append(buildRow(row, columnWidths, alignLeft))
+        }
+        tableBuilder.append(separator)
+
+        return tableBuilder.toString()
+    }
+
+    private static int countElements(List<String[]> data) {
+        if (!data) return 0
+
+        return data.size() * data[0].length
+    }
+
+    private static int[] calculateColumnWidths(String[] headers, List<String[]> data) {
+        int[] columnWidths = new int[headers.length]
+
+        for (int i = 0; i < headers.length; i++) {
+            columnWidths[i] = getDisplayWidth(headers[i])
         }
 
-        // Calculate appropriate Length of each column by looking at width of data in each column.
-        // Map columnLengths is <column_number, column_length>
-        Map<Integer, Integer> columnLengths = new HashMap<>()
-        Arrays.stream(finalTable).forEach((String[] a) -> IntStream.range(0, a.length).forEach((int i) -> {
-            columnLengths.putIfAbsent(i, 0)
-            if (columnLengths.get(i) < a[i].length()) {
-                columnLengths.put(i, a[i].length())
+        for (String[] row : data) {
+            for (int i = 0, n = row.length; i < n; i++) {
+                int displayWidth = getDisplayWidth(row[i])
+                if (displayWidth > columnWidths[i]) {
+                    columnWidths[i] = displayWidth
+                }
             }
-        }))
+        }
 
-        // Prepare format String
-        final StringBuilder formatString = new StringBuilder(256)
-        String flag = leftJustifiedRows ? "-" : ""
-        columnLengths.entrySet().stream().forEach(e -> formatString.append("| %" + flag + e.getValue() + "s "))
-        formatString.append("|\n")
+        for (int i = 0, n = columnWidths.length; i < n; i++) {
+            columnWidths[i] += PADDING * 2 // Add padding
+        }
 
-        // Prepare line for top, bottom & below header row.
-        String line = columnLengths.entrySet().stream().reduce("", (ln, b) -> {
-            String templn = "+-"
-            templn = templn + IntStream.range(0, b.getValue()).boxed().reduce("", (ln1, b1) -> ln1 + "-",
-                    (a1, b1) -> a1 + b1)
-            templn = templn + "-"
-            return ln + templn
-        }, (a, b) -> a + b)
-        line = line + "+\n"
+        return columnWidths
+    }
 
-        // Print table
-        result.append(line)
-        Arrays.stream(finalTable)
-                .limit(1)
-                .forEach((String[] a) -> result.append(String.format(formatString.toString(), (Object[]) a)))
-        result.append(line)
+    private static String buildRow(String[] row, int[] columnWidths, boolean[] alignLeft) {
+        StringBuilder rowBuilder = new StringBuilder(Arrays.stream(columnWidths).sum())
+        rowBuilder.append("|")
+        for (int i = 0; i < row.length; i++) {
+            rowBuilder.append(padString(row[i], columnWidths[i], alignLeft[i]))
+            rowBuilder.append("|")
+        }
+        rowBuilder.append("\n")
+        return rowBuilder.toString()
+    }
 
-        IntStream.range(1, finalTable.length)
-                .forEach((int a) -> result.append(String.format(formatString.toString(), (Object[]) finalTable[a])))
-        result.append(line)
+    private static String buildSeparator(int[] columnWidths) {
+        StringBuilder separatorBuilder = new StringBuilder(Arrays.stream(columnWidths).sum())
+        separatorBuilder.append("+")
+        for (int width : columnWidths) {
+            for (int i = 0; i < width; i++) {
+                separatorBuilder.append("-")
+            }
+            separatorBuilder.append("+")
+        }
+        separatorBuilder.append("\n")
+        return separatorBuilder.toString()
+    }
 
-        return result.toString()
+    private static String padString(String str, int width, boolean alignLeft) {
+        int displayWidth = getDisplayWidth(str)
+        StringBuilder padded = new StringBuilder(displayWidth)
+        int paddingRight = width - displayWidth - PADDING
+
+        if (alignLeft) {
+            padded.append(SPACE * PADDING) // Left padding
+            padded.append(str ?: '')
+            padded.append(SPACE * paddingRight) // Right padding
+        } else {
+            padded.append(SPACE * paddingRight) // Left padding
+            padded.append(str ?: '')
+            padded.append(SPACE * PADDING) // Right padding
+        }
+
+        return padded.toString()
+    }
+
+    private static int getDisplayWidth(String str) {
+        if (!str) return 0
+        int width = 0
+        for (char c : str.toCharArray()) {
+            width += isFullWidth(c) ? 2 : 1
+        }
+        return width
+    }
+
+    private static boolean isFullWidth(char c) {
+        // space and visible ASCII characters
+        if (32 <= c && c <= 126) return false
+
+        Character.UnicodeBlock block
+
+        try {
+            block = Character.UnicodeBlock.of(c)
+        } catch (IllegalArgumentException ignored) {
+            return false
+        }
+
+        // Unicode block check for full-width characters
+        return block === Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS ||
+                block === Character.UnicodeBlock.CJK_COMPATIBILITY_IDEOGRAPHS ||
+                block === Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A ||
+                block === Character.UnicodeBlock.GENERAL_PUNCTUATION ||
+                block === Character.UnicodeBlock.CJK_SYMBOLS_AND_PUNCTUATION ||
+                block === Character.UnicodeBlock.HALFWIDTH_AND_FULLWIDTH_FORMS ||
+                block === Character.UnicodeBlock.HIRAGANA ||
+                block === Character.UnicodeBlock.KATAKANA ||
+                block === Character.UnicodeBlock.HANGUL_SYLLABLES
     }
 
     private AsciiTableMaker() {}

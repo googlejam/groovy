@@ -21,13 +21,14 @@ plugins {
 }
 
 dependencies {
-    api rootProject  // YamlBuilder extends GroovyObjectSupport...
-    implementation "com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:${versions.jackson}"
-    implementation "com.fasterxml.jackson.core:jackson-databind:${versions.jackson}"
-    implementation project(':groovy-json')
-    testImplementation project(':groovy-test')
-    testRuntimeOnly "com.fasterxml.jackson.core:jackson-annotations:${versions.jackson}"
-    testRuntimeOnly project(':groovy-ant') // for JavadocAssertionTests
+    api project(':')  // YamlBuilder extends GroovyObjectSupport...
+    implementation "tools.jackson.dataformat:jackson-dataformat-yaml:${versions.jackson3}"
+    implementation "tools.jackson.core:jackson-databind:${versions.jackson3}"
+    implementation projects.groovyJson
+    testImplementation projects.groovyTest
+    testImplementation "org.yaml:snakeyaml:${versions.snakeyaml}" // the alias recipe in the user guide uses SnakeYAML directly
+    testRuntimeOnly "com.fasterxml.jackson.core:jackson-annotations:${versions.jackson3Annotations}"
+    testRuntimeOnly projects.groovyAnt // for JavadocAssertionTests
 }
 
 plugins.withId('eclipse') {

@@ -21,6 +21,10 @@
 
 = Testing Guide
 
+ifndef::guide-integrating[]
+:guide-integrating: guide-integrating.adoc
+endif::[]
+
 == Introduction
 
 The Groovy programming language comes with great support for writing tests. In addition to the language
@@ -85,7 +89,7 @@ Another important difference from Java is that in Groovy assertions are _enabled
 decision to remove the possibility to deactivate assertions. Or, as Bertrand Meyer stated, ``it makes no sense to take
 off your swim ring if you put your feet into real water``.
 
-One thing to be aware of are methods with side-effects inside Boolean expressions in power assertion statements. As
+One thing to be aware of are methods with side effects inside Boolean expressions in power assertion statements. As
 the internal error message construction mechanism does only store references to instances under target,
  it happens that the error message text is invalid at rendering time in case of side-effecting methods involved:
 
@@ -107,7 +111,7 @@ assert [[1,2,3,3,3,3,4]].first().unique() == [1,2,3]
 [NOTE]
 If you choose to provide a custom assertion error message this can be done by using the Java syntax `assert
 expression1 : expression2` where `expression1` is the Boolean expression and `expression2` is the custom error message.
- Be aware though that this will disable the power assert and will fully fallback to custom
+ Be aware though that this will disable the power assert and will fully fall back to custom
  error messages on assertion errors.
 
 === Mocking and Stubbing
@@ -145,7 +149,7 @@ useful in simple cases none-the-less.
 Classes or interfaces holding a single method, including SAM (single abstract method) classes, can be used to coerce
 a closure block to be an object of the given type. Be aware that for doing this, Groovy internally create a proxy object
 descending for the given class. So the object will not be a direct instance of the given class. This important if, for
-example, the generated proxy object's meta-class is altered afterwards.
+example, the generated proxy object's metaclass is altered afterwards.
 
 Let's have an example on coercing a closure to be of a specific type:
 
@@ -209,7 +213,7 @@ include::../test/testingguide/MockingExampleTests.groovy[tags=stubFor,indent=0]
 <3> a `Closure` is passed to `use` which enables the stubbing functionality
 <4> a call to `verify` (optional) checks whether the number of method calls is as expected
 
-`MockFor` and `StubFor` can not be used to test statically compiled classes e.g for Java classes or Groovy classes that
+`MockFor` and `StubFor` can not be used to test statically compiled classes e.g. for Java classes or Groovy classes that
 make use of `@CompileStatic`. To stub and/or mock these classes you can use Spock or one of the Java mocking libraries.
 
 [[testing_guide_emc]]
@@ -219,7 +223,7 @@ Groovy includes a special `MetaClass` the so-called `ExpandoMetaClass` (EMC). It
 constructors, properties and static methods using a neat closure syntax.
 
 Every `java.lang.Class` is supplied with a special `metaClass` property that will give a reference to an
-`ExpandoMetaClass` instance. The expando meta-class is not restricted to custom classes, it can be used for
+`ExpandoMetaClass` instance. The expando metaclass is not restricted to custom classes, it can be used for
 JDK classes like for example `java.lang.String` as well:
 
 [source,groovy]
@@ -249,8 +253,8 @@ help of `ExpandoMetaClass`. This lets the domain object register itself in the S
 for injection of services or other beans controlled by the dependency-injection container.
 
 If you want to change the `metaClass` property on a per test method level you need to remove the changes that were
-done to the meta-class, otherwise those changes would be persistent across test method calls. Changes are removed by
-replacing the meta-class in the `GroovyMetaClassRegistry`:
+done to the metaclass, otherwise those changes would be persistent across test method calls. Changes are removed by
+replacing the metaclass in the `GroovyMetaClassRegistry`:
 
 [source,groovy]
 ----
@@ -262,7 +266,7 @@ the changes in the cleanup method of your chosen testing runtime. A good example
 https://github.com/grails/grails-core/blob/master/grails-bootstrap/src/main/groovy/grails/build/support/MetaClassRegistryCleaner.java[in the Grails web
 development framework].
 
-Besides using the `ExpandoMetaClass` on a class-level, there is also support for using the meta-class on a per-object
+Besides using the `ExpandoMetaClass` on a class-level, there is also support for using the metaclass on a per-object
 level:
 
 [source,groovy]
@@ -270,8 +274,8 @@ level:
 include::../test/testingguide/MockingExampleTests.groovy[tags=emc5,indent=0]
 ----
 
-In this case the meta-class change is related to the instance only. Depending on the test scenario this might be a better
-fit than the global meta-class change.
+In this case the metaclass change is related to the instance only. Depending on the test scenario this might be a better
+fit than the global metaclass change.
 
 === GDK Methods
 
@@ -312,51 +316,82 @@ The method could be used in the testing context to call methods with each of the
 
 Code coverage is a useful measure of the effectiveness of (unit) tests. A program with high code coverage has a
 lower chance to hold critical bugs than a program with no or low coverage. To get code coverage metrics,
-the generated byte-code usually needs to be instrumented before the tests are executed. One tool with Groovy support
- for this task is http://cobertura.github.io/cobertura/[Cobertura].
+the generated bytecode usually needs to be instrumented before the tests are executed. The Groovy build uses
+https://www.jacoco.org/jacoco/[JaCoCo] for that.
 
-Various frameworks and build tools come with Cobertura integration. For Grails, there is the http://grails.org/plugin/code-coverage[code coverage plugin] based
-on Cobertura, for Gradle there is the https://github.com/eriwen/gradle-cobertura-plugin[gradle-cobertura plugin], to name only two of them.
-
-The following code listing shows an example on how to enable Cobertura test coverage reports in a Gradle build script from
-a Groovy project:
+The following Gradle build reports coverage for a Groovy project. `groovyVersion` and `junitVersion`
+are the versions you depend on. HTML, XML and CSV reports are available; HTML is selected here.
 
 [source,groovy]
----------------------------------------------------------------------
-def pluginVersion = '<plugin version>'
-def groovyVersion = '<groovy version>'
-def junitVersion = '<junit version>'
-
-buildscript {
-    repositories {
-        mavenCentral()
-    }
-    dependencies {
-        classpath 'com.eriwen:gradle-cobertura-plugin:${pluginVersion}'
-    }
+----
+plugins {
+    id 'groovy'
+    id 'jacoco'
 }
 
-apply plugin: 'groovy'
-apply plugin: 'cobertura'
+def groovyVersion = '<groovy version>'
+def junitVersion = '<junit version>'
 
 repositories {
     mavenCentral()
 }
 
 dependencies {
-    compile "org.codehaus.groovy:groovy-all:${groovyVersion}"
-    testCompile "junit:junit:${junitVersion}"
+    implementation "org.apache.groovy:groovy:${groovyVersion}"
+    testImplementation "org.junit.jupiter:junit-jupiter:${junitVersion}"
 }
 
-cobertura {
-    format = 'html'
-    includes = ['**/*.java', '**/*.groovy']
-    excludes = ['com/thirdparty/**/*.*']
+test {
+    useJUnitPlatform()
+    finalizedBy jacocoTestReport
 }
----------------------------------------------------------------------
 
-Several output formats can be chosen for Cobertura coverage reports and test code coverage reports can be added to
-continuous integration build tasks.
+jacocoTestReport {
+    dependsOn test
+    reports {
+        html.required = true
+    }
+}
+----
+
+The report is written under `build/reports/jacoco` after `gradle test`.
+
+==== JavaShell
+
+The `org.apache.groovy.util.JavaShell` class (covered in detail in the
+<<{guide-integrating}#integ-javashell,integration guide>>) is also useful in tests when you need
+real Java classes alongside your Groovy code. It avoids two recurring frictions:
+
+* you can declare Java fixture classes _inside_ the test that uses them, instead of adding
+  `src/test/java/...` files that exist only to support one Groovy test;
+* you can capture genuine `javac`-emitted bytecode for use cases such as comparing what the
+  Groovy compiler produces against what Java produces for an equivalent source — useful when
+  asserting joint-compilation behaviour, annotation-processing output, or `@CompileStatic`
+  codegen equivalence.
+
+A short fixture example:
+
+[source,groovy]
+----
+include::../test/testingguide/JavaShellExampleTests.groovy[tags=javashell_test_fixture,indent=0]
+----
+<1> compile a Java POJO in-memory; no `.java` file is added to the test source tree
+<2> attach `JavaShell`'s class loader to a `GroovyShell` so the test's Groovy code can resolve
+    the freshly-compiled class
+<3> exercise the fixture from Groovy
+
+For a bytecode-equivalence assertion, `compileAllTo` writes the generated `.class` files to a
+temporary directory from which the bytes can be read and fed into a bytecode-diff tool of choice
+(ASM, `javap` output, etc.). The corresponding Groovy-side bytecode can be obtained through the
+`GroovyClassLoader` / `CompilationUnit` paths used elsewhere in Groovy's own test suite.
+
+[source,groovy]
+----
+include::../test/testingguide/JavaShellExampleTests.groovy[tags=javashell_bytecode_capture,indent=0]
+----
+<1> compile and write the Java class to a temp directory
+<2> read the class bytes back from disk
+<3> compare against equivalent Groovy bytes obtained however best suits your test
 
 == Testing with JUnit
 
@@ -510,7 +545,7 @@ language features in third party libraries, for example, by using Groovy AST tra
 This section should not serve as detailed guide on how to use Spock, it should rather give an impression what Spock
 is about and how it can be leveraged for unit, integration, functional or any other type of testing.
 
-The next section we will have an first look at the anatomy of a Spock specification. It should give a
+The next section we will have a first look at the anatomy of a Spock specification. It should give a
 pretty good feeling on what Spock is up to.
 
 === Specifications
@@ -619,7 +654,7 @@ browser.drive {
 }
 ---------------------------------------------------------------------------------------------------
 <1> A new `Browser` instance is created. In this case it uses the Selenium `FirefoxDriver` and sets the `baseUrl`.
-<2> `go` is used to navigate to an URL or relative URI
+<2> `go` is used to navigate to a URL or relative URI
 <3> `$` together with CSS selectors is used to access the `username` and `password` DOM fields.
 
 The `Browser` class comes with a `drive` method that delegates all method/property calls to the current
@@ -633,7 +668,7 @@ that exists in the background:
 class SearchTests extends geb.junit4.GebTest {
 
     @Test
-    void executeSeach() {
+    void executeSearch() {
         go 'http://somehost/mayapp/search'              // <1>
         $('#searchField').text = 'John Doe'             // <2>
         $('#searchButton').click()                      // <3>

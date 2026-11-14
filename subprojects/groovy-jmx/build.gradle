@@ -21,10 +21,20 @@ plugins {
 }
 
 dependencies {
-    api rootProject // JmxBuilder extends FactoryBuilderSupport...
-    testImplementation project(':groovy-test')
-    testRuntimeOnly("org.apache.ivy:ivy:${versions.ivy}") {
-        transitive = false
+    api project(':') // JmxBuilder extends FactoryBuilderSupport...
+    testImplementation projects.groovyTest
+    testImplementation projects.groovyTestJunit6
+    testRuntimeOnly(project(':')) {
+        because 'Tests are using Grapes'
+        capabilities {
+            requireCapability 'org.apache.groovy:groovy-grapes'
+        }
     }
-    testRuntimeOnly project(":groovy-swing")
+    testRuntimeOnly projects.groovyGrapeIvy
+    testRuntimeOnly projects.groovySwing
+}
+
+tasks.named('test') {
+    dependsOn 'repackageJar'
+    systemProperty 'groovy.jmx.jar', tasks.named('repackageJar').flatMap { it.archiveFile }.get().asFile.path
 }

@@ -21,7 +21,7 @@ package groovy.text.markup;
 import java.util.Locale;
 
 /**
- * Configuration options for the {@link groovy.text.markup.MarkupTemplateEngine markup template engine}.
+ * Configuration options for the {@link MarkupTemplateEngine markup template engine}.
  */
 public class TemplateConfiguration {
 
@@ -37,9 +37,17 @@ public class TemplateConfiguration {
     private Locale locale = Locale.getDefault();
     private boolean cacheTemplates = true;
 
+    /**
+     * Creates a configuration instance with default markup template settings.
+     */
     public TemplateConfiguration() {
     }
 
+    /**
+     * Creates a configuration by copying values from another instance.
+     *
+     * @param that configuration to copy
+     */
     public TemplateConfiguration(TemplateConfiguration that) {
         this.declarationEncoding = that.declarationEncoding;
         this.expandEmptyElements = that.expandEmptyElements;
@@ -77,6 +85,11 @@ public class TemplateConfiguration {
         return expandEmptyElements;
     }
 
+    /**
+     * Sets whether empty elements should be expanded into explicit opening and closing tags.
+     *
+     * @param expandEmptyElements {@code true} to render {@code <tag></tag>} instead of {@code <tag/>}
+     */
     public void setExpandEmptyElements(final boolean expandEmptyElements) {
         this.expandEmptyElements = expandEmptyElements;
     }
@@ -88,20 +101,35 @@ public class TemplateConfiguration {
         return useDoubleQuotes;
     }
 
+    /**
+     * Sets whether attributes should be rendered with double quotes.
+     *
+     * @param useDoubleQuotes {@code true} to use double quotes around attribute values
+     */
     public void setUseDoubleQuotes(final boolean useDoubleQuotes) {
         this.useDoubleQuotes = useDoubleQuotes;
     }
 
+    /**
+     * Returns the line separator inserted by {@link BaseTemplate#newLine()}.
+     *
+     * @return the configured line separator
+     */
     public String getNewLineString() {
         return newLineString;
     }
 
+    /**
+     * Sets the line separator inserted by {@link BaseTemplate#newLine()}.
+     *
+     * @param newLineString line separator to emit for explicit and automatic new lines
+     */
     public void setNewLineString(final String newLineString) {
         this.newLineString = newLineString;
     }
 
     /**
-     * @return true if variables in the model which are assignable to {@link java.lang.CharSequence} should be
+     * @return true if variables in the model which are assignable to {@link CharSequence} should be
      * automatically escaped.
      */
     public boolean isAutoEscape() {
@@ -109,7 +137,7 @@ public class TemplateConfiguration {
     }
 
     /**
-     * Set to true if you want variables in the model which are assignable to {@link java.lang.CharSequence} to
+     * Set to true if you want variables in the model which are assignable to {@link CharSequence} to
      * be escaped automatically in templates. If this flag is set to true and that you want a value not to be
      * automatically escaped, then you need to use <i>${unescaped.variable}</i> instead of <i>$variable</i>
      * @param autoEscape value if the autoEscape flag
@@ -127,7 +155,7 @@ public class TemplateConfiguration {
 
     /**
      * Set this to true if you want the template engine to render indents automatically. In that case,
-     * the supplied writer is wrapped into a {@link groovy.text.markup.DelegatingIndentWriter} and indents
+     * the supplied writer is wrapped into a {@link DelegatingIndentWriter} and indents
      * are inserted after each call to newLine.
      * @param autoIndent the auto-indent flag
      */
@@ -135,22 +163,47 @@ public class TemplateConfiguration {
         this.autoIndent = autoIndent;
     }
 
+    /**
+     * Returns the indentation unit inserted when automatic indentation is enabled.
+     *
+     * @return the indentation unit string
+     */
     public String getAutoIndentString() {
         return autoIndentString;
     }
 
+    /**
+     * Sets the indentation unit inserted when automatic indentation is enabled.
+     *
+     * @param autoIndentString indentation unit to write for each nesting level
+     */
     public void setAutoIndentString(final String autoIndentString) {
         this.autoIndentString = autoIndentString;
     }
 
+    /**
+     * Indicates whether source layout should automatically insert line separators.
+     *
+     * @return {@code true} if builder blocks automatically emit new lines
+     */
     public boolean isAutoNewLine() {
         return autoNewLine;
     }
 
+    /**
+     * Sets whether source layout should automatically insert line separators.
+     *
+     * @param autoNewLine {@code true} to insert new lines based on builder block layout
+     */
     public void setAutoNewLine(final boolean autoNewLine) {
         this.autoNewLine = autoNewLine;
     }
 
+    /**
+     * Returns the base class used for generated template scripts.
+     *
+     * @return the configured base template class
+     */
     public Class<? extends BaseTemplate> getBaseTemplateClass() {
         return baseTemplateClass;
     }
@@ -159,20 +212,35 @@ public class TemplateConfiguration {
      * Set the template base class. You can use a distinct template class to provide more
      * statically available data to your templates.
      *
-     * @param baseTemplateClass a class extending {@link groovy.text.markup.BaseTemplate}
+     * @param baseTemplateClass a class extending {@link BaseTemplate}
      */
     public void setBaseTemplateClass(final Class<? extends BaseTemplate> baseTemplateClass) {
         this.baseTemplateClass = baseTemplateClass;
     }
 
+    /**
+     * Returns the locale used when resolving localized templates.
+     *
+     * @return the configured template locale
+     */
     public Locale getLocale() {
         return locale;
     }
 
+    /**
+     * Sets the locale used when resolving localized templates.
+     *
+     * @param locale locale to prefer when loading localized template resources
+     */
     public void setLocale(final Locale locale) {
         this.locale = locale;
     }
 
+    /**
+     * Indicates whether templates resolved from external resources are cached.
+     *
+     * @return {@code true} if template compilation results may be reused
+     */
     public boolean isCacheTemplates() {
         return cacheTemplates;
     }

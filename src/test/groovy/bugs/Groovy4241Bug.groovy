@@ -16,11 +16,13 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy4241Bug extends GroovyTestCase {
+
+class Groovy4241Bug {
+    @Test
     void testAsTypeWithinvokeMethodOverridden() {
         Foo4241.metaClass.invokeMethod = { String name, args ->
             println name
@@ -29,10 +31,10 @@ class Groovy4241Bug extends GroovyTestCase {
             }
         }
         def f = new Foo4241()
-        
+
         def bar = [key: 'foo'] as Bar4241
         f.echo(bar) // this used to work
-        
+
         f.echo([key: 'foo'] as Bar4241) // this used to fail with NPE
     }
 }

@@ -16,10 +16,11 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class DOMBuilderTest extends GroovyTestCase {
+class DOMBuilderTest {
 
+    @Test
     void testParse() {
         // tag::xml_string[]
         String recordsXML = '''
@@ -38,12 +39,12 @@ class DOMBuilderTest extends GroovyTestCase {
               </car>
             </records>'''
         // end::xml_string[]
-        
+
         // tag::dom_builder_parse[]
         def reader = new StringReader(recordsXML)
         def doc = groovy.xml.DOMBuilder.parse(reader)
         // end::dom_builder_parse[]
-        
+
         // tag::dom_builder_process_result[]
         def records = doc.documentElement
         use(groovy.xml.dom.DOMCategory) {

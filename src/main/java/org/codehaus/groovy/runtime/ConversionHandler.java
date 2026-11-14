@@ -26,27 +26,43 @@ import org.codehaus.groovy.runtime.metaclass.MetaClassRegistryImpl;
 import org.codehaus.groovy.vmplugin.VMPlugin;
 import org.codehaus.groovy.vmplugin.VMPluginFactory;
 
+import java.io.ObjectOutputStream;
+import java.io.Serial;
 import java.io.Serializable;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
 import java.lang.reflect.Proxy;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * This class is a general adapter to map a call to a Java interface
  * to a given delegate.
+ * <p>
+ * Instances are {@link Serializable}, so {@code closure as SomeInterface} survives a round trip
+ * through {@link ObjectOutputStream} and back &mdash; behaviour distributed-compute and
+ * caching users depend on, and deliberately not gated.
+ * <p>
+ * The same property means a <em>crafted</em> stream can rebuild one of these proxies with a delegate
+ * it chose, and every interface call then routes into that delegate. {@link ConvertedMap} looks up
+ * its closure by the invoked method's name, so a stream naming {@code toString} supplies code that
+ * runs when the object is merely logged or interpolated, with no call to a declared method.
+ * Deserializing untrusted bytes is out of scope for this project ({@code THREAT_MODEL.md} §3) and no
+ * change to this class makes it safe; where an application must read semi-trusted streams, bound
+ * them with a JDK serial filter, for example
+ * {@code -Djdk.serialFilter='!org.codehaus.groovy.runtime.ConversionHandler;*'}, which refuses these
+ * handlers while leaving ordinary closure serialization intact.
  */
 public abstract class ConversionHandler implements InvocationHandler, Serializable {
+    @Serial private static final long serialVersionUID = 1162833717190835227L;
+    private final ConcurrentMap<Method, Object> handleCache = new ConcurrentHashMap<>(16);
     private final Object delegate;
-    private static final long serialVersionUID = 1162833717190835227L;
-    private final ConcurrentHashMap<Method, Object> handleCache = new ConcurrentHashMap<>(16, 0.9f, 2);
     private MetaClass metaClass;
 
     /**
-     * Creates a ConversionHandler with an delegate.
+     * Creates a ConversionHandler with a delegate.
      *
      * @param delegate the delegate
      * @throws IllegalArgumentException if the given delegate is null
@@ -92,20 +108,23 @@ public abstract class ConversionHandler implements InvocationHandler, Serializab
      * @see InvocationHandler#invoke(java.lang.Object, java.lang.reflect.Method, java.lang.Object[])
      */
     @Override
-    public Object invoke(final Object proxy, Method method, Object[] args) throws Throwable {
+    public Object invoke(final Object proxy, final Method method, final Object[] args) throws Throwable {
         if (isDefaultMethod(method) && !defaultOverridden(method)) {
-            final VMPlugin plugin = VMPluginFactory.getPlugin();
-            Object handle = handleCache.computeIfAbsent(method, m -> plugin.getInvokeSpecialHandle(m, proxy));
+            VMPlugin plugin = VMPluginFactory.getPlugin();
+            Object handle = handleCache.computeIfAbsent(method, m ->
+                plugin.getInvokeSpecialHandle(m, proxy)
+            );
             return plugin.invokeHandle(handle, args);
         }
 
         if (!checkMethod(method)) {
             try {
                 if (method.getDeclaringClass() == GroovyObject.class) {
-                    if ("getMetaClass".equals(method.getName())) {
-                        return getMetaClass(proxy);
-                    } else if ("setMetaClass".equals(method.getName())) {
-                        return setMetaClass((MetaClass) args[0]);
+                    switch (method.getName()) {
+                        case "getMetaClass":
+                            return getMetaClass(proxy);
+                        case "setMetaClass":
+                            return setMetaClass((MetaClass) args[0]);
                     }
                 }
                 return invokeCustom(proxy, method, args);
@@ -121,16 +140,31 @@ public abstract class ConversionHandler implements InvocationHandler, Serializab
         }
     }
 
-    private boolean defaultOverridden(Method method) {
+    private boolean defaultOverridden(final Method method) {
         return delegate instanceof Map && ((Map) delegate).containsKey(method.getName());
     }
 
-    protected boolean isDefaultMethod(Method method) {
-        return ((method.getModifiers() & (Modifier.ABSTRACT | Modifier.PUBLIC | Modifier.STATIC)) ==
-                Modifier.PUBLIC) && method.getDeclaringClass().isInterface();
+    /**
+     * Reports whether {@code method} is a Java interface default method.
+     * {@link #invoke} calls such a method with {@code invokespecial} unless
+     * the delegate map overrides that name.
+     *
+     * @param method method being invoked on the proxy
+     * @return {@code true} when {@code method} is a default method
+     */
+    protected boolean isDefaultMethod(final Method method) {
+        return method.isDefault();
     }
 
-    protected boolean checkMethod(Method method) {
+    /**
+     * Reports whether {@code method} should be invoked on this handler
+     * rather than forwarded to the delegate. Methods declared on
+     * {@link Object} take that path.
+     *
+     * @param method method being invoked on the proxy
+     * @return {@code true} when {@code method} is declared on {@link Object}
+     */
+    protected boolean checkMethod(final Method method) {
         return isCoreObjectMethod(method);
     }
 

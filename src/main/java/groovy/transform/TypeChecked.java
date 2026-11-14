@@ -20,6 +20,7 @@ package groovy.transform;
 
 import org.codehaus.groovy.transform.GroovyASTTransformationClass;
 
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -27,12 +28,20 @@ import java.lang.annotation.Target;
 
 /**
  * This will let the Groovy compiler use compile time checks in the style of Java.
+ *
+ * @since 2.0.0
  */
-@java.lang.annotation.Documented
+@Documented
 @Retention(RetentionPolicy.SOURCE)
-@Target({ ElementType.METHOD, ElementType.TYPE, ElementType.CONSTRUCTOR })
+@Target({ElementType.TYPE, ElementType.METHOD, ElementType.CONSTRUCTOR})
 @GroovyASTTransformationClass("org.codehaus.groovy.transform.StaticTypesTransformation")
 public @interface TypeChecked {
+    /**
+     * Controls whether type checking is applied or skipped.
+     * Defaults to {@link TypeCheckingMode#PASS}.
+     *
+     * @return the type-checking mode
+     */
     TypeCheckingMode value() default TypeCheckingMode.PASS;
 
     /**
@@ -43,9 +52,14 @@ public @interface TypeChecked {
     String[] extensions() default {};
 
     /**
-     * This annotation is added by @TypeChecked on methods which have type checking turned on.
-     * It is used to embed type information into binary, so that the type checker can use this information,
-     * if available, for precompiled classes.
+     * Records on the class file the return type that type checking inferred for a method declared
+     * with {@code def}. It is added to a method that is not private and that no other body can
+     * replace for a call: a final method, a method of a final class, or a static method. When code
+     * that calls a precompiled method is type checked, the recorded type is used in place of the
+     * declared return type wherever only that method's body can run for the call.
+     * <p>
+     * A {@link #version() version} this compiler does not implement, or an {@link #inferredType()}
+     * it cannot read, leaves the declared return type in place.
      */
     @Retention(RetentionPolicy.RUNTIME)
     @Target(ElementType.METHOD)

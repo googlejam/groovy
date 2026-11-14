@@ -1,5 +1,3 @@
-import groovy.test.GroovyTestCase
-
 /*
  *  Licensed to the Apache Software Foundation (ASF) under one
  *  or more contributor license agreements.  See the NOTICE file
@@ -18,7 +16,14 @@ import groovy.test.GroovyTestCase
  *  specific language governing permissions and limitations
  *  under the License.
  */
-class IntegrationTest extends GroovyTestCase {
+
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.assertScript
+
+final class IntegrationTest {
+
+    @Test
     void testEval() {
         assertScript '''// tag::eval_me[]
 import groovy.util.Eval
@@ -37,6 +42,7 @@ assert Eval.xyz(4, 5, 6, 'x*y+z') == 26     // <4>
 '''
     }
 
+    @Test
     void testGroovyShell() {
         assertScript '''// tag::groovyshell_simple[]
 def shell = new GroovyShell()                           // <1>
@@ -121,6 +127,7 @@ assert b1 != b2
 '''
     }
 
+    @Test
     void testGroovyShellCustomScript() {
         assertScript '''// tag::custom_script_imports[]
 import org.codehaus.groovy.control.CompilerConfiguration
@@ -149,6 +156,7 @@ assert script.run() == 'Hello, Michel!'
 '''
     }
 
+    @Test
     void testGroovyClassLoader() {
         assertScript '''// tag::gcl[]
 import groovy.lang.GroovyClassLoader
@@ -163,6 +171,8 @@ o.doIt()                                                                    // <
 
         assertScript '''// tag::gcl_distinct_classes[]
 import groovy.lang.GroovyClassLoader
+import org.junit.jupiter.api.Test
+import static groovy.test.GroovyAssert.*
 
 def gcl = new GroovyClassLoader()
 def clazz1 = gcl.parseClass('class Foo { }')                                // <1>
@@ -188,6 +198,7 @@ file.delete()
 '''
     }
 
+    @Test
     void testGroovyScriptEngine() {
         assertScript '''def tmpDir = File.createTempDir("reloading", "gse")
 
@@ -246,4 +257,58 @@ try {
 '''
     }
 
+    @Test
+    void testJavaShell() {
+        assertScript '''// tag::javashell_compile[]
+import org.apache.groovy.util.JavaShell
+
+def js = new JavaShell()                                                    // <1>
+def src = """
+    package demo;
+    public class Foo {
+        public static String greet(String who) { return "hello, " + who; }
+    }
+"""
+Class<?> foo = js.compile('demo.Foo', src)                                  // <2>
+assert foo.getDeclaredMethod('greet', String).invoke(null, 'world') == 'hello, world'  // <3>
+// end::javashell_compile[]
+'''
+
+        assertScript '''// tag::javashell_compile_all[]
+import org.apache.groovy.util.JavaShell
+
+def js = new JavaShell()
+def src = """
+    package demo;
+    public class Box { public static int hidden() { return Helper.value(); } }
+    class Helper { static int value() { return 42; } }
+"""
+Map<String, Class<?>> classes = js.compileAll('demo.Box', src)              // <1>
+assert classes.keySet() == ['demo.Box', 'demo.Helper'] as Set               // <2>
+assert classes['demo.Box'].getDeclaredMethod('hidden').invoke(null) == 42
+// end::javashell_compile_all[]
+'''
+
+        assertScript '''// tag::javashell_compile_all_to[]
+import org.apache.groovy.util.JavaShell
+import java.nio.file.Files
+
+def out = Files.createTempDirectory('javashell-')
+try {
+    def js = new JavaShell()
+    def src = """
+        package demo;
+        public class Deep { public static String tag(String label) { return label; } }
+    """
+    def written = js.compileAllTo('demo.Deep', ['-parameters'], src, out)   // <1>
+    def classFile = out.resolve('demo/Deep.class')                          // <2>
+    assert written['demo.Deep'] == classFile && Files.exists(classFile)
+    // classes also remain available through js.classLoader, same as compileAll
+    assert js.classLoader.loadClass('demo.Deep').getDeclaredMethod('tag', String).invoke(null, 'x') == 'x'
+} finally {
+    out.toFile().deleteDir()
+}
+// end::javashell_compile_all_to[]
+'''
+    }
 }

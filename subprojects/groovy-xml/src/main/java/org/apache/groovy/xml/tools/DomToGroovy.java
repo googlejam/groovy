@@ -19,6 +19,8 @@
 package org.apache.groovy.xml.tools;
 
 import groovy.util.IndentPrinter;
+import groovy.xml.FactorySupport;
+import groovy.xml.MarkupBuilder;
 import org.codehaus.groovy.syntax.Types;
 import org.w3c.dom.Attr;
 import org.w3c.dom.Comment;
@@ -46,28 +48,67 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * A SAX handler for turning XML into Groovy scripts
+ * Turns a DOM document into the {@link MarkupBuilder} calls that would produce
+ * it, as an aid to writing builder code by hand. The result is a starting point to edit
+ * rather than a finished script: names that are not valid Groovy identifiers are quoted,
+ * and the layout is meant to be read.
+ * <p>
+ * The output is Groovy source. Generating it from a document and then evaluating it runs
+ * whatever that document produced, so generation belongs in authoring, not in a runtime
+ * path fed by documents the author does not control.
  */
 public class DomToGroovy {
 
+    /**
+     * Destination printer for the generated Groovy source.
+     */
     protected IndentPrinter out;
+    /**
+     * Whether the current element contains mixed text and element content.
+     */
     protected boolean inMixed = false;
+    /**
+     * Quote delimiter used for generated Groovy string literals.
+     */
     protected String qt = "'";
+    /**
+     * Groovy keywords that must be quoted when emitted as method-style element names.
+     */
     protected Collection<String> keywords = Types.getKeywords();
 
+    /**
+     * Creates a converter that writes generated Groovy code to the supplied writer.
+     *
+     * @param out destination writer
+     */
     public DomToGroovy(PrintWriter out) {
         this(new IndentPrinter(out));
     }
 
     // TODO allow string quoting delimiter to be specified, e.g. ' vs "
+    /**
+     * Creates a converter that writes generated Groovy code with the supplied indent printer.
+     *
+     * @param out destination printer
+     */
     public DomToGroovy(IndentPrinter out) {
         this.out = out;
     }
 
+    /**
+     * Writes the Groovy builder form of the supplied DOM document.
+     *
+     * @param document source DOM document
+     */
     public void print(Document document) {
         printChildren(document, new HashMap());
     }
 
+    /**
+     * Command-line entry point that converts an XML file into a Groovy builder script.
+     *
+     * @param args {@code infilename [outfilename]}
+     */
     public static void main(String[] args) {
         if (args.length < 1) {
             System.out.println("Usage: DomToGroovy infilename [outfilename]");
@@ -105,28 +146,64 @@ public class DomToGroovy {
     // Implementation methods
     //-------------------------------------------------------------------------
 
+    /**
+     * Parses the given XML file name into a DOM document.
+     *
+     * @param fileName XML file path
+     * @return parsed DOM document
+     * @throws Exception if parsing fails
+     */
     protected static Document parse(final String fileName) throws Exception {
         return parse(new File(fileName));
     }
 
+    /**
+     * Parses the given XML file into a DOM document.
+     *
+     * @param file XML file
+     * @return parsed DOM document
+     * @throws Exception if parsing fails
+     */
     public static Document parse(final File file) throws Exception {
         return parse(new BufferedReader(new FileReader(file)));
     }
 
+    /**
+     * Parses XML read from the supplied reader into a DOM document.
+     *
+     * @param input XML reader
+     * @return parsed DOM document
+     * @throws Exception if parsing fails
+     */
     public static Document parse(final Reader input) throws Exception {
-        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-        factory.setNamespaceAware(true);
-        DocumentBuilder builder = factory.newDocumentBuilder();
-        return builder.parse(new InputSource(input));
+        return parse(new InputSource(input));
     }
 
+    /**
+     * Parses XML read from the supplied stream into a DOM document.
+     *
+     * @param input XML stream
+     * @return parsed DOM document
+     * @throws Exception if parsing fails
+     */
     public static Document parse(final InputStream input) throws Exception {
-        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-        factory.setNamespaceAware(true);
-        DocumentBuilder builder = factory.newDocumentBuilder();
-        return builder.parse(new InputSource(input));
+        return parse(new InputSource(input));
     }
 
+    private static Document parse(InputSource is) throws Exception {
+        DocumentBuilderFactory factory = FactorySupport.createDocumentBuilderFactory();
+        factory.setNamespaceAware(true);
+        DocumentBuilder builder = factory.newDocumentBuilder();
+        return builder.parse(is);
+    }
+
+    /**
+     * Dispatches a DOM node to the appropriate Groovy emission helper.
+     *
+     * @param node DOM node to emit
+     * @param namespaces namespaces currently in scope
+     * @param endWithComma whether to terminate the emitted fragment with a comma
+     */
     protected void print(Node node, Map namespaces, boolean endWithComma) {
         switch (node.getNodeType()) {
             case Node.ELEMENT_NODE :
@@ -141,9 +218,18 @@ public class DomToGroovy {
             case Node.COMMENT_NODE :
                 printComment((Comment) node, endWithComma);
                 break;
+            default:
+                break;
         }
     }
 
+    /**
+     * Emits Groovy markup for a DOM element, including namespaces, attributes, and children.
+     *
+     * @param element element to emit
+     * @param namespaces namespaces currently in scope
+     * @param endWithComma whether to terminate the emitted fragment with a comma
+     */
     protected void printElement(Element element, Map namespaces, boolean endWithComma) {
         namespaces = defineNamespaces(element, namespaces);
 
@@ -151,7 +237,7 @@ public class DomToGroovy {
         printIndent();
 
         String prefix = element.getPrefix();
-        boolean hasPrefix = prefix != null && prefix.length() > 0;
+        boolean hasPrefix = prefix != null && !prefix.isEmpty();
         String localName = getLocalName(element);
         boolean isKeyword = checkEscaping(localName);
         if (isKeyword || hasPrefix) print(qt);
@@ -170,40 +256,48 @@ public class DomToGroovy {
         if (length == 0) {
             printEnd(")", endWithComma);
         } else {
-            Node node = list.item(0);
-            if (length == 1 && node instanceof Text) {
-                Text textNode = (Text) node;
-                String text = getTextNodeData(textNode);
-                if (hasAttributes) print(", ");
-                printQuoted(text);
-                printEnd(")", endWithComma);
-            } else if (mixedContent(list)) {
-                println(") {");
-                out.incrementIndent();
-                boolean oldInMixed = inMixed;
-                inMixed = true;
-                for (node = element.getFirstChild(); node != null; node = node.getNextSibling()) {
-                    print(node, namespaces, false);
-                }
-                inMixed = oldInMixed;
-                out.decrementIndent();
-                printIndent();
-                printEnd("}", endWithComma);
-            } else {
-                println(") {");
-                out.incrementIndent();
-                printChildren(element, namespaces);
-                out.decrementIndent();
-                printIndent();
-                printEnd("}", endWithComma);
-            }
+            printChildren(element, namespaces, endWithComma, hasAttributes, list, length);
         }
     }
 
+    private void printChildren(Element element, Map namespaces, boolean endWithComma, boolean hasAttributes, NodeList list, int length) {
+        Node node = list.item(0);
+        if (length == 1 && node instanceof Text textNode) {
+            String text = getTextNodeData(textNode);
+            if (hasAttributes) print(", ");
+            printQuoted(text);
+            printEnd(")", endWithComma);
+        } else if (mixedContent(list)) {
+            println(") {");
+            out.incrementIndent();
+            boolean oldInMixed = inMixed;
+            inMixed = true;
+            for (node = element.getFirstChild(); node != null; node = node.getNextSibling()) {
+                print(node, namespaces, false);
+            }
+            inMixed = oldInMixed;
+            out.decrementIndent();
+            printIndent();
+            printEnd("}", endWithComma);
+        } else {
+            println(") {");
+            out.incrementIndent();
+            printChildren(element, namespaces);
+            out.decrementIndent();
+            printIndent();
+            printEnd("}", endWithComma);
+        }
+    }
+
+    /**
+     * Writes text as a Groovy string literal, using triple quotes for multi-line content.
+     *
+     * @param text text to quote
+     */
     protected void printQuoted(String text) {
         if (text.contains("\n")) {
             print("'''");
-            print(text);
+            print(escapeTripleQuote(text));
             print("'''");
         } else {
             print(qt);
@@ -212,28 +306,48 @@ public class DomToGroovy {
         }
     }
 
+    /**
+     * Emits a processing instruction as an {@code mkp.pi} call.
+     *
+     * @param instruction processing instruction to emit
+     * @param endWithComma whether to terminate the emitted fragment with a comma
+     */
     protected void printPI(ProcessingInstruction instruction, boolean endWithComma) {
         printIndent();
-        print("mkp.pi(" + qt);
-        print(instruction.getTarget());
-        print(qt + ", " + qt);
-        print(instruction.getData());
-        printEnd(qt + ");", endWithComma);
+        print("mkp.pi(");
+        printQuoted(instruction.getTarget());
+        print(", ");
+        printQuoted(instruction.getData());
+        printEnd(");", endWithComma);
     }
 
+    /**
+     * Emits a Groovy block comment for a non-empty DOM comment node.
+     *
+     * @param comment comment to emit
+     * @param endWithComma whether to terminate the emitted fragment with a comma
+     */
     protected void printComment(Comment comment, boolean endWithComma) {
         String text = comment.getData().trim();
-        if (text.length() >0) {
+        if (!text.isEmpty()) {
             printIndent();
             print("/* ");
-            print(text);
+            // a comment carrying the block-comment terminator would close this comment
+            // early and leave the rest of the document standing as code
+            print(text.replace("*/", "* /"));
             printEnd(" */", endWithComma);
         }
     }
 
+    /**
+     * Emits a text node, using {@code mkp.yield} when nested in mixed content.
+     *
+     * @param node text node to emit
+     * @param endWithComma whether to terminate the emitted fragment with a comma
+     */
     protected void printText(Text node, boolean endWithComma) {
         String text = getTextNodeData(node);
-        if (text.length() > 0) {
+        if (!text.isEmpty()) {
             printIndent();
             if (inMixed) print("mkp.yield ");
             printQuoted(text);
@@ -241,14 +355,48 @@ public class DomToGroovy {
         }
     }
 
+    /**
+     * Escapes backslashes and the active quote delimiter for generated Groovy strings.
+     *
+     * @param text raw text
+     * @return escaped text
+     */
     protected String escapeQuote(String text) {
         return text.replaceAll("\\\\", "\\\\\\\\").replaceAll(qt, "\\\\" + qt);
     }
 
+    /**
+     * Escapes text for a triple-quoted Groovy string literal. A backslash always starts an
+     * escape sequence and so needs escaping; a quote needs it only where it would otherwise
+     * run into the closing delimiter, which leaves apostrophes in ordinary prose alone.
+     *
+     * @param text raw text
+     * @return escaped text
+     */
+    protected String escapeTripleQuote(String text) {
+        String escaped = text.replace("\\", "\\\\");
+        StringBuilder result = new StringBuilder(escaped.length());
+        for (int i = 0; i < escaped.length(); i += 1) {
+            char c = escaped.charAt(i);
+            if (c == '\'' && (i + 1 == escaped.length() || escaped.charAt(i + 1) == '\'')) {
+                result.append('\\');
+            }
+            result.append(c);
+        }
+        return result.toString();
+    }
+
+    /**
+     * Returns the namespace map extended with any newly encountered element or attribute prefixes.
+     *
+     * @param element element whose namespaces should be inspected
+     * @param namespaces namespaces currently in scope
+     * @return namespace map to use for the element and its children
+     */
     protected Map defineNamespaces(Element element, Map namespaces) {
         Map answer = null;
         String prefix = element.getPrefix();
-        if (prefix != null && prefix.length() > 0 && !namespaces.containsKey(prefix)) {
+        if (prefix != null && !prefix.isEmpty() && !namespaces.containsKey(prefix)) {
             answer = new HashMap(namespaces);
             defineNamespace(answer, prefix, element.getNamespaceURI());
         }
@@ -257,7 +405,7 @@ public class DomToGroovy {
         for (int i = 0; i < length; i++) {
             Attr attribute = (Attr) attributes.item(i);
             prefix = attribute.getPrefix();
-            if (prefix != null && prefix.length() > 0 && !namespaces.containsKey(prefix)) {
+            if (prefix != null && !prefix.isEmpty() && !namespaces.containsKey(prefix)) {
                 if (answer == null) {
                     answer = new HashMap(namespaces);
                 }
@@ -267,9 +415,16 @@ public class DomToGroovy {
         return (answer != null) ? answer : namespaces;
     }
 
+    /**
+     * Records a namespace mapping and emits {@code mkp.declareNamespace} when needed.
+     *
+     * @param namespaces mutable namespace map
+     * @param prefix namespace prefix
+     * @param uri namespace URI
+     */
     protected void defineNamespace(Map namespaces, String prefix, String uri) {
         namespaces.put(prefix, uri);
-        if (!prefix.equals("xmlns") && !prefix.equals("xml")) {
+        if (!"xmlns".equals(prefix) && !"xml".equals(prefix)) {
             printIndent();
             print("mkp.declareNamespace(");
             print(prefix);
@@ -279,6 +434,12 @@ public class DomToGroovy {
         }
     }
 
+    /**
+     * Emits the attributes for the supplied element.
+     *
+     * @param element element whose attributes should be emitted
+     * @return {@code true} if any attributes were written
+     */
     protected boolean printAttributes(Element element) {
         boolean hasAttribute = false;
         NamedNodeMap attributes = element.getAttributes();
@@ -302,9 +463,15 @@ public class DomToGroovy {
         return hasAttribute;
     }
 
+    /**
+     * Appends a prefixed attribute representation to the deferred attribute buffer.
+     *
+     * @param attribute attribute to render
+     * @param buffer buffer collecting prefixed attributes
+     */
     protected void printAttributeWithPrefix(Attr attribute, StringBuffer buffer) {
         String prefix = attribute.getPrefix();
-        if (prefix != null && prefix.length() > 0 && !prefix.equals("xmlns")) {
+        if (prefix != null && !prefix.isEmpty() && !"xmlns".equals(prefix)) {
             if (buffer.length() > 0) {
                 buffer.append(", ");
             }
@@ -318,13 +485,26 @@ public class DomToGroovy {
         }
     }
 
+    /**
+     * Returns the attribute value used when emitting the Groovy builder call.
+     *
+     * @param attribute attribute to inspect
+     * @return attribute value
+     */
     protected String getAttributeValue(Attr attribute) {
         return attribute.getValue();
     }
 
+    /**
+     * Emits an unprefixed attribute and updates the separator state.
+     *
+     * @param attribute attribute to render
+     * @param hasAttribute whether a previous attribute has already been written
+     * @return updated attribute-written flag
+     */
     protected boolean printAttributeWithoutPrefix(Attr attribute, boolean hasAttribute) {
         String prefix = attribute.getPrefix();
-        if (prefix == null || prefix.length() == 0) {
+        if (prefix == null || prefix.isEmpty()) {
             if (!hasAttribute) {
                 hasAttribute = true;
             } else {
@@ -341,14 +521,32 @@ public class DomToGroovy {
         return hasAttribute;
     }
 
+    /**
+     * Returns whether a generated Groovy name must be quoted.
+     *
+     * @param localName candidate element or attribute name
+     * @return {@code true} if the name requires quoting
+     */
     protected boolean checkEscaping(String localName) {
         return keywords.contains(localName) || localName.contains("-") || localName.contains(":") || localName.contains(".");
     }
 
+    /**
+     * Returns the trimmed text content used when emitting a DOM text node.
+     *
+     * @param node text node
+     * @return trimmed text content
+     */
     protected String getTextNodeData(Text node) {
         return node.getData().trim();
     }
 
+    /**
+     * Detects whether a node list contains both non-empty text and element children.
+     *
+     * @param list child nodes to inspect
+     * @return {@code true} for mixed content
+     */
     protected boolean mixedContent(NodeList list) {
         boolean hasText = false;
         boolean hasElement = false;
@@ -358,7 +556,7 @@ public class DomToGroovy {
                 hasElement = true;
             } else if (node instanceof Text) {
                 String text = getTextNodeData((Text) node);
-                if (text.length() > 0) {
+                if (!text.isEmpty()) {
                     hasText = true;
                 }
             }
@@ -367,12 +565,24 @@ public class DomToGroovy {
         return hasText && hasElement;
     }
 
+    /**
+     * Emits all children of the supplied parent node.
+     *
+     * @param parent DOM parent node
+     * @param namespaces namespaces currently in scope
+     */
     protected void printChildren(Node parent, Map namespaces) {
         for (Node node = parent.getFirstChild(); node != null; node = node.getNextSibling()) {
             print(node, namespaces, false);
         }
     }
 
+    /**
+     * Returns the trimmed local name for a DOM node, falling back to {@link Node#getNodeName()}.
+     *
+     * @param node DOM node
+     * @return trimmed local name
+     */
     protected String getLocalName(Node node) {
         String answer = node.getLocalName();
         if (answer == null) {
@@ -381,6 +591,12 @@ public class DomToGroovy {
         return answer.trim();
     }
 
+    /**
+     * Finishes the current emitted fragment and optionally appends a comma.
+     *
+     * @param text trailing text to emit before line termination
+     * @param endWithComma whether to append a comma
+     */
     protected void printEnd(String text, boolean endWithComma) {
         if (endWithComma) {
             print(text);
@@ -390,14 +606,27 @@ public class DomToGroovy {
         }
     }
 
+    /**
+     * Writes a line through the configured indent printer.
+     *
+     * @param text line text
+     */
     protected void println(String text) {
         out.println(text);
     }
 
+    /**
+     * Writes text through the configured indent printer.
+     *
+     * @param text text to print
+     */
     protected void print(String text) {
         out.print(text);
     }
 
+    /**
+     * Writes the current indentation through the configured indent printer.
+     */
     protected void printIndent() {
         out.printIndent();
     }

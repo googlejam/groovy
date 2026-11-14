@@ -20,15 +20,12 @@ package org.codehaus.groovy.vmplugin;
 
 import org.apache.groovy.util.Maps;
 import org.codehaus.groovy.runtime.DefaultGroovyMethods;
+import org.codehaus.groovy.vmplugin.v17.Java17;
 
-import java.math.BigDecimal;
-import java.security.AccessController;
-import java.security.PrivilegedAction;
 import java.util.Map;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-
-import static org.codehaus.groovy.runtime.DefaultGroovyMethods.isAtLeast;
 
 /**
  * Factory class to get functionality based on the VM version.
@@ -36,45 +33,50 @@ import static org.codehaus.groovy.runtime.DefaultGroovyMethods.isAtLeast;
  * runtime.
  */
 public class VMPluginFactory {
-    private static final Logger LOGGER = Logger.getLogger(VMPluginFactory.class.getName());
-    private static final Map<BigDecimal, String> PLUGIN_MAP = Maps.of(
-            // Note: list the vm plugin entries in *descending* order:
-            new BigDecimal("10"), "org.codehaus.groovy.vmplugin.v10.Java10",
-            new BigDecimal("9"), "org.codehaus.groovy.vmplugin.v9.Java9",
-            new BigDecimal("1.8"), "org.codehaus.groovy.vmplugin.v8.Java8"
+
+    // Constructor references rather than class names: the plugin is then
+    // reachable by static analysis (GraalVM native image needs no reflection
+    // metadata for it) and its class loads only when the JDK version selects it.
+    private static final Map<Integer, Supplier<VMPlugin>> PLUGIN_MAP = Maps.of(
+        17, Java17::new
     );
 
-    private static final VMPlugin PLUGIN;
-
-    static {
-        PLUGIN = createPlugin();
-    }
-
-    public static VMPlugin getPlugin() {
-        return PLUGIN;
-    }
+    private static final VMPlugin PLUGIN = createPlugin();
 
     private static VMPlugin createPlugin() {
-        return AccessController.doPrivileged((PrivilegedAction<VMPlugin>) () -> {
-            final BigDecimal specVer = new BigDecimal(System.getProperty("java.specification.version"));
-            ClassLoader loader = VMPluginFactory.class.getClassLoader();
-            for (Map.Entry<BigDecimal, String> entry : PLUGIN_MAP.entrySet()) {
-                if (isAtLeast(specVer, entry.getKey())) {
-                    final String pluginName = entry.getValue();
-                    try {
-                        return (VMPlugin) loader.loadClass(pluginName).getDeclaredConstructor().newInstance();
-                    } catch (Throwable t) {
-                        if (LOGGER.isLoggable(Level.FINE)) {
-                            LOGGER.fine("Trying to create VM plugin `" + pluginName + "`, but failed:\n" + DefaultGroovyMethods.asString(t)
-                            );
-                        }
-
-                        return null;
+        int specVer = featureVersion();
+        for (Map.Entry<Integer, Supplier<VMPlugin>> entry : PLUGIN_MAP.entrySet()) {
+            if (specVer >= entry.getKey()) {
+                try {
+                    return entry.getValue().get();
+                } catch (Throwable t) {
+                    var log = Logger.getLogger(VMPluginFactory.class.getName());
+                    if (log.isLoggable(Level.FINE)) {
+                        log.fine("Trying to create VM plugin for Java " + entry.getKey() + ", but failed:\n" + DefaultGroovyMethods.asString(t));
                     }
+                    return null;
                 }
             }
+        }
+        return null;
+    }
 
-            return null;
-        });
+    /**
+     * The Java feature version of the running VM; see {@link JavaFeatureVersion#current()}.
+     *
+     * @return the feature version, never below the lowest supported release
+     * @since 6.0.0
+     */
+    public static int featureVersion() {
+        return JavaFeatureVersion.current();
+    }
+
+    /**
+     * Returns the VM plugin selected for the current runtime.
+     *
+     * @return the active VM plugin, or {@code null} if initialization failed
+     */
+    public static VMPlugin getPlugin() {
+        return PLUGIN;
     }
 }

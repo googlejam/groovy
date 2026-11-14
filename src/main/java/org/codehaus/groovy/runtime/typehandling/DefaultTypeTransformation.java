@@ -21,17 +21,20 @@ package org.codehaus.groovy.runtime.typehandling;
 import groovy.lang.Closure;
 import groovy.lang.GString;
 import groovy.lang.GroovyRuntimeException;
-import org.codehaus.groovy.reflection.ReflectionCache;
+import org.apache.groovy.lang.annotation.GroovyABI;
+import org.codehaus.groovy.classgen.asm.util.TypeUtil;
 import org.codehaus.groovy.reflection.stdclasses.CachedSAMClass;
+import org.codehaus.groovy.runtime.ArrayGroovyMethods;
 import org.codehaus.groovy.runtime.DefaultGroovyMethods;
+import org.codehaus.groovy.runtime.FormatHelper;
 import org.codehaus.groovy.runtime.InvokerHelper;
 import org.codehaus.groovy.runtime.InvokerInvocationException;
 import org.codehaus.groovy.runtime.IteratorClosureAdapter;
 import org.codehaus.groovy.runtime.MethodClosure;
 import org.codehaus.groovy.runtime.NullObject;
 import org.codehaus.groovy.runtime.ResourceGroovyMethods;
+import org.codehaus.groovy.runtime.StreamGroovyMethods;
 import org.codehaus.groovy.runtime.StringGroovyMethods;
-import org.codehaus.groovy.vmplugin.v8.PluginDefaultGroovyMethods;
 
 import java.io.File;
 import java.io.IOException;
@@ -45,65 +48,204 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Deque;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
+import java.util.LinkedList;
 import java.util.List;
+import java.util.ListIterator;
 import java.util.Map;
+import java.util.NavigableMap;
+import java.util.NavigableSet;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.Queue;
+import java.util.Set;
+import java.util.SortedMap;
+import java.util.SortedSet;
+import java.util.TreeMap;
+import java.util.TreeSet;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.BaseStream;
 import java.util.stream.DoubleStream;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
-import static org.codehaus.groovy.reflection.ReflectionCache.isArray;
-
 /**
  * Class providing various type conversions, coercions and boxing/unboxing operations.
+ *
+ * @since Groovy 1.8.0
  */
 public class DefaultTypeTransformation {
 
+    /**
+     * Empty array constant for backwards compatibility.
+     *
+     * @deprecated since 5.0.0
+     */
+    @Deprecated(forRemoval = true, since = "5.0.0")
     protected static final Object[] EMPTY_ARGUMENTS = {};
+
+    /**
+     * BigInteger constant representing negative one, for backwards compatibility.
+     *
+     * @deprecated since 5.0.0
+     */
+    @Deprecated(forRemoval = true, since = "5.0.0")
     protected static final BigInteger ONE_NEG = new BigInteger("-1");
-    private static final Object[] EMPTY_OBJECT_ARRAY = new Object[0];
 
     //  --------------------------------------------------------
     //                  unboxing methods
     //  --------------------------------------------------------
 
-    public static byte byteUnbox(Object value) {
+    /**
+     * Unboxes an object to a primitive {@code byte} value.
+     * <p>
+     * Converts the object to a {@code Number} and then extracts its byte value.
+     *
+     * @param value the object to unbox (typically a wrapper object or string representation)
+     * @return the byte value
+     * @throws GroovyCastException if the object cannot be converted to a number
+     */
+    @GroovyABI(since = "1.8.0")
+    public static byte byteUnbox(final Object value) {
+        if (value instanceof Byte b) {
+            return b;
+        }
         Number n = castToNumber(value, byte.class);
         return n.byteValue();
     }
 
-    public static char charUnbox(Object value) {
+    /**
+     * Unboxes an object to a primitive {@code char} value.
+     * <p>
+     * Returns the null character ({@code '\u0000'}) if the value is null.
+     * Otherwise delegates to {@link ShortTypeHandling#castToChar(Object)}.
+     *
+     * @param value the object to unbox (may be null, Character, Number, or String)
+     * @return the char value, or null character if value is null
+     * @throws GroovyCastException if the object cannot be converted to char
+     */
+    @GroovyABI(since = "1.8.0")
+    public static char charUnbox(final Object value) {
+        if (value instanceof Character c) {
+            return c;
+        }
+        if (value == null) return '\u0000'; // GROOVY-11371
         return ShortTypeHandling.castToChar(value);
     }
 
-    public static short shortUnbox(Object value) {
+    /**
+     * Unboxes an object to a primitive {@code short} value.
+     * <p>
+     * Converts the object to a {@code Number} and then extracts its short value.
+     *
+     * @param value the object to unbox (typically a wrapper object or string representation)
+     * @return the short value
+     * @throws GroovyCastException if the object cannot be converted to a number
+     */
+    @GroovyABI(since = "1.8.0")
+    public static short shortUnbox(final Object value) {
+        if (value instanceof Short s) {
+            return s;
+        }
         Number n = castToNumber(value, short.class);
         return n.shortValue();
     }
 
-    public static int intUnbox(Object value) {
+    /**
+     * Unboxes an object to a primitive {@code int} value.
+     * <p>
+     * Converts the object to a {@code Number} and then extracts its int value.
+     *
+     * @param value the object to unbox (typically a wrapper object or string representation)
+     * @return the int value
+     * @throws GroovyCastException if the object cannot be converted to a number
+     */
+    @GroovyABI(since = "1.8.0")
+    public static int intUnbox(final Object value) {
+        if (value instanceof Integer i) {
+            return i;
+        }
         Number n = castToNumber(value, int.class);
         return n.intValue();
     }
 
-    public static boolean booleanUnbox(Object value) {
+    /**
+     * Unboxes an object to a primitive {@code boolean} value.
+     * <p>
+     * Uses {@link #castToBoolean(Object)} to perform the coercion.
+     *
+     * @param value the object to unbox (may be null for false, Boolean, or any object with asBoolean())
+     * @return the boolean value
+     */
+    @GroovyABI(since = "1.8.0")
+    public static boolean booleanUnbox(final Object value) {
+        if (value instanceof Boolean b) {
+            return b;
+        }
         return castToBoolean(value);
     }
 
-    public static long longUnbox(Object value) {
+    /**
+     * Unboxes an object to a primitive {@code long} value.
+     * <p>
+     * Converts the object to a {@code Number} and then extracts its long value.
+     *
+     * @param value the object to unbox (typically a wrapper object or string representation)
+     * @return the long value
+     * @throws GroovyCastException if the object cannot be converted to a number
+     */
+    @GroovyABI(since = "1.8.0")
+    public static long longUnbox(final Object value) {
+        if (value instanceof Long l) {
+            return l;
+        }
         Number n = castToNumber(value, long.class);
         return n.longValue();
     }
 
-    public static float floatUnbox(Object value) {
+    /**
+     * Unboxes an object to a primitive {@code float} value.
+     * <p>
+     * Returns {@code Float.NaN} if the value is null.
+     * Otherwise converts the object to a {@code Number} and extracts its float value.
+     *
+     * @param value the object to unbox (typically a wrapper object or string representation, may be null)
+     * @return the float value, or NaN if value is null
+     * @throws GroovyCastException if the object cannot be converted to a number
+     */
+    @GroovyABI(since = "1.8.0")
+    public static float floatUnbox(final Object value) {
+        if (value instanceof Float f) {
+            return f;
+        }
+        if (value == null) return Float.NaN; // GROOVY-11371
         Number n = castToNumber(value, float.class);
         return n.floatValue();
     }
 
-    public static double doubleUnbox(Object value) {
+    /**
+     * Unboxes an object to a primitive {@code double} value.
+     * <p>
+     * Returns {@code Double.NaN} if the value is null.
+     * Otherwise converts the object to a {@code Number} and extracts its double value.
+     *
+     * @param value the object to unbox (typically a wrapper object or string representation, may be null)
+     * @return the double value, or NaN if value is null
+     * @throws GroovyCastException if the object cannot be converted to a number
+     */
+    @GroovyABI(since = "1.8.0")
+    public static double doubleUnbox(final Object value) {
+        if (value instanceof Double d) {
+            return d;
+        }
+        if (value == null) return Double.NaN; // GROOVY-11371
         Number n = castToNumber(value, double.class);
         return n.doubleValue();
     }
@@ -112,71 +254,159 @@ public class DefaultTypeTransformation {
     //                  boxing methods
     //  --------------------------------------------------------
 
-    @Deprecated
+    /**
+     * Boxes a primitive {@code boolean} value into a {@code Boolean} wrapper object.
+     *
+     * @param value the boolean value to box
+     * @return {@code Boolean.TRUE} or {@code Boolean.FALSE}
+     * @deprecated since 2.3.0 - Java's auto-boxing is sufficient for this operation
+     */
+    @Deprecated(since = "2.3.0")
+    @GroovyABI(since = "1.8.0")
     public static Object box(boolean value) {
         return value ? Boolean.TRUE : Boolean.FALSE;
     }
 
-    @Deprecated
+    /**
+     * Boxes a primitive {@code byte} value into a {@code Byte} wrapper object.
+     *
+     * @param value the byte value to box
+     * @return a Byte object with the specified value
+     * @deprecated since 2.3.0 - Java's auto-boxing is sufficient for this operation
+     */
+    @Deprecated(since = "2.3.0")
+    @GroovyABI(since = "1.8.0")
     public static Object box(byte value) {
         return value;
     }
 
-    @Deprecated
+    /**
+     * Boxes a primitive {@code char} value into a {@code Character} wrapper object.
+     *
+     * @param value the char value to box
+     * @return a Character object with the specified value
+     * @deprecated since 2.3.0 - Java's auto-boxing is sufficient for this operation
+     */
+    @Deprecated(since = "2.3.0")
+    @GroovyABI(since = "1.8.0")
     public static Object box(char value) {
         return value;
     }
 
-    @Deprecated
+    /**
+     * Boxes a primitive {@code short} value into a {@code Short} wrapper object.
+     *
+     * @param value the short value to box
+     * @return a Short object with the specified value
+     * @deprecated since 2.3.0 - Java's auto-boxing is sufficient for this operation
+     */
+    @Deprecated(since = "2.3.0")
+    @GroovyABI(since = "1.8.0")
     public static Object box(short value) {
         return value;
     }
 
-    @Deprecated
+    /**
+     * Boxes a primitive {@code int} value into an {@code Integer} wrapper object.
+     *
+     * @param value the int value to box
+     * @return an Integer object with the specified value
+     * @deprecated since 2.3.0 - Java's auto-boxing is sufficient for this operation
+     */
+    @Deprecated(since = "2.3.0")
+    @GroovyABI(since = "1.8.0")
     public static Object box(int value) {
         return value;
     }
 
-    @Deprecated
+    /**
+     * Boxes a primitive {@code long} value into a {@code Long} wrapper object.
+     *
+     * @param value the long value to box
+     * @return a Long object with the specified value
+     * @deprecated since 2.3.0 - Java's auto-boxing is sufficient for this operation
+     */
+    @Deprecated(since = "2.3.0")
+    @GroovyABI(since = "1.8.0")
     public static Object box(long value) {
         return value;
     }
 
-    @Deprecated
+    /**
+     * Boxes a primitive {@code float} value into a {@code Float} wrapper object.
+     *
+     * @param value the float value to box
+     * @return a Float object with the specified value
+     * @deprecated since 2.3.0 - Java's auto-boxing is sufficient for this operation
+     */
+    @Deprecated(since = "2.3.0")
+    @GroovyABI(since = "1.8.0")
     public static Object box(float value) {
         return value;
     }
 
-    @Deprecated
+    /**
+     * Boxes a primitive {@code double} value into a {@code Double} wrapper object.
+     *
+     * @param value the double value to box
+     * @return a Double object with the specified value
+     * @deprecated since 2.3.0 - Java's auto-boxing is sufficient for this operation
+     */
+    @Deprecated(since = "2.3.0")
+    @GroovyABI(since = "1.8.0")
     public static Object box(double value) {
         return value;
     }
 
+    /**
+     * Attempts to coerce an object to a {@code Number}.
+     * <p>
+     * If the object is already a Number, it is returned as-is.
+     * Characters are converted to their numeric code point.
+     * Strings of length 1 are converted to their character code point.
+     * GStrings are converted to String first, then processed.
+     *
+     * @param object the object to coerce (Number, Character, GString, or String)
+     * @return a Number representation of the object
+     * @throws GroovyCastException if the object cannot be converted to a number
+     */
     public static Number castToNumber(Object object) {
-        // default to Number class in exception details, else use the specified Number subtype.
+        // default to Number class in exception detail
         return castToNumber(object, Number.class);
     }
 
+    /**
+     * Attempts to coerce an object to a {@code Number} of a specific target type.
+     * <p>
+     * If the object is already a Number, it is returned as-is.
+     * Characters are converted to their numeric code point.
+     * Strings of length 1 are converted to their character code point.
+     * GStrings are converted to String first, then processed.
+     *
+     * @param object the object to coerce (Number, Character, GString, or String)
+     * @param type the target numeric type (used for error reporting)
+     * @return a Number representation of the object
+     * @throws GroovyCastException if the object cannot be converted to a number
+     */
     public static Number castToNumber(Object object, Class type) {
-        if (object instanceof Number)
-            return (Number) object;
-        if (object instanceof Character) {
-            return (int) (Character) object;
+        if (object instanceof Number number) {
+            return number;
+        }
+        return castToNumberFallback(object, type);
+    }
+
+    private static Number castToNumberFallback(Object object, Class<?> type) {
+        if (object instanceof Character cObj) {
+            char c = cObj;
+            return (int) c;
         }
         if (object instanceof GString) {
-            String c = ((GString) object).toString();
-            if (c.length() == 1) {
-                return (int) c.charAt(0);
-            } else {
-                throw new GroovyCastException(c, type);
-            }
+            object = object.toString();
         }
-        if (object instanceof String) {
-            String c = (String) object;
-            if (c.length() == 1) {
-                return (int) c.charAt(0);
-            } else {
-                throw new GroovyCastException(c, type);
+        if (object instanceof String s) {
+            if (s.length() == 1) {
+                char c = s.charAt(0);
+                return (int) c;
             }
         }
         throw new GroovyCastException(object, type);
@@ -190,7 +420,7 @@ public class DefaultTypeTransformation {
      * @return a boolean value
      */
     public static boolean castToBoolean(Object object) {
-        // null is always false
+        // GROOVY-6467, GROOVY-9916: null is false
         if (object == null) {
             return false;
         }
@@ -200,16 +430,29 @@ public class DefaultTypeTransformation {
             return (Boolean) object;
         }
 
-        // if the object is not null and no Boolean, try to call an asBoolean() method on the object
+        return castToBooleanFallback(object);
+    }
+
+    private static boolean castToBooleanFallback(Object object) {
+        // if the object isn't null and no Boolean, try to call an asBoolean() method on the object
         return (Boolean) InvokerHelper.invokeMethod(object, "asBoolean", InvokerHelper.EMPTY_ARGS);
     }
 
-    @Deprecated
+    /**
+     * Attempts to coerce an object to a {@code char} value (as a Character wrapper).
+     * <p>
+     * Accepts Character objects, Numbers (converted via intValue), or Strings of length 1.
+     *
+     * @param object the object to coerce (Character, Number, or String)
+     * @return a Character with the coerced value
+     * @throws GroovyCastException if the object cannot be converted to char
+     * @deprecated since 2.3.0 - use {@link ShortTypeHandling#castToChar(Object)} instead
+     */
+    @Deprecated(since = "2.3.0")
     public static char castToChar(Object object) {
         if (object instanceof Character) {
             return (Character) object;
-        } else if (object instanceof Number) {
-            Number value = (Number) object;
+        } else if (object instanceof Number value) {
             return (char) value.intValue();
         } else {
             String text = object.toString();
@@ -221,34 +464,84 @@ public class DefaultTypeTransformation {
         }
     }
 
+    /**
+     * Performs a comprehensive type cast/coercion of an object to a target class.
+     * <p>
+     * Handles the following conversions:
+     * <ul>
+     * <li>Primitive types (delegates to castToPrimitive)</li>
+     * <li>null and Object.class (returns as-is)</li>
+     * <li>Already compatible types (returns as-is)</li>
+     * <li>Array types (delegates to asArray)</li>
+     * <li>Enum types (delegates to ShortTypeHandling)</li>
+     * <li>Collection types (delegates to continueCastOnCollection)</li>
+     * <li>String type (uses FormatHelper)</li>
+     * <li>Boolean type (uses castToBoolean)</li>
+     * <li>Character type (delegates to ShortTypeHandling)</li>
+     * <li>Class type (delegates to ShortTypeHandling)</li>
+     * <li>Number types (delegates to continueCastOnNumber)</li>
+     * </ul>
+     *
+     * @param object the object to cast (may be null)
+     * @param type the target type to cast to
+     * @return an object of the target type, or null if input is null and type is not primitive
+     * @throws ClassCastException or GroovyCastException if casting is not possible
+     */
     public static Object castToType(final Object object, final Class type) {
-        if (object == null) return type == boolean.class ? Boolean.FALSE : null;
-        if (type == Object.class) return object;
+        if (type.isPrimitive()) { // GROOVY-9916, GROOVY-11371
+            return castToPrimitive(object, type);
+        }
+        if (object == null || type == Object.class) {
+            return object;
+        }
 
         final Class aClass = object.getClass();
         if (type == aClass || type.isAssignableFrom(aClass)) {
             return object;
         }
 
-        if (isArray(type)) {
+        if (type.isArray()) {
             return asArray(object, type);
         } else if (type.isEnum()) {
             return ShortTypeHandling.castToEnum(object, type);
-        } else if (Collection.class.isAssignableFrom(type)) {
+        } else if (Collection.class.isAssignableFrom(type) || type == Iterable.class) {
             return continueCastOnCollection(object, type);
+        } else if (Map.class.isAssignableFrom(type) && object instanceof Map) {
+            return continueCastOnMap((Map) object, type);
         } else if (type == String.class) {
-            return InvokerHelper.toString(object);
-        } else if (type == Character.class) {
-            return ShortTypeHandling.castToChar(object);
+            return FormatHelper.toString(object);
         } else if (type == Boolean.class) {
             return castToBoolean(object);
+        } else if (type == Character.class) {
+            return ShortTypeHandling.castToChar(object);
         } else if (type == Class.class) {
             return ShortTypeHandling.castToClass(object);
-        } else if (type.isPrimitive()) {
-            return castToPrimitive(object, type);
         }
 
         return continueCastOnNumber(object, type);
+    }
+
+    /**
+     * The implementation used when a value is cast or coerced to one of these
+     * collection or map interfaces and is not already an instance of it.
+     */
+    private static final Map<Class<?>, Supplier<?>> DEFAULT_IMPLEMENTATIONS = Map.ofEntries(
+        Map.entry(Iterable.class, ArrayList::new),
+        Map.entry(Collection.class, ArrayList::new),
+        Map.entry(List.class, ArrayList::new),
+        Map.entry(Set.class, LinkedHashSet::new),
+        Map.entry(SortedSet.class, TreeSet::new),
+        Map.entry(NavigableSet.class, TreeSet::new),
+        Map.entry(Queue.class, LinkedList::new), // unlike ArrayDeque, accepts null elements
+        Map.entry(Deque.class, LinkedList::new),
+        Map.entry(BlockingQueue.class, LinkedBlockingQueue::new),
+        Map.entry(SortedMap.class, TreeMap::new),
+        Map.entry(NavigableMap.class, TreeMap::new),
+        Map.entry(ConcurrentMap.class, ConcurrentHashMap::new)
+    );
+
+    private static boolean isConcrete(final Class type) {
+        return !type.isInterface() && !Modifier.isAbstract(type.getModifiers());
     }
 
     private static Object continueCastOnCollection(final Object object, final Class type) {
@@ -257,7 +550,10 @@ public class DefaultTypeTransformation {
         }
 
         Supplier<Collection> newCollection = () -> {
-            if (type.isAssignableFrom(ArrayList.class) && Modifier.isAbstract(type.getModifiers())) {
+            Supplier<?> defaultImplementation = DEFAULT_IMPLEMENTATIONS.get(type);
+            if (defaultImplementation != null) {
+                return (Collection) defaultImplementation.get();
+            } else if (type.isAssignableFrom(ArrayList.class) && Modifier.isAbstract(type.getModifiers())) {
                 return new ArrayList();
             } else if (type.isAssignableFrom(LinkedHashSet.class) && Modifier.isAbstract(type.getModifiers())) {
                 return new LinkedHashSet();
@@ -270,12 +566,6 @@ public class DefaultTypeTransformation {
             }
         };
 
-        if (object instanceof BaseStream) {
-            Collection answer = newCollection.get();
-            answer.addAll(asCollection(object));
-            return answer;
-        }
-
         if (object.getClass().isArray()) {
             Collection answer = newCollection.get();
             // we cannot just wrap in a List as we support primitive type arrays
@@ -286,7 +576,60 @@ public class DefaultTypeTransformation {
             return answer;
         }
 
+        if (object instanceof BaseStream   // GROOVY-10028
+            || object instanceof Optional  // GROOVY-10223
+            || (object instanceof Iterable // GROOVY-11378
+                && !(object instanceof Collection))) { // GROOVY-7867
+            Collection answer = newCollection.get();
+            answer.addAll(asCollection(object));
+            return answer;
+        }
+
+        if (object instanceof Collection collection) {
+            if (DEFAULT_IMPLEMENTATIONS.containsKey(type)) {
+                Collection answer = newCollection.get();
+                answer.addAll(collection);
+                return answer;
+            }
+            if (isConcrete(type)) {
+                // prefer a copy constructor, then a no-arg constructor plus addAll, over
+                // passing the elements as constructor arguments, e.g. Vector(int capacity)
+                Object answer = newCollectionOf(type, collection);
+                if (answer != null) return answer;
+            }
+        }
+
         return continueCastOnNumber(object, type);
+    }
+
+    private static Object continueCastOnMap(final Map map, final Class type) {
+        Supplier<?> defaultImplementation = DEFAULT_IMPLEMENTATIONS.get(type);
+        if (defaultImplementation != null) {
+            Map answer = (Map) defaultImplementation.get();
+            answer.putAll(map);
+            return answer;
+        }
+
+        return continueCastOnNumber(map, type);
+    }
+
+    /**
+     * Fills a concrete collection class through its copy constructor, or else
+     * its no-arg constructor followed by addAll; null if neither works.
+     * Failures are left to the caller's fallback, which reports them (GROOVY-7867).
+     */
+    private static Object newCollectionOf(final Class type, final Collection elements) {
+        try {
+            return InvokerHelper.invokeConstructorOf(type, new Object[]{elements});
+        } catch (Exception ignore) {
+        }
+        try {
+            Collection answer = (Collection) InvokerHelper.invokeConstructorOf(type, null);
+            answer.addAll(elements);
+            return answer;
+        } catch (Exception ignore) {
+        }
+        return null;
     }
 
     private static Object continueCastOnNumber(Object object, Class type) {
@@ -311,14 +654,12 @@ public class DefaultTypeTransformation {
                 return n.floatValue();
             }
             if (type == Double.class) {
-                double answer = n.doubleValue();
-                //throw a runtime exception if conversion would be out-of-range for the type.
-                if (!(n instanceof Double) && (answer == Double.NEGATIVE_INFINITY
-                        || answer == Double.POSITIVE_INFINITY)) {
-                    throw new GroovyRuntimeException("Automatic coercion of " + n.getClass().getName()
-                            + " value " + n + " to double failed. Value is out of range.");
+                double value = n.doubleValue();
+                // throw a runtime exception if conversion would be out-of-range for the type
+                if ((value == Double.NEGATIVE_INFINITY || value == Double.POSITIVE_INFINITY) && !(n instanceof Double)) {
+                    throw new GroovyRuntimeException("Automatic coercion of " + n.getClass().getName() + " value " + n + " to double failed. Value is out of range.");
                 }
-                return answer;
+                return value;
             }
             if (type == BigDecimal.class) {
                 return NumberMath.toBigDecimal(n);
@@ -333,7 +674,7 @@ public class DefaultTypeTransformation {
 
     private static Object castToPrimitive(Object object, Class type) {
         if (type == boolean.class) {
-            return booleanUnbox(object);
+            return castToBoolean(object);
         } else if (type == byte.class) {
             return byteUnbox(object);
         } else if (type == char.class) {
@@ -347,16 +688,14 @@ public class DefaultTypeTransformation {
         } else if (type == float.class) {
             return floatUnbox(object);
         } else if (type == double.class) {
-            double answer = doubleUnbox(object);
-            //throw a runtime exception if conversion would be out-of-range for the type.
-            if (!(object instanceof Double) && (answer == Double.NEGATIVE_INFINITY
-                    || answer == Double.POSITIVE_INFINITY)) {
-                throw new GroovyRuntimeException("Automatic coercion of " + object.getClass().getName()
-                        + " value " + object + " to double failed. Value is out of range.");
+            double value = doubleUnbox(object);
+            // throw a runtime exception if conversion would be out-of-range for the type
+            if ((value == Double.NEGATIVE_INFINITY || value == Double.POSITIVE_INFINITY) && !(object instanceof Double)) {
+                throw new GroovyRuntimeException("Automatic coercion of " + object.getClass().getName() + " value " + object + " to double failed. Value is out of range.");
             }
-            return answer;
-        } //nothing else possible
-        throw new GroovyCastException(object, type);
+            return value;
+        }
+        throw new GroovyCastException(object, type); // nothing else is possible
     }
 
     private static Object continueCastOnSAM(Object object, Class type) {
@@ -368,10 +707,9 @@ public class DefaultTypeTransformation {
         }
 
         Object[] args = null;
-        if (object instanceof Collection) {
-            // let's try invoke the constructor with the list as arguments
+        if (object instanceof Collection collection) {
+            // let's try to invoke the constructor with the list as arguments
             // such as for creating a Dimension, Point, Color etc.
-            Collection collection = (Collection) object;
             args = collection.toArray();
         } else if (object instanceof Object[]) {
             args = (Object[]) object;
@@ -382,6 +720,7 @@ public class DefaultTypeTransformation {
         }
 
         Exception nested = null;
+        Exception suppressed = null;
         if (args != null) {
             try {
                 return InvokerHelper.invokeConstructorOf(type, args);
@@ -398,6 +737,8 @@ public class DefaultTypeTransformation {
                         // as the caller has more context to be able to throw a more
                         // meaningful exception (but stash to get message later)
                         nested = e;
+                        // keep the original exception as suppressed exception to allow easier failure analysis
+                        suppressed = ex;
                     }
                 } else {
                     nested = e;
@@ -416,9 +757,24 @@ public class DefaultTypeTransformation {
         } else {
             gce = new GroovyCastException(object, type);
         }
+        if (suppressed != null) {
+            gce.addSuppressed(suppressed);
+        }
         throw gce;
     }
 
+    /**
+     * Converts an object to an array of the specified target array type.
+     * <p>
+     * Handles direct assignment if already correct type, stream conversions
+     * (IntStream, LongStream, DoubleStream), and generic collection to array
+     * conversions with element type casting.
+     *
+     * @param object the object to convert (Collection, Stream, or already an array)
+     * @param type the target array type
+     * @return an array of the target type with elements converted and cast as needed
+     * @throws ClassCastException if array element conversion is not possible
+     */
     public static Object asArray(final Object object, final Class type) {
         if (type.isAssignableFrom(object.getClass())) {
             return object;
@@ -462,10 +818,40 @@ public class DefaultTypeTransformation {
         return array;
     }
 
+    /**
+     * Converts a generic typed array to a typed Collection.
+     *
+     * @param <T> the element type
+     * @param value the typed array to convert
+     * @return a Collection backed by the array elements
+     */
     public static <T> Collection<T> asCollection(final T[] value) {
         return arrayAsCollection(value);
     }
 
+    /**
+     * Converts an object to a Collection.
+     * <p>
+     * Handles the following conversions:
+     * <ul>
+     * <li>null → empty list</li>
+     * <li>Collection → returned as-is</li>
+     * <li>Map → collection of entry set</li>
+     * <li>array → collection backed by array</li>
+     * <li>BaseStream (IntStream, etc.) → list via StreamGroovyMethods</li>
+     * <li>String/GString → list of characters</li>
+     * <li>Iterable → list via DefaultGroovyMethods</li>
+     * <li>Optional → singleton or empty set</li>
+     * <li>Enum Class → list of enum constants</li>
+     * <li>File → list of lines</li>
+     * <li>MethodClosure → list via adapter</li>
+     * <li>Other → singleton collection containing the object</li>
+     * </ul>
+     *
+     * @param value the object to convert (may be null)
+     * @return a Collection representing the object's elements
+     * @throws GroovyRuntimeException if File reading fails
+     */
     public static Collection asCollection(final Object value) {
         if (value == null) {
             return Collections.EMPTY_LIST;
@@ -476,29 +862,38 @@ public class DefaultTypeTransformation {
         } else if (value.getClass().isArray()) {
             return arrayAsCollection(value);
         } else if (value instanceof BaseStream) {
-            return PluginDefaultGroovyMethods.toList((BaseStream) value);
-        } else if (value instanceof MethodClosure) {
-            MethodClosure method = (MethodClosure) value;
-            IteratorClosureAdapter adapter = new IteratorClosureAdapter(method.getDelegate());
-            method.call(adapter);
-            return adapter.asList();
+            return StreamGroovyMethods.toList((BaseStream) value);
         } else if (value instanceof String || value instanceof GString) {
             return StringGroovyMethods.toList((CharSequence) value);
+        } else if (value instanceof Iterable) { // GROOVY-10378
+            return DefaultGroovyMethods.toList((Iterable<?>) value);
+        } else if (value instanceof Optional) { // GROOVY-10223
+            return ((Optional<?>) value).map(Collections::singleton).orElseGet(Collections::emptySet);
+        } else if (value instanceof Class && ((Class) value).isEnum()) {
+            Object[] values = (Object[]) InvokerHelper.invokeMethod(value, "values", InvokerHelper.EMPTY_ARGS);
+            return Arrays.asList(values);
         } else if (value instanceof File) {
             try {
                 return ResourceGroovyMethods.readLines((File) value);
             } catch (IOException e) {
                 throw new GroovyRuntimeException("Error reading file: " + value, e);
             }
-        } else if (value instanceof Class && ((Class) value).isEnum()) {
-            Object[] values = (Object[]) InvokerHelper.invokeMethod(value, "values", EMPTY_OBJECT_ARRAY);
-            return Arrays.asList(values);
+        } else if (value instanceof MethodClosure method) {
+            IteratorClosureAdapter<?> adapter = new IteratorClosureAdapter<>(method.getDelegate());
+            method.call(adapter);
+            return adapter.asList();
         } else {
             // let's assume it's a collection of 1
             return Collections.singletonList(value);
         }
     }
 
+    /**
+     * Converts an array (including primitive arrays) to a Collection.
+     *
+     * @param value an array (primitive or object array)
+     * @return a Collection backed by the array elements
+     */
     public static Collection arrayAsCollection(Object value) {
         if (value.getClass().getComponentType().isPrimitive()) {
             return primitiveArrayToList(value);
@@ -506,24 +901,32 @@ public class DefaultTypeTransformation {
         return arrayAsCollection((Object[]) value);
     }
 
+    /**
+     * Converts an object array to a Collection backed by {@code Arrays.asList}.
+     *
+     * @param <T> the element type
+     * @param value an object array
+     * @return a Collection (mutable list) backed by the array
+     */
     public static <T> Collection<T> arrayAsCollection(T[] value) {
         return Arrays.asList(value);
     }
 
     /**
      * Determines whether the value object is a Class object representing a
-     * subclass of java.lang.Enum. Uses class name check to avoid breaking on
-     * pre-Java 5 JREs.
+     * subclass of java.lang.Enum. Walks superclass names and compares them with
+     * {@code java.lang.Enum}. {@code Enum} has been in the platform since Java 5;
+     * this method keeps the name comparison.
      *
      * @param value an object
      * @return true if the object is an Enum
      */
-    @Deprecated
+    @Deprecated(since = "2.3.0")
     public static boolean isEnumSubclass(Object value) {
         if (value instanceof Class) {
             Class superclass = ((Class) value).getSuperclass();
             while (superclass != null) {
-                if (superclass.getName().equals("java.lang.Enum")) {
+                if ("java.lang.Enum".equals(superclass.getName())) {
                     return true;
                 }
                 superclass = superclass.getSuperclass();
@@ -540,6 +943,7 @@ public class DefaultTypeTransformation {
      * @return the array as a List
      */
     public static List primitiveArrayToList(Object array) {
+        Objects.requireNonNull(array);
         int size = Array.getLength(array);
         List list = new ArrayList(size);
         for (int i = 0; i < size; i++) {
@@ -552,9 +956,282 @@ public class DefaultTypeTransformation {
         return list;
     }
 
+    /**
+     * Allows conversion of arrays into an immutable List view
+     *
+     * @param array an array
+     * @return a List view of the array
+     */
+    public static List primitiveArrayToUnmodifiableList(Object array) {
+        return new ArrayToUnmodifiableListAdapter(array);
+    }
+
+    /**
+     * An unmodifiable List view adapter over a primitive or object array.
+     * <p>
+     * Provides read-only access to array elements through the List interface.
+     * Nested primitive arrays are automatically converted to unmodifiable lists.
+     * Mutation operations throw {@code UnsupportedOperationException}.
+     */
+    static class ArrayToUnmodifiableListAdapter implements List {
+        private Object delegate;
+
+        /**
+         * Constructs an adapter over the specified array.
+         *
+         * @param delegate the array to wrap (must not be null)
+         * @throws NullPointerException if delegate is null
+         */
+        public ArrayToUnmodifiableListAdapter(Object delegate) {
+            Objects.requireNonNull(delegate);
+            this.delegate = delegate;
+        }
+
+        /**
+         * Returns the number of elements in the array.
+         *
+         * @return the array length
+         */
+        @Override
+        public int size() {
+            return Array.getLength(delegate);
+        }
+
+        /**
+         * Checks if the array is empty.
+         *
+         * @return true if size is 0
+         */
+        @Override
+        public boolean isEmpty() {
+            return size() == 0;
+        }
+
+        /**
+         * Checks if the array contains the specified object.
+         *
+         * @param o the object to search for
+         * @return true if found via equals comparison
+         */
+        @Override
+        public boolean contains(Object o) {
+            for (Object next : this) {
+                if (next.equals(o)) return true;
+            }
+            return false;
+        }
+
+        /**
+         * Internal iterator over array elements.
+         */
+        private class Itr implements Iterator {
+            private int idx = 0;
+
+            @Override
+            public boolean hasNext() {
+                return idx < size();
+            }
+
+            @Override
+            public Object next() {
+                return get(idx++);
+            }
+        }
+
+        /**
+         * Returns an iterator over array elements.
+         *
+         * @return an Iterator
+         */
+        @Override
+        public Iterator iterator() {
+            return new Itr();
+        }
+
+        /**
+         * Gets the element at the specified index.
+         * <p>
+         * Primitive nested arrays are automatically wrapped as unmodifiable lists.
+         *
+         * @param index the index of the element
+         * @return the element at the index, or an unmodifiable list if it's a primitive array
+         * @throws IndexOutOfBoundsException if index is out of range
+         */
+        @Override
+        public Object get(int index) {
+            Object item = Array.get(delegate, index);
+            if (item != null && item.getClass().isArray() && item.getClass().getComponentType().isPrimitive()) {
+                item = primitiveArrayToUnmodifiableList(item);
+            }
+            return item;
+        }
+
+        /**
+         * Finds the index of the first occurrence of an object.
+         *
+         * @param o the object to find
+         * @return the index if found, or -1 if not found
+         */
+        @Override
+        public int indexOf(Object o) {
+            int idx = 0;
+            boolean found = false;
+            while (!found && idx < size()) {
+                found = get(idx).equals(o);
+                if (!found) idx++;
+            }
+            return found ? idx : -1;
+        }
+
+        /**
+         * Finds the index of the last occurrence of an object.
+         *
+         * @param o the object to find
+         * @return the index if found, or -1 if not found
+         */
+        @Override
+        public int lastIndexOf(Object o) {
+            int idx = size() - 1;
+            boolean found = false;
+            while (!found && idx >= 0) {
+                found = get(idx).equals(o);
+                if (!found) idx--;
+            }
+            return found ? idx : -1;
+        }
+
+        /**
+         * Checks if all elements in the collection are contained in this array.
+         *
+         * @param coll the collection to check
+         * @return true if all elements are found
+         */
+        @Override
+        public boolean containsAll(Collection coll) {
+            for (Object next : coll) {
+                if (!contains(next)) return false;
+            }
+            return true;
+        }
+
+        /**
+         * Not supported - throws UnsupportedOperationException.
+         *
+         * @throws UnsupportedOperationException always
+         */
+        @Override
+        public ListIterator listIterator() {
+            throw new UnsupportedOperationException();
+        }
+
+        /**
+         * Not supported - throws UnsupportedOperationException.
+         *
+         * @throws UnsupportedOperationException always
+         */
+        @Override
+        public ListIterator listIterator(int index) {
+            throw new UnsupportedOperationException();
+        }
+
+        /**
+         * Not supported - throws UnsupportedOperationException.
+         *
+         * @throws UnsupportedOperationException always
+         */
+        @Override
+        public List subList(int fromIndex, int toIndex) {
+            throw new UnsupportedOperationException();
+        }
+
+        /**
+         * Not supported - throws UnsupportedOperationException.
+         *
+         * @throws UnsupportedOperationException always
+         */
+        @Override
+        public Object[] toArray() {
+            throw new UnsupportedOperationException();
+        }
+
+        /**
+         * Not supported - throws UnsupportedOperationException.
+         *
+         * @throws UnsupportedOperationException always
+         */
+        @Override
+        public Object[] toArray(Object[] a) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Object set(int index, Object element) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void add(int index, Object element) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public Object remove(int index) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public boolean addAll(int index, Collection c) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public boolean add(Object o) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public boolean remove(Object o) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public boolean addAll(Collection coll) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public boolean removeAll(Collection coll) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public boolean retainAll(Collection coll) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void clear() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public boolean removeIf(Predicate filter) {
+            throw new UnsupportedOperationException();
+        }
+    }
+
+    /**
+     * Boxes a primitive array to an object array.
+     * <p>
+     * Converts primitive values in the array to their boxed equivalents. Each primitive
+     * element is converted to its corresponding wrapper class (e.g., int to Integer).
+     *
+     * @param array the primitive array to box
+     * @return an Object array containing the boxed values
+     */
     public static Object[] primitiveArrayBox(Object array) {
         int size = Array.getLength(array);
-        Object[] ret = (Object[]) Array.newInstance(ReflectionCache.autoboxType(array.getClass().getComponentType()), size);
+        Object[] ret = (Object[]) Array.newInstance(TypeUtil.autoboxType(array.getClass().getComponentType()), size);
         for (int i = 0; i < size; i++) {
             ret[i] = Array.get(array, i);
         }
@@ -569,15 +1246,14 @@ public class DefaultTypeTransformation {
     }
 
     private static int compareToWithEqualityCheck(Object left, Object right, boolean equalityCheckOnly) {
-        Exception cause = null;
         if (left == right) {
             return 0;
-        }
-        if (left == null) {
+        } else if (left == null) {
             return -1;
         } else if (right == null) {
             return 1;
         }
+        Exception cause = null;
         if (left instanceof Comparable || left instanceof Number) {
             if (left instanceof Number) {
                 if (right instanceof Character || right instanceof Number) {
@@ -603,18 +1279,14 @@ public class DefaultTypeTransformation {
                 if (isValidCharacterString(left)) {
                     return DefaultGroovyMethods.compareTo(ShortTypeHandling.castToChar(left), (Number) right);
                 }
-            } else if (left instanceof String && right instanceof Character) {
+            } else if (left instanceof  String && (right instanceof String || right instanceof GString || right instanceof Character)) {
                 return ((String) left).compareTo(right.toString());
-            } else if (left instanceof String && right instanceof GString) {
-                return ((String) left).compareTo(right.toString());
-            } else if (left instanceof GString && right instanceof String) {
-                return ((GString) left).compareTo(right);
-            } else if (left instanceof GString && right instanceof Character) {
-                return ((GString) left).compareTo(right);
+            } else if (left instanceof GString && (right instanceof String || right instanceof GString || right instanceof Character)) {
+                return left.toString().compareTo(right.toString());
             }
             if (!equalityCheckOnly || left.getClass().isAssignableFrom(right.getClass())
-                    || (right.getClass() != Object.class && right.getClass().isAssignableFrom(left.getClass()) //GROOVY-4046
-                    || right instanceof Comparable) // GROOVY-7954
+                    || (right.getClass() != Object.class && right.getClass().isAssignableFrom(left.getClass()) // GROOVY-4046
+                        || right instanceof Comparable) // GROOVY-7954
             ) {
                 // GROOVY-7876: when comparing for equality we try to only call compareTo when an assignable
                 // relationship holds but with a container/holder class and because of erasure, we might still end
@@ -631,6 +1303,7 @@ public class DefaultTypeTransformation {
         if (equalityCheckOnly) {
             return -1; // anything other than 0
         }
+
         String message = MessageFormat.format("Cannot compare {0} with value ''{1}'' and {2} with value ''{3}''",
                 left.getClass().getName(), left, right.getClass().getName(), right);
         if (cause != null) {
@@ -640,11 +1313,30 @@ public class DefaultTypeTransformation {
         }
     }
 
+    /**
+     * Compares two objects for equality, handling nulls and type coercion.
+     * <p>
+     * Performs semantic equality comparison with proper handling of null values, null objects,
+     * Comparable types, and arrays. Applies numeric type coercion when appropriate.
+     *
+     * @param left the first object to compare
+     * @param right the second object to compare
+     * @return true if the objects are equal, false otherwise
+     */
     public static boolean compareEqual(Object left, Object right) {
         if (left == right) return true;
         if (left == null) return right instanceof NullObject;
         if (right == null) return left instanceof NullObject;
-        if (left instanceof Comparable) {
+        // An object that is both Comparable and a List (e.g. Tuple) must use
+        // list equality here, consistent with how a plain (non-Comparable)
+        // List is compared, rather than taking the Comparable/compareTo
+        // short-circuit below; otherwise `tuple == [..]` would be asymmetric
+        // with `[..] == tuple` and inconsistent with Tuple.equals(List).
+        if (left instanceof List && right instanceof List) {
+            return DefaultGroovyMethods.equals((List) left, (List) right);
+        }
+        // GROOVY-12699: a Number that is not Comparable compares numerically, as for <=>
+        if (left instanceof Comparable || (left instanceof Number && right instanceof Number)) {
             return compareToWithEqualityCheck(left, right, true) == 0;
         }
         // handle arrays on both sides as special case for efficiency
@@ -654,13 +1346,13 @@ public class DefaultTypeTransformation {
             return compareArrayEqual(left, right);
         }
         if (leftClass.isArray() && leftClass.getComponentType().isPrimitive()) {
-            left = primitiveArrayToList(left);
+            left = primitiveArrayToUnmodifiableList(left);
         }
         if (rightClass.isArray() && rightClass.getComponentType().isPrimitive()) {
-            right = primitiveArrayToList(right);
+            right = primitiveArrayToUnmodifiableList(right);
         }
         if (left instanceof Object[] && right instanceof List) {
-            return DefaultGroovyMethods.equals((Object[]) left, (List) right);
+            return ArrayGroovyMethods.equals((Object[]) left, (List) right);
         }
         if (left instanceof List && right instanceof Object[]) {
             return DefaultGroovyMethods.equals((List) left, (Object[]) right);
@@ -681,6 +1373,17 @@ public class DefaultTypeTransformation {
         return (Boolean) InvokerHelper.invokeMethod(left, "equals", right);
     }
 
+    /**
+     * Compares two arrays element-wise for equality.
+     * <p>
+     * Performs element-by-element comparison of two arrays using {@link #compareEqual(Object, Object)}.
+     * Returns true only if both arrays have the same length and all corresponding elements are equal.
+     * Null arrays are handled according to standard null comparison semantics.
+     *
+     * @param left the first array to compare
+     * @param right the second array to compare
+     * @return true if the arrays are equal (same length and equal elements), false otherwise
+     */
     public static boolean compareArrayEqual(Object left, Object right) {
         if (left == null) {
             return right == null;
@@ -706,12 +1409,22 @@ public class DefaultTypeTransformation {
         return (value instanceof String || value instanceof GString) && value.toString().length() == 1;
     }
 
-    @Deprecated
+    /**
+     * Copies {@code a} into an {@code int} array. An array whose runtime class name
+     * is {@code "[I"} is returned as itself. Anything else is cast to
+     * {@code Object[]}; a {@code null} element stays {@code 0}, and every other
+     * element must be a {@link Number}. A null array fails immediately.
+     *
+     * @param a an {@code int[]} or an array of numbers
+     * @return the converted array
+     * @deprecated since 2.3.0
+     */
+    @Deprecated(since = "2.3.0")
     public static int[] convertToIntArray(Object a) {
         int[] ans = null;
 
         // conservative coding
-        if (a.getClass().getName().equals("[I")) {
+        if ("[I".equals(a.getClass().getName())) {
             ans = (int[]) a;
         } else {
             Object[] ia = (Object[]) a;
@@ -726,7 +1439,17 @@ public class DefaultTypeTransformation {
         return ans;
     }
 
-    @Deprecated
+    /**
+     * Copies {@code a} into a {@code boolean} array. A {@code boolean[]} is returned
+     * as itself. Anything else is cast to {@code Object[]}; a {@code null} element
+     * stays {@code false}, and every other element is cast to {@link Boolean}.
+     * A null array fails immediately.
+     *
+     * @param a a {@code boolean[]} or an array of booleans
+     * @return the converted array
+     * @deprecated since 2.3.0
+     */
+    @Deprecated(since = "2.3.0")
     public static boolean[] convertToBooleanArray(Object a) {
         boolean[] ans = null;
 
@@ -744,7 +1467,17 @@ public class DefaultTypeTransformation {
         return ans;
     }
 
-    @Deprecated
+    /**
+     * Copies {@code a} into a {@code byte} array. A {@code byte[]} is returned as
+     * itself. Anything else is cast to {@code Object[]}; a {@code null} element
+     * stays {@code 0}, and every other element must be a {@link Number}.
+     * A null array fails immediately.
+     *
+     * @param a a {@code byte[]} or an array of numbers
+     * @return the converted array
+     * @deprecated since 2.3.0
+     */
+    @Deprecated(since = "2.3.0")
     public static byte[] convertToByteArray(Object a) {
         byte[] ans = null;
 
@@ -763,7 +1496,17 @@ public class DefaultTypeTransformation {
         return ans;
     }
 
-    @Deprecated
+    /**
+     * Copies {@code a} into a {@code short} array. A {@code short[]} is returned as
+     * itself. Anything else is cast to {@code Object[]}, and every element,
+     * including a {@code null} element, is cast to {@link Number} and converted
+     * with {@link Number#shortValue()}. A null array fails immediately.
+     *
+     * @param a a {@code short[]} or an array of numbers
+     * @return the converted array
+     * @deprecated since 2.3.0
+     */
+    @Deprecated(since = "2.3.0")
     public static short[] convertToShortArray(Object a) {
         short[] ans = null;
 
@@ -780,7 +1523,17 @@ public class DefaultTypeTransformation {
         return ans;
     }
 
-    @Deprecated
+    /**
+     * Copies {@code a} into a {@code char} array. A {@code char[]} is returned as
+     * itself. Anything else is cast to {@code Object[]}; a {@code null} element
+     * stays {@code '\0'}, and every other element is cast to {@link Character}.
+     * A null array fails immediately.
+     *
+     * @param a a {@code char[]} or an array of characters
+     * @return the converted array
+     * @deprecated since 2.3.0
+     */
+    @Deprecated(since = "2.3.0")
     public static char[] convertToCharArray(Object a) {
         char[] ans = null;
 
@@ -800,7 +1553,17 @@ public class DefaultTypeTransformation {
         return ans;
     }
 
-    @Deprecated
+    /**
+     * Copies {@code a} into a {@code long} array. A {@code long[]} is returned as
+     * itself. Anything else is cast to {@code Object[]}; a {@code null} element
+     * stays {@code 0L}, and every other element must be a {@link Number}.
+     * A null array fails immediately.
+     *
+     * @param a a {@code long[]} or an array of numbers
+     * @return the converted array
+     * @deprecated since 2.3.0
+     */
+    @Deprecated(since = "2.3.0")
     public static long[] convertToLongArray(Object a) {
         long[] ans = null;
 
@@ -820,7 +1583,17 @@ public class DefaultTypeTransformation {
         return ans;
     }
 
-    @Deprecated
+    /**
+     * Copies {@code a} into a {@code float} array. A {@code float[]} is returned as
+     * itself. Anything else is cast to {@code Object[]}; a {@code null} element
+     * stays {@code 0.0f}, and every other element must be a {@link Number}.
+     * A null array fails immediately.
+     *
+     * @param a a {@code float[]} or an array of numbers
+     * @return the converted array
+     * @deprecated since 2.3.0
+     */
+    @Deprecated(since = "2.3.0")
     public static float[] convertToFloatArray(Object a) {
         float[] ans = null;
 
@@ -840,7 +1613,17 @@ public class DefaultTypeTransformation {
         return ans;
     }
 
-    @Deprecated
+    /**
+     * Copies {@code a} into a {@code double} array. A {@code double[]} is returned
+     * as itself. Anything else is cast to {@code Object[]}; a {@code null} element
+     * stays {@code 0.0d}, and every other element must be a {@link Number}.
+     * A null array fails immediately.
+     *
+     * @param a a {@code double[]} or an array of numbers
+     * @return the converted array
+     * @deprecated since 2.3.0
+     */
+    @Deprecated(since = "2.3.0")
     public static double[] convertToDoubleArray(Object a) {
         double[] ans = null;
 
@@ -860,7 +1643,19 @@ public class DefaultTypeTransformation {
         return ans;
     }
 
-    @Deprecated
+    /**
+     * Converts {@code a} to a primitive array whose component type is {@code type}.
+     * The eight primitive {@code Class} objects select the matching converter.
+     * Any other type, including {@code null}, returns {@code a} unchanged. A null
+     * array fails when {@code type} is a primitive class.
+     *
+     * @param a the array passed to the selected converter; {@code null} is returned
+     *        unchanged when {@code type} is not a primitive class
+     * @param type a primitive class such as {@link Integer#TYPE}, or some other class
+     * @return the converted array, or {@code a} when {@code type} is not primitive
+     * @deprecated since 2.3.0
+     */
+    @Deprecated(since = "2.3.0")
     public static Object convertToPrimitiveArray(Object a, Class type) {
         if (type == Byte.TYPE) {
             return convertToByteArray(a);
@@ -890,11 +1685,20 @@ public class DefaultTypeTransformation {
         }
     }
 
-    @Deprecated
+    /**
+     * Returns the single character of a length-1 string. A {@link GString} is
+     * reduced with {@code toString()} first. A value that is neither a {@link String}
+     * nor a {@link GString} is cast to {@link Character}, so {@code null} is returned
+     * as {@code null}. A string whose length is not 1 is rejected.
+     *
+     * @param value a length-1 string, or a {@link Character}
+     * @return the character
+     * @deprecated since 2.3.0
+     */
+    @Deprecated(since = "2.3.0")
     public static Character getCharFromSizeOneString(Object value) {
         if (value instanceof GString) value = value.toString();
-        if (value instanceof String) {
-            String s = (String) value;
+        if (value instanceof String s) {
             if (s.length() != 1) throw new IllegalArgumentException("String of length 1 expected but got a bigger one");
             return s.charAt(0);
         } else {
@@ -902,6 +1706,20 @@ public class DefaultTypeTransformation {
         }
     }
 
+    /**
+     * Converts an array of arguments to a varargs array of the specified type.
+     * <p>
+     * Handles conversion of remaining arguments starting from the specified position into
+     * a properly typed array. If the argument at the start position is already the target
+     * array type and it's the only remaining argument, returns it unchanged. Otherwise,
+     * creates a new array with type-converted elements.
+     *
+     * @param origin the original array of arguments
+     * @param firstVargsPos the index of the first varargs element
+     * @param arrayType the target array type
+     * @return an array of the specified type containing the varargs elements
+     */
+    @GroovyABI(since = "2.4.0")
     public static Object castToVargsArray(Object[] origin, int firstVargsPos, Class<?> arrayType) {
         Class<?> componentType = arrayType.getComponentType();
         if (firstVargsPos >= origin.length) return Array.newInstance(componentType, 0);
@@ -914,5 +1732,4 @@ public class DefaultTypeTransformation {
         }
         return newArray;
     }
-
 }

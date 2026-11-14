@@ -16,19 +16,23 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy4246Bug extends GroovyTestCase {
+import static groovy.test.GroovyAssert.assertScript
+
+
+class Groovy4246Bug {
+    @Test
     void testPostFixExpEvaluations() {
         assertScript """
             class Bug4246 {
                 int randCallCount = 0
                 static void main(args) {
-                    new Bug4246()    
+                    new Bug4246()
                 }
-            
+
                 Bug4246() {
                     def num = 10
                     def arr = [0, 0, 0]
@@ -38,10 +42,10 @@ class Groovy4246Bug extends GroovyTestCase {
                     assert (arr[0] + arr[1] + arr[2] == num)
                     assert randCallCount == 10
                 }
-            
+
                 int rand() {
                     randCallCount++
-                    return new Random().nextInt(3)    
+                    return new Random().nextInt(3)
                 }
             }
         """

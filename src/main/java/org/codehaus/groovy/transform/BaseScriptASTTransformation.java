@@ -24,7 +24,6 @@ import org.codehaus.groovy.ast.AnnotatedNode;
 import org.codehaus.groovy.ast.AnnotationNode;
 import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
-import org.codehaus.groovy.ast.ConstructorNode;
 import org.codehaus.groovy.ast.ImportNode;
 import org.codehaus.groovy.ast.MethodNode;
 import org.codehaus.groovy.ast.PackageNode;
@@ -49,9 +48,12 @@ import static org.objectweb.asm.Opcodes.ACC_ABSTRACT;
 public class BaseScriptASTTransformation extends AbstractASTTransformation {
 
     private static final Class<BaseScript> MY_CLASS = BaseScript.class;
+    /**
+     * {@link ClassNode} for {@link BaseScript}. {@link #visit} returns immediately
+     * when the annotation is not this type.
+     */
     public static final ClassNode MY_TYPE = ClassHelper.make(MY_CLASS);
     private static final String MY_TYPE_NAME = "@" + MY_TYPE.getNameWithoutPackage();
-    private static final Parameter[] CONTEXT_CTOR_PARAMETERS = {new Parameter(ClassHelper.BINDING_TYPE, "context")};
 
     @Override
     public void visit(ASTNode[] nodes, SourceUnit source) {
@@ -84,12 +86,15 @@ public class BaseScriptASTTransformation extends AbstractASTTransformation {
     }
 
     private void changeBaseScriptTypeFromClass(final ClassNode parent, final AnnotationNode node) {
-//        Expression value = node.getMember("value");
-//        if (!(value instanceof ClassExpression)) {
-//            addError("Annotation " + MY_TYPE_NAME + " member 'value' should be a class literal.", value);
-//            return;
-//        }
-        changeBaseScriptType(parent, parent, parent.getSuperClass());
+        Expression value = node.getMember("value");
+        ClassNode superClass = parent.getSuperClass();
+        if (value instanceof ClassExpression) {
+            superClass = value.getType();
+        } else if (value != null) {
+            addError("Annotation " + MY_TYPE_NAME + " member 'value' should be a class literal.", value);
+            return;
+        }
+        changeBaseScriptType(parent, parent, superClass);
     }
 
     private void changeBaseScriptTypeFromDeclaration(final DeclarationExpression de, final AnnotationNode node) {
@@ -131,11 +136,11 @@ public class BaseScriptASTTransformation extends AbstractASTTransformation {
         // Method in base script that will contain the script body code.
         MethodNode runScriptMethod = ClassHelper.findSAM(baseScriptType);
 
-        // If they want to use a name other than than "run", then make the change.
+        // If they want to use a name other than "run", then make the change.
         if (isCustomScriptBodyMethod(runScriptMethod)) {
             MethodNode defaultMethod = cNode.getDeclaredMethod("run", Parameter.EMPTY_ARRAY);
             // GROOVY-6706: Sometimes an NPE is thrown here.
-            // The reason is that our transform is getting called more than once sometimes.  
+            // The reason is that our transform is getting called more than once sometimes.
             if (defaultMethod != null) {
                 cNode.removeMethod(defaultMethod);
                 MethodNode methodNode = new MethodNode(runScriptMethod.getName(), runScriptMethod.getModifiers() & ~ACC_ABSTRACT
@@ -151,16 +156,15 @@ public class BaseScriptASTTransformation extends AbstractASTTransformation {
         // If the new script base class does not have a contextual constructor (g.l.Binding), then we won't either.
         // We have to do things this way (and rely on just default constructors) because the logic that generates
         // the constructors for our script class have already run.
-        if (cNode.getSuperClass().getDeclaredConstructor(CONTEXT_CTOR_PARAMETERS) == null) {
-            ConstructorNode orphanedConstructor = cNode.getDeclaredConstructor(CONTEXT_CTOR_PARAMETERS);
-            cNode.removeConstructor(orphanedConstructor);
+        Parameter[] contextualSignature = {new Parameter(ClassHelper.BINDING_TYPE, "context")};
+        if (cNode.getSuperClass().getDeclaredConstructor(contextualSignature) == null) {
+            cNode.removeConstructor(cNode.getDeclaredConstructor(contextualSignature));
         }
     }
 
-    private static boolean isCustomScriptBodyMethod(MethodNode node) {
-        return node != null
-            && !(node.getDeclaringClass().equals(ClassHelper.SCRIPT_TYPE)
-                && "run".equals(node.getName())
-                && node.getParameters().length == 0);
+    private static boolean isCustomScriptBodyMethod(final MethodNode mn) {
+        return mn != null && !("run".equals(mn.getName())
+                            && mn.getParameters().length == 0
+                            && mn.getDeclaringClass().equals(ClassHelper.SCRIPT_TYPE));
     }
 }

@@ -18,27 +18,83 @@
  */
 package groovy.yaml;
 
+import groovy.json.JsonDateHandling;
+import groovy.json.JsonParserType;
 import groovy.json.JsonSlurper;
 import org.apache.groovy.yaml.util.YamlConverter;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.cfg.DateTimeFeature;
+import tools.jackson.dataformat.yaml.YAMLMapper;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.io.StringReader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
 /**
  *  Represents a YAML parser
+ *  <p>
+ *  YAML anchors and aliases are not resolved: an alias is returned as a plain string
+ *  holding the anchor's name, and a merge key ({@code <<}) is left as a literal entry.
+ *  This comes from the Jackson YAML backend and is a deliberate limitation there. The
+ *  Processing YAML user guide covers it, along with what to use when a document relies
+ *  on anchors.
  *
  *  @since 3.0.0
  */
 public class YamlSlurper {
-    private JsonSlurper jsonSlurper;
+    private final JsonSlurper jsonSlurper;
+    private JsonDateHandling dateHandling = JsonDateHandling.STRING;
 
+    /**
+     * Creates a YAML parser that produces standard Groovy data structures.
+     */
     public YamlSlurper() {
         this.jsonSlurper = new JsonSlurper();
+    }
+
+    /**
+     * Returns how a date-like string is handled when parsing.
+     *
+     * @return the current date handling, {@link JsonDateHandling#STRING} by default
+     * @see #setDateHandling(JsonDateHandling)
+     * @since 6.0.0
+     */
+    public JsonDateHandling getDateHandling() {
+        return dateHandling;
+    }
+
+    /**
+     * Chooses what a string in full ISO-8601 or JSON-date form becomes, matching the
+     * date handling {@link JsonSlurper} offers. The default is {@link JsonDateHandling#STRING}:
+     * a date-like string is left as a {@code String}, which is what this slurper has always
+     * produced. A date carrying no time, such as {@code "2026-09-04"}, is left as a
+     * {@code String} whatever is chosen here.
+     * <p>
+     * Choosing anything other than {@link JsonDateHandling#STRING} switches the underlying
+     * parser to {@link JsonParserType#INDEX_OVERLAY} so the conversion takes effect; as a
+     * consequence, the iteration order of a map with more than a handful of entries is no
+     * longer the document order. Pass {@code null} or {@link JsonDateHandling#STRING} to
+     * restore the default parser and string handling.
+     *
+     * @param dateHandling what a date-like string should become
+     * @return this slurper, for chaining
+     * @since 6.0.0
+     */
+    public YamlSlurper setDateHandling(JsonDateHandling dateHandling) {
+        this.dateHandling = dateHandling == null ? JsonDateHandling.STRING : dateHandling;
+        if (this.dateHandling == JsonDateHandling.STRING) {
+            jsonSlurper.setType(JsonParserType.CHAR_BUFFER);
+        } else {
+            jsonSlurper.setType(JsonParserType.INDEX_OVERLAY);
+            jsonSlurper.setDateHandling(this.dateHandling);
+        }
+        return this;
     }
 
     /**
@@ -68,7 +124,7 @@ public class YamlSlurper {
      * @return the root node of the parsed tree of Nodes
      */
     public Object parse(InputStream stream) {
-        return parse(new InputStreamReader(stream));
+        return parse(new InputStreamReader(stream, StandardCharsets.UTF_8));
     }
 
     /**
@@ -77,7 +133,7 @@ public class YamlSlurper {
      * @param file the reader of yaml
      * @return the root node of the parsed tree of Nodes
      */
-    public Object parse(java.io.File file) throws IOException {
+    public Object parse(File file) throws IOException {
         return parse(file.toPath());
     }
 
@@ -88,7 +144,93 @@ public class YamlSlurper {
      * @return the root node of the parsed tree of Nodes
      */
     public Object parse(Path path) throws IOException {
-        // note: convert to an input stream to allow the support of foreign file objects
-        return parse(Files.newInputStream(path));
+        try (InputStream stream = Files.newInputStream(path)) {
+            return parse(new InputStreamReader(stream, StandardCharsets.UTF_8));
+        }
+    }
+
+    /**
+     * Parse the content of the specified YAML text into a typed object using Jackson databinding.
+     * Supports {@code @JsonProperty} and {@code @JsonFormat} annotations for
+     * property mapping and type conversion.
+     *
+     * @param type the target type
+     * @param yaml the content of YAML
+     * @param <T> the target type
+     * @return a typed object
+     * @since 6.0.0
+     */
+    public <T> T parseTextAs(Class<T> type, String yaml) {
+        return parseAs(type, new StringReader(yaml));
+    }
+
+    /**
+     * Parse YAML from a reader into a typed object.
+     *
+     * @param type the target type
+     * @param reader the reader of YAML
+     * @param <T> the target type
+     * @return a typed object
+     * @since 6.0.0
+     */
+    public <T> T parseAs(Class<T> type, Reader reader) {
+        try {
+            return MAPPER.readValue(reader, type);
+        } catch (JacksonException e) {
+            throw new YamlRuntimeException(e);
+        }
+    }
+
+    // YAMLMapper is thread-safe once built, so a single shared instance is reused
+    private static final YAMLMapper MAPPER = mapperBuilder().build();
+
+    static YAMLMapper.Builder mapperBuilder() {
+        // Jackson 2's defaults keep databinding behaving as it did before Jackson 3
+        // (for example failing on an unknown property); java.time support is built in
+        return YAMLMapper.builder()
+                .configureForJackson2()
+                .disable(DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS)
+                .disable(DateTimeFeature.ADJUST_DATES_TO_CONTEXT_TIME_ZONE);
+    }
+
+    /**
+     * Parse YAML from an input stream into a typed object.
+     *
+     * @param type the target type
+     * @param stream the input stream of YAML
+     * @param <T> the target type
+     * @return a typed object
+     * @since 6.0.0
+     */
+    public <T> T parseAs(Class<T> type, InputStream stream) {
+        return parseAs(type, new InputStreamReader(stream, StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Parse YAML from a file into a typed object.
+     *
+     * @param type the target type
+     * @param file the YAML file
+     * @param <T> the target type
+     * @return a typed object
+     * @since 6.0.0
+     */
+    public <T> T parseAs(Class<T> type, File file) throws IOException {
+        return parseAs(type, file.toPath());
+    }
+
+    /**
+     * Parse YAML from a path into a typed object.
+     *
+     * @param type the target type
+     * @param path the path to the YAML file
+     * @param <T> the target type
+     * @return a typed object
+     * @since 6.0.0
+     */
+    public <T> T parseAs(Class<T> type, Path path) throws IOException {
+        try (InputStream stream = Files.newInputStream(path)) {
+            return parseAs(type, new InputStreamReader(stream, StandardCharsets.UTF_8));
+        }
     }
 }

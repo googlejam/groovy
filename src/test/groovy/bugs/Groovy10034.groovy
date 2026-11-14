@@ -16,11 +16,14 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
 import org.codehaus.groovy.classgen.asm.AbstractBytecodeTestCase
+import org.junit.jupiter.api.Test
 
 final class Groovy10034 extends AbstractBytecodeTestCase {
+
+    @Test
     void testObjectArrayParam() {
         def result = compile method:'test', '''
             @groovy.transform.CompileStatic
@@ -28,8 +31,15 @@ final class Groovy10034 extends AbstractBytecodeTestCase {
                 ["x"].toArray(new String[0])
             }
         '''
-        int offset = result.indexOf('ANEWARRAY java/lang/String', result.indexOf('--BEGIN--'))
-        assert result.hasStrictSequence(['ANEWARRAY java/lang/String','INVOKEINTERFACE java/util/List.toArray'], offset)
-        // there should be no 'INVOKEDYNAMIC cast' instruction here: ^
+        int offset = result.indexOf('INVOKEVIRTUAL', result.indexOf('--BEGIN--'))
+        assert result.hasStrictSequence([
+            'INVOKEVIRTUAL java/util/ArrayList.add',
+            'POP',
+            'ICONST_0',
+            'ANEWARRAY java/lang/String',
+            // no 'INVOKEDYNAMIC cast' to Object[]
+            'INVOKEVIRTUAL java/util/ArrayList.toArray',
+            'ARETURN'
+        ], offset)
     }
 }

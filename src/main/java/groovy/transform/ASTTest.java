@@ -19,6 +19,8 @@
 package groovy.transform;
 
 import groovy.lang.Closure;
+import groovy.lang.annotation.ExtendedElementType;
+import groovy.lang.annotation.ExtendedTarget;
 import org.codehaus.groovy.control.CompilePhase;
 import org.codehaus.groovy.transform.GroovyASTTransformationClass;
 
@@ -35,7 +37,7 @@ import java.lang.annotation.Target;
  * or parameters), then use a script which is run against this AST node at a specific phase. For example,
  * you could test the {@link Field} AST transformation this way:
  *
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * import groovy.transform.*
  *
  * {@code @ASTTest}(value = {
@@ -46,17 +48,26 @@ import java.lang.annotation.Target;
  * </pre>
  *
  * The closure code is executed after the specified phase has completed. If no phase is provided, then the
- * code is executed after the {@link org.codehaus.groovy.control.CompilePhase#SEMANTIC_ANALYSIS semantic analysis} phase
+ * code is executed after the {@link CompilePhase#SEMANTIC_ANALYSIS semantic analysis} phase
  * and each subsequent phase.
  * <p>
  * The <code>node</code> variable refers to the AST node where the AST test annotation is put. In the previous example,
  * it means that <i>node</i> refers to the declaration "int x".
+ * <p>
+ * Because the closure is evaluated during compilation, merely <em>compiling</em> source which carries this
+ * annotation executes that code, whether or not the compiled result is subsequently run. Setting the
+ * {@code groovy.asttest.enable} system property to {@code false} makes the annotation a no-op, in the same
+ * way that {@code groovy.grape.enable} turns off {@code @Grab} dependency resolution. Consider doing so when
+ * compiling source you do not control; see the Apache Groovy
+ * <a href="https://github.com/apache/groovy/blob/master/THREAT_MODEL.md">threat model</a> for what compiling
+ * such source does and does not imply.
  *
  * @since 2.0.0
  */
 @Documented
 @Retention(RetentionPolicy.SOURCE)
 @Target({ElementType.PACKAGE, ElementType.TYPE, ElementType.ANNOTATION_TYPE, ElementType.CONSTRUCTOR, ElementType.METHOD, ElementType.FIELD, ElementType.PARAMETER, ElementType.LOCAL_VARIABLE})
+@ExtendedTarget(ExtendedElementType.LOOP)
 @GroovyASTTransformationClass("org.codehaus.groovy.transform.ASTTestTransformation")
 public @interface ASTTest {
     /**

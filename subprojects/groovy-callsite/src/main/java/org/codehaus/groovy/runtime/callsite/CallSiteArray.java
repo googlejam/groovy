@@ -1,0 +1,232 @@
+/*
+ *  Licensed to the Apache Software Foundation (ASF) under one
+ *  or more contributor license agreements.  See the NOTICE file
+ *  distributed with this work for additional information
+ *  regarding copyright ownership.  The ASF licenses this file
+ *  to you under the Apache License, Version 2.0 (the
+ *  "License"); you may not use this file except in compliance
+ *  with the License.  You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing,
+ *  software distributed under the License is distributed on an
+ *  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *  KIND, either express or implied.  See the License for the
+ *  specific language governing permissions and limitations
+ *  under the License.
+ */
+package org.codehaus.groovy.runtime.callsite;
+
+import groovy.lang.GroovyInterceptable;
+import groovy.lang.GroovyObject;
+import groovy.lang.MetaClass;
+import groovy.lang.MetaClassImpl;
+import org.apache.groovy.lang.annotation.GroovyABI;
+import org.codehaus.groovy.reflection.ClassInfo;
+import org.codehaus.groovy.runtime.GroovyCategorySupport;
+import org.codehaus.groovy.runtime.InvokerHelper;
+
+import java.util.stream.IntStream;
+
+/**
+ * Array of classic (non-{@code invokedynamic}) call sites for a compiled class.
+ * <p>
+ * Prefer invokedynamic call sites for new code. Planned for
+ * deprecation/removal in a future Groovy version.
+ */
+public final class CallSiteArray {
+    /**
+     * Empty argument array shared by sites that pass no arguments.
+     */
+    public static final Object[] NOPARAM = new Object[0];
+    /**
+     * Sites for {@link #owner}, replaced in place when a site is specialized.
+     */
+    public final CallSite[] array;
+    /**
+     * Class whose compiled call sites this array holds.
+     */
+    public final Class owner;
+
+    /**
+     * Builds one {@link AbstractCallSite} per entry of {@code names}, in order.
+     */
+    @GroovyABI(since = "1.6.0")
+    public CallSiteArray(Class owner, final String[] names) {
+        this.owner = owner;
+        this.array = IntStream.range(0, names.length)
+                        .mapToObj(i -> new AbstractCallSite(this, i, names[i]))
+                        .toArray(CallSite[]::new);
+    }
+
+    /**
+     * Selects a site for {@code receiver} (null, a {@link Class}, a
+     * {@link GroovyObject}, or a plain object) and invokes it with {@code args}.
+     * A null receiver is not cached. Any other site is installed when the
+     * receiver's meta-class version stays unchanged while the site is created.
+     */
+    public static Object defaultCall(CallSite callSite, Object receiver, Object[] args) throws Throwable {
+        return createCallSite(callSite, receiver, args).call(receiver, args);
+    }
+
+    /**
+     * Selects a {@code callCurrent} site for {@code receiver}, using the
+     * call-site array's owner as the sender, and invokes it with {@code args}.
+     * The site is installed when the receiver's meta-class version stays
+     * unchanged while the site is created.
+     */
+    public static Object defaultCallCurrent(CallSite callSite, GroovyObject receiver, Object[] args) throws Throwable {
+        return createCallCurrentSite(callSite, receiver, args, callSite.getArray().owner).callCurrent(receiver, args);
+    }
+
+    /**
+     * Forces {@code receiver}'s static initializer to run, ignoring a failure
+     * to load the class, then selects a static site and invokes it with
+     * {@code args}. The site is installed when the meta-class version stays
+     * unchanged while the site is created.
+     */
+    public static Object defaultCallStatic(CallSite callSite, Class receiver, Object[] args) throws Throwable {
+        return createCallStaticSite(callSite, receiver, args).callStatic(receiver,args);
+    }
+
+    /**
+     * Treats {@code receiver} as the class to construct, selects a constructor
+     * site, and invokes it with {@code args}. The site is installed when the
+     * meta-class version stays unchanged while the site is created.
+     */
+    public static Object defaultCallConstructor(CallSite callSite, Object receiver, Object[] args) throws Throwable {
+        return createCallConstructorSite(callSite, (Class) receiver, args).callConstructor(receiver, args);
+    }
+
+    private static CallSite createCallStaticSite(CallSite callSite, final Class receiver, Object[] args) {
+        try {
+            Class.forName(receiver.getName(), true, receiver.getClassLoader());
+        } catch (Exception e) {
+            // force <clinit>
+        }
+        int version = mopVersion(receiver);
+        MetaClass metaClass = InvokerHelper.getMetaClass(receiver);
+        CallSite site =
+                metaClass instanceof MetaClassImpl
+                        ? MetaClassCallSites.createStaticSite((MetaClassImpl) metaClass, callSite, args)
+                        : new StaticMetaClassSite(callSite, metaClass);
+
+        return installIfCurrent(callSite, site, receiver, version);
+    }
+
+    private static CallSite createCallConstructorSite(CallSite callSite, Class receiver, Object[] args) {
+        int version = mopVersion(receiver);
+        MetaClass metaClass = InvokerHelper.getMetaClass(receiver);
+        CallSite site =
+                metaClass instanceof MetaClassImpl
+                        ? MetaClassCallSites.createConstructorSite((MetaClassImpl) metaClass, callSite, args)
+                        : new MetaClassConstructorSite(callSite, metaClass);
+
+        return installIfCurrent(callSite, site, receiver, version);
+    }
+
+    private static CallSite createCallCurrentSite(CallSite callSite, GroovyObject receiver, Object[] args, Class sender) {
+        int version = mopVersion(receiver);
+        CallSite site;
+        if (receiver instanceof GroovyInterceptable) {
+            site = new PogoInterceptableSite(callSite);
+        } else {
+            MetaClass metaClass = receiver.getMetaClass();
+            Class theClass = metaClass.getTheClass();
+            if (receiver.getClass() != theClass && !theClass.isInterface()) {
+                site = new PogoInterceptableSite(callSite);
+            } else if (metaClass instanceof MetaClassImpl) {
+                site = MetaClassCallSites.createPogoCallCurrentSite((MetaClassImpl) metaClass, callSite, sender, args);
+            } else {
+                site = new PogoMetaClassSite(callSite, metaClass);
+            }
+        }
+
+        return installIfCurrent(callSite, site, receiver, version);
+    }
+
+    // for MetaClassImpl we try to pick meta method,
+    // otherwise or if method doesn't exist we make call via POJO metaclass
+    private static CallSite createPojoSite(CallSite callSite, Object receiver, Object[] args) {
+        final Class klazz = receiver.getClass();
+        MetaClass metaClass = InvokerHelper.getMetaClass(receiver);
+        if (!GroovyCategorySupport.hasCategoryInCurrentThread() && metaClass instanceof MetaClassImpl mci) {
+            final ClassInfo info = mci.getTheCachedClass().classInfo;
+            if (info.hasPerInstanceMetaClasses()) {
+                return new PerInstancePojoMetaClassSite(callSite, info);
+            } else {
+                return MetaClassCallSites.createPojoCallSite(mci, callSite, receiver, args);
+            }
+        }
+
+        ClassInfo info = ClassInfo.getClassInfo(klazz);
+        if (info.hasPerInstanceMetaClasses()) {
+            return new PerInstancePojoMetaClassSite(callSite, info);
+        } else {
+            return new PojoMetaClassSite(callSite, metaClass);
+        }
+    }
+
+    private static CallSite createPogoSite(CallSite callSite, Object receiver, Object[] args) {
+        if (receiver instanceof GroovyInterceptable) {
+            return new PogoInterceptableSite(callSite);
+        }
+
+        MetaClass metaClass = ((GroovyObject)receiver).getMetaClass();
+
+        if (metaClass instanceof MetaClassImpl) {
+            return MetaClassCallSites.createPogoCallSite((MetaClassImpl) metaClass, callSite, args);
+        }
+
+        return new PogoMetaClassSite(callSite, metaClass);
+    }
+
+    private static CallSite createCallSite(CallSite callSite, Object receiver, Object[] args) {
+        if (receiver == null) {
+            return new NullCallSite(callSite);
+        }
+
+        int version = mopVersion(receiver);
+        CallSite site;
+        if (receiver instanceof Class) {
+            site = createCallStaticSite(callSite, (Class) receiver, args);
+        } else if (receiver instanceof GroovyObject) {
+            site = createPogoSite(callSite, receiver, args);
+        } else {
+            site = createPojoSite(callSite, receiver, args);
+        }
+
+        return installIfCurrent(callSite, site, receiver, version);
+    }
+
+    /**
+     * Class-level MOP version for the receiver's class, sampled before site
+     * creation first reads MOP state (GROOVY-12307).
+     */
+    private static int mopVersion(Object receiver) {
+        Class<?> type = receiver instanceof Class ? (Class<?>) receiver : receiver.getClass();
+        return ClassInfo.getClassInfo(type).getVersion();
+    }
+
+    /**
+     * Installs the freshly created site only when the receiver's MOP version
+     * did not move while the site was being created (GROOVY-12307). A change
+     * landing mid-creation — a concurrent MetaClass mutation, or the version
+     * bump of lazy MetaClass creation itself — can pair a pre-change method
+     * selection with a post-change version stamp, and caching that would
+     * dispatch stale until an unrelated future change. The site still serves
+     * the current invocation; the next call re-creates, converging as soon as
+     * one creation pass sees a stable version.
+     */
+    private static CallSite installIfCurrent(CallSite oldSite, CallSite newSite, Object receiver, int preVersion) {
+        if (mopVersion(receiver) == preVersion) {
+            replaceCallSite(oldSite, newSite);
+        }
+        return newSite;
+    }
+
+    private static void replaceCallSite(CallSite oldSite, CallSite newSite) {
+        oldSite.getArray().array[oldSite.getIndex()] = newSite;
+    }
+}

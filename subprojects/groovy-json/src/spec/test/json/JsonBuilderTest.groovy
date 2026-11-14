@@ -18,7 +18,7 @@
  */
 package json
 
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 import static groovy.test.GroovyAssert.assertScript
 
@@ -71,6 +71,7 @@ final class JsonBuilderTest {
        """
     }
 
+    @Test
     void testJsonBuilderWithGenerator() {
         assertScript """
             // tag::json_builder_generator[]

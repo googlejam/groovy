@@ -16,23 +16,25 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
+
 
 /**
  */
-class NestedClosureBug extends GroovyTestCase {
-     
+class NestedClosureBug {
+
+    @Test
     void testBug() {
         def a = 123
-        getValues().each { 
+        getValues().each {
             it.each {
                 assert a == 123
             }
         }
     }
-    
+
     def getValues() {
         [5, 6, 7]
     }

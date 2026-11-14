@@ -18,9 +18,14 @@
  */
 package groovy.transform;
 
+import groovy.lang.GroovyShell;
 import groovy.lang.Script;
+import groovy.lang.annotation.ExtendedElementType;
+import groovy.lang.annotation.ExtendedTarget;
+import org.codehaus.groovy.control.CompilerConfiguration;
 import org.codehaus.groovy.transform.GroovyASTTransformationClass;
 
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -29,11 +34,11 @@ import java.lang.annotation.Target;
 /**
  * Variable annotation used for changing the base script class of the current script.
  * <p>
- * The type of the variable annotated with {@code @BaseScript} must extend {@link groovy.lang.Script}.
+ * The type of the variable annotated with {@code @BaseScript} must extend {@link Script}.
  * It will be used as the base script class.
  * The annotated variable will become shortcut to <code>this</code> object.
  * Using this annotation will override base script set by Groovy compiler or
- * {@link org.codehaus.groovy.control.CompilerConfiguration} of {@link groovy.lang.GroovyShell}
+ * {@link CompilerConfiguration} of {@link GroovyShell}
  * Example usage:
  * <pre>
  * abstract class CustomScript extends Script {
@@ -46,9 +51,9 @@ import java.lang.annotation.Target;
  * assert theMeaningOfLife == 42
  * assert theMeaningOfLife == baseScript.theMeaningOfLife
  * </pre>
- * In this example, the base script of the current script will be changed to 
+ * In this example, the base script of the current script will be changed to
  * <code>CustomScript</code> allowing usage of <code>getTheMeaningOfLife()</code>
- * method. <code>baseScript</code> variable will become typed shortcut for 
+ * method. <code>baseScript</code> variable will become typed shortcut for
  * <code>this</code> object which enables better IDE support.
  * </p><p>
  * The custom base script may implement the run() method and specify a different
@@ -85,7 +90,7 @@ import java.lang.annotation.Target;
  * the AST is currently implemented they are not accessible in the script body code.
  * </p>
  * <p>More examples:</p>
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * // Simple Car class to save state and distance.
  * class Car {
  *     String state
@@ -141,10 +146,17 @@ import java.lang.annotation.Target;
  * </pre>
  * @since 2.2.0
  */
-@java.lang.annotation.Documented
+@Documented
 @Retention(RetentionPolicy.SOURCE)
-@Target({ElementType.LOCAL_VARIABLE, ElementType.PACKAGE, ElementType.TYPE /*, ElementType.IMPORT*/})
+@Target({ElementType.LOCAL_VARIABLE, ElementType.PACKAGE, ElementType.TYPE})
+@ExtendedTarget(ExtendedElementType.IMPORT)
 @GroovyASTTransformationClass("org.codehaus.groovy.transform.BaseScriptASTTransformation")
 public @interface BaseScript {
+    /**
+     * Returns the base script class to use for the annotated script.
+     * Defaults to {@link Script}.
+     *
+     * @return the base script class
+     */
     Class value() default Script.class;
 }

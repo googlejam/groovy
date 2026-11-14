@@ -16,14 +16,18 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs.groovy8757
+package bugs.groovy8757
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class UsageTest extends GroovyTestCase {
+import static org.junit.jupiter.api.Assertions.assertEquals
+
+final class UsageTest {
+
+    @Test
     void testAccessingPrecompiledTraitWithMethodGenerics() {
         def c0 = new GroovyShell().evaluate('''
-            import groovy.bugs.groovy8757.T0
+            import bugs.groovy8757.T0
             class C0 implements T0 {}
             new C0()
         ''')

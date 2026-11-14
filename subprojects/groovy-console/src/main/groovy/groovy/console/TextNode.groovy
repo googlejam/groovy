@@ -16,39 +16,69 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-/**
- * Represents a plain text node for use in the AST tree made by ASTBrowser 
- */
 package groovy.console
 
 import groovy.transform.CompileStatic
 
+/**
+ * Represents a plain text node for use in the AST tree made by ASTBrowser.
+ */
 @CompileStatic
 class TextNode {
+    /** Value displayed for this node. */
     Object userObject
-    List<List<String>> properties
+    /** Additional name/value metadata shown for this node. */
+    List<List<?>> properties
+    /** Parent node in the text tree. */
     TextNode parent
+    /** Child nodes in insertion order. */
     List children
-     
+
+    /**
+     * Creates a node with the supplied display value.
+     *
+     * @param userObject value displayed for the node
+     */
     TextNode(Object userObject) {
         this.userObject = userObject
         children = new ArrayList<TextNode>()
     }
 
-    TextNode(Object userObject, List<List<String>> properties) {
+    /**
+     * Creates a node with the supplied display value and metadata.
+     *
+     * @param userObject value displayed for the node
+     * @param properties metadata associated with the node
+     */
+    TextNode(Object userObject, List<List<?>> properties) {
         this(userObject)
         this.properties = properties
     }
-    
+
+    /**
+     * Adds a child node.
+     *
+     * @param child child node to append
+     */
     void add(TextNode child) {
         children << child
     }
-    
+
+    /**
+     * Sets the parent node.
+     *
+     * @param newParent parent node reference
+     */
     void setParent(TextNode newParent) {
         parent = newParent
     }
-    
+
+    /**
+     * Returns the display text for this node.
+     *
+     * @return the node text
+     */
     String toString() {
-        userObject ? userObject.toString() : 'null' 
+        userObject ? userObject.toString() : 'null'
     }
 }

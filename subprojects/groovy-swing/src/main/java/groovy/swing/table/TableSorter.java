@@ -28,6 +28,8 @@ import java.awt.event.MouseEvent;
 import java.util.Date;
 import java.util.Vector;
 
+import static java.lang.System.Logger.Level.WARNING;
+
 /**
  * A sorter for TableModels.
  * <p>
@@ -45,26 +47,60 @@ import java.util.Vector;
  * function returns 0 to denote that they are equivalent.
  */
 public class TableSorter extends TableMap {
+    private static final System.Logger LOGGER = System.getLogger(TableSorter.class.getName());
     private static final int[] EMPTY_INT_ARRAY = new int[0];
+    /**
+     * Maps sorted row indexes back to the underlying model row indexes.
+     */
     int[] indexes;
+    /**
+     * The model columns currently used to sort rows.
+     */
     Vector<Integer> sortingColumns = new Vector<>();
+    /**
+     * Controls whether the current sort order is ascending.
+     */
     boolean ascending = true;
+    /**
+     * Remembers the last column sorted through the table header listener.
+     */
     int lastSortedColumn = -1;
 
+    /**
+     * Creates an empty sorter with no delegate model.
+     */
     public TableSorter() {
         indexes = EMPTY_INT_ARRAY; // For consistency.
     }
 
+    /**
+     * Creates a sorter for the supplied table model.
+     *
+     * @param model the model to wrap
+     */
     public TableSorter(TableModel model) {
         setModel(model);
     }
 
+    /**
+     * Replaces the wrapped model and rebuilds the cached row index mapping.
+     *
+     * @param model the model to sort
+     */
     @Override
     public void setModel(TableModel model) {
         super.setModel(model);
         reallocateIndexes();
     }
 
+    /**
+     * Compares two source rows using the values from the supplied column.
+     *
+     * @param row1 the first source row index
+     * @param row2 the second source row index
+     * @param column the model column index to compare
+     * @return a negative value, zero, or a positive value depending on sort order
+     */
     public int compareRowsByColumn(int row1, int row2, int column) {
         Class<?> type = model.getColumnClass(column);
         TableModel data = model;
@@ -89,11 +125,11 @@ public class TableSorter extends TableMap {
         this way but other subclasses of Number might want to do this to save
         space and avoid unnecessary heap allocation.
         */
-        if (type.getSuperclass() == java.lang.Number.class) {
+        if (type.getSuperclass() == Number.class) {
             return compareNumbers(data, row1, column, row2);
         }
 
-        if (type == java.util.Date.class) {
+        if (type == Date.class) {
             return compareDates(data, row1, column, row2);
         }
 
@@ -114,11 +150,7 @@ public class TableSorter extends TableMap {
         String s2 = v2.toString();
         int result = s1.compareTo(s2);
 
-        if (result < 0)
-            return -1;
-        if (result > 0)
-            return 1;
-        return 0;
+        return Integer.compare(result, 0);
     }
 
     private static int compareBooleans(TableModel data, int row1, int column, int row2) {
@@ -137,11 +169,7 @@ public class TableSorter extends TableMap {
         String s2 = (String) data.getValueAt(row2, column);
         int result = s1.compareTo(s2);
 
-        if (result < 0)
-            return -1;
-        if (result > 0)
-            return 1;
-        return 0;
+        return Integer.compare(result, 0);
     }
 
     private static int compareDates(TableModel data, int row1, int column, int row2) {
@@ -150,11 +178,7 @@ public class TableSorter extends TableMap {
         Date d2 = (Date) data.getValueAt(row2, column);
         long n2 = d2.getTime();
 
-        if (n1 < n2)
-            return -1;
-        if (n1 > n2)
-            return 1;
-        return 0;
+        return Long.compare(n1, n2);
     }
 
     private static int compareNumbers(TableModel data, int row1, int column, int row2) {
@@ -163,13 +187,17 @@ public class TableSorter extends TableMap {
         Number n2 = (Number) data.getValueAt(row2, column);
         double d2 = n2.doubleValue();
 
-        if (d1 < d2)
-            return -1;
-        if (d1 > d2)
-            return 1;
-        return 0;
+        return Double.compare(d1, d2);
     }
 
+    /**
+     * Compares two source rows using the active sort columns.
+     *
+     * @param row1 the first source row index
+     * @param row2 the second source row index
+     * @return the comparison result in the currently configured direction
+     */
+    @SuppressWarnings("unchecked")
     public int compare(int row1, int row2) {
         for (int level = 0; level < sortingColumns.size(); level++) {
             Integer column = (Integer) sortingColumns.elementAt(level);
@@ -180,6 +208,9 @@ public class TableSorter extends TableMap {
         return 0;
     }
 
+    /**
+     * Rebuilds the row index mapping to match the current delegate row count.
+     */
     public void reallocateIndexes() {
         int rowCount = model.getRowCount();
 
@@ -192,6 +223,11 @@ public class TableSorter extends TableMap {
             indexes[row] = row;
     }
 
+    /**
+     * Rebuilds the cached row mapping after any delegate table-model change.
+     *
+     * @param e the table-model event
+     */
     @Override
     public void tableChanged(TableModelEvent e) {
         reallocateIndexes();
@@ -199,17 +235,28 @@ public class TableSorter extends TableMap {
         super.tableChanged(e);
     }
 
+    /**
+     * Verifies that the cached index mapping still matches the delegate model.
+     */
     public void checkModel() {
         if (indexes.length != model.getRowCount()) {
-            System.err.println("Sorter not informed of a change in model.");
+            LOGGER.log(WARNING, "Sorter not informed of a change in model");
         }
     }
 
+    /**
+     * Sorts the cached row mapping using the currently configured sort columns.
+     *
+     * @param sender the caller requesting the sort
+     */
     public void sort(Object sender) {
         checkModel();
         shuttlesort((int[]) indexes.clone(), indexes, 0, indexes.length);
     }
 
+    /**
+     * Sorts the row mapping using a simple quadratic algorithm.
+     */
     public void n2sort() {
         for (int i = 0; i < getRowCount(); i++) {
             for (int j = i + 1; j < getRowCount(); j++) {
@@ -227,6 +274,14 @@ public class TableSorter extends TableMap {
     // arrays. The number of compares appears to vary between N-1 and
     // NlogN depending on the initial order but the main reason for
     // using it here is that, unlike qsort, it is stable.
+    /**
+     * Performs a stable merge sort over the cached row mapping.
+     *
+     * @param from the source index array
+     * @param to the target index array
+     * @param low the inclusive lower bound
+     * @param high the exclusive upper bound
+     */
     public void shuttlesort(int[] from, int[] to, int low, int high) {
         if (high - low < 2) {
             return;
@@ -245,7 +300,7 @@ public class TableSorter extends TableMap {
         than assigned otherwise sister calls in the recursion might
         get out of sync.  When the number of elements is three they
         are partitioned so that the first set, [low, mid), has one
-        element and and the second, [mid, high), has two. We skip the
+        element and the second, [mid, high), has two. We skip the
         optimisation when the number of elements is three or less as
         the first compare in the normal merge will produce the same
         sequence of steps. This optimisation seems to be worthwhile
@@ -269,6 +324,12 @@ public class TableSorter extends TableMap {
         }
     }
 
+    /**
+     * Swaps two entries in the cached row mapping.
+     *
+     * @param i the first mapped row index
+     * @param j the second mapped row index
+     */
     public void swap(int i, int j) {
         int tmp = indexes[i];
         indexes[i] = indexes[j];
@@ -278,22 +339,47 @@ public class TableSorter extends TableMap {
     // The mapping only affects the contents of the data rows.
     // Pass all requests to these rows through the mapping array: "indexes".
 
+    /**
+     * Returns the value from the source row mapped to the supplied view row.
+     *
+     * @param aRow the sorted view row
+     * @param aColumn the model column
+     * @return the mapped cell value
+     */
     @Override
     public Object getValueAt(int aRow, int aColumn) {
         checkModel();
         return model.getValueAt(indexes[aRow], aColumn);
     }
 
+    /**
+     * Writes a value to the source row mapped from the supplied view row.
+     *
+     * @param aValue the new cell value
+     * @param aRow the sorted view row
+     * @param aColumn the model column
+     */
     @Override
     public void setValueAt(Object aValue, int aRow, int aColumn) {
         checkModel();
         model.setValueAt(aValue, indexes[aRow], aColumn);
     }
 
+    /**
+     * Sorts the table by the supplied model column in ascending order.
+     *
+     * @param column the model column index to sort by
+     */
     public void sortByColumn(int column) {
         sortByColumn(column, true);
     }
 
+    /**
+     * Sorts the table by the supplied model column and direction.
+     *
+     * @param column the model column index to sort by
+     * @param ascending {@code true} for ascending order, {@code false} for descending order
+     */
     public void sortByColumn(int column, boolean ascending) {
         this.ascending = ascending;
         sortingColumns.removeAllElements();
@@ -305,11 +391,21 @@ public class TableSorter extends TableMap {
     // There is nowhere else to put this.
     // Add a mouse listener to the Table to trigger a table sort
     // when a column heading is clicked in the JTable.
+    /**
+     * Installs a header listener that resorts the table when a column header is clicked.
+     *
+     * @param table the table whose header should trigger sorting
+     */
     public void addMouseListenerToHeaderInTable(JTable table) {
         final TableSorter sorter = this;
         final JTable tableView = table;
         tableView.setColumnSelectionAllowed(false);
         MouseAdapter listMouseListener = new MouseAdapter() {
+            /**
+             * On a single click over a column, flips the current direction when
+             * that column was sorted last and then sorts by the model column
+             * under the pointer, recording it. Other clicks are ignored.
+             */
             @Override
             public void mouseClicked(MouseEvent e) {
                 TableColumnModel columnModel = tableView.getColumnModel();

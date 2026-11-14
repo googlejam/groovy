@@ -24,17 +24,28 @@ import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.runtime.BytecodeInterface8;
 import org.objectweb.asm.MethodVisitor;
 
+import static org.codehaus.groovy.syntax.Types.COMPARE_GREATER_THAN;
+import static org.codehaus.groovy.syntax.Types.COMPARE_GREATER_THAN_EQUAL;
 import static org.objectweb.asm.Opcodes.DADD;
 import static org.objectweb.asm.Opcodes.DCMPG;
+import static org.objectweb.asm.Opcodes.DCMPL;
 import static org.objectweb.asm.Opcodes.DCONST_1;
 import static org.objectweb.asm.Opcodes.DDIV;
 import static org.objectweb.asm.Opcodes.DMUL;
 import static org.objectweb.asm.Opcodes.DREM;
 import static org.objectweb.asm.Opcodes.DSUB;
 
+/**
+ * Binary expression helper specialized for {@code double} operations.
+ */
 public class BinaryDoubleExpressionHelper extends BinaryLongExpressionHelper {
 
 
+    /**
+     * Creates a {@code double}-specialized binary expression helper.
+     *
+     * @param controller the active writer controller
+     */
     public BinaryDoubleExpressionHelper(WriterController controller) {
         super(controller, doubleArraySet, doubleArrayGet);
     }
@@ -43,33 +54,63 @@ public class BinaryDoubleExpressionHelper extends BinaryLongExpressionHelper {
         doubleArrayGet = MethodCaller.newStatic(BytecodeInterface8.class, "dArrayGet"),
         doubleArraySet = MethodCaller.newStatic(BytecodeInterface8.class, "dArraySet");
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected boolean writeBitwiseOp(int op, boolean simulate) {
         if (!simulate) throw new GroovyBugError("should not reach here");
         return false;   
     }
-    
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected int getBitwiseOperationBytecode(int op) {
         return -1;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected int getCompareCode() {
         return DCMPG;
     }
 
+    /**
+     * {@inheritDoc}
+     * <p>
+     * DCMPL yields -1 and DCMPG yields 1 for a NaN operand, so DCMPL is used for
+     * {@code >} and {@code >=} and DCMPG otherwise; either way the
+     * comparison is false, as in Java (JLS 15.20.1).
+     */
+    @Override
+    protected int getCompareCode(final int type) {
+        return type == COMPARE_GREATER_THAN || type == COMPARE_GREATER_THAN_EQUAL ? DCMPL : DCMPG;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected ClassNode getNormalOpResultType() {
         return ClassHelper.double_TYPE;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected boolean writeShiftOp(int type, boolean simulate) {
         if (!simulate) throw new GroovyBugError("should not reach here");
         return false;   
     }
-    
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected int getShiftOperationBytecode(int type) {
         return -1;
@@ -83,29 +124,44 @@ public class BinaryDoubleExpressionHelper extends BinaryLongExpressionHelper {
         DDIV,           //  INTDIV      204
         DREM,           //  MOD         203
     };
-    
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected int getStandardOperationBytecode(int type) {
         return stdOperations[type];
     }
-    
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void writeMinusMinus(MethodVisitor mv) {
         mv.visitInsn(DCONST_1);
         mv.visitInsn(DSUB);
     }
-    
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void writePlusPlus(MethodVisitor mv) {
         mv.visitInsn(DCONST_1);
         mv.visitInsn(DADD);
     }
-    
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected ClassNode getDevisionOpResultType() {
         return ClassHelper.double_TYPE;
     }
-    
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected boolean supportsDivision() {
         return true;

@@ -23,16 +23,19 @@ import org.codehaus.groovy.groovydoc.GroovyPackageDoc;
 import org.codehaus.groovy.groovydoc.GroovyRootDoc;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.regex.Pattern;
 
+/**
+ * Default {@link GroovyRootDoc} implementation used to collect packages, classes, and lookup caches.
+ */
 public class SimpleGroovyRootDoc extends SimpleGroovyDoc implements GroovyRootDoc {
-    private final static Pattern EQUIVALENT_PACKAGE_IMPORT = Pattern.compile("[^/]+$");
+    private static final Pattern EQUIVALENT_PACKAGE_IMPORT = Pattern.compile("[^/]+$");
     private static final GroovyClassDoc[] EMPTY_GROOVYCLASSDOC_ARRAY = new GroovyClassDoc[0];
     private static final GroovyPackageDoc[] EMPTY_GROOVYPACKAGEDOC_ARRAY = new GroovyPackageDoc[0];
 
@@ -41,19 +44,49 @@ public class SimpleGroovyRootDoc extends SimpleGroovyDoc implements GroovyRootDo
     private final Map<String, GroovyClassDoc> classDocs;
     private final Map<String, String> equivalentPackageImports;
     private List<GroovyClassDoc> classDocValues = null;
-    private final Map<String, GroovyClassDoc> cachedResolvedClasses = new HashMap<String, GroovyClassDoc>();
+    private final Map<String, GroovyClassDoc> cachedResolvedClasses = new LinkedHashMap<>();
     private final ClassNamedCache classNamedCache;
 
     private String description = "";
+    /** GROOVY-11938: snippet-file resolution needs access to source dirs at render time. */
+    private String[] sourcepaths = new String[0];
 
+    /**
+     * Creates a root documentation model with the supplied name.
+     *
+     * @param name the root document name
+     */
     public SimpleGroovyRootDoc(String name) {
         super(name);
-        packageDocs = new LinkedHashMap<String, GroovyPackageDoc>();
-        classDocs = new LinkedHashMap<String, GroovyClassDoc>();
-        equivalentPackageImports = new HashMap<String, String>();
+        packageDocs = new LinkedHashMap<>();
+        classDocs = new LinkedHashMap<>();
+        equivalentPackageImports = new LinkedHashMap<>();
         classNamedCache = new ClassNamedCache(classDocs);
     }
 
+    /**
+     * Returns the source paths used to build this root document.
+     *
+     * @return the configured source paths
+     *
+     * @since 6.0.0
+     */
+    public String[] getSourcepaths() {
+        return sourcepaths;
+    }
+
+    /**
+     * Stores the source paths used to build this root document.
+     *
+     * @param sourcepaths the source paths to retain
+     *
+     * @since 6.0.0
+     */
+    public void setSourcepaths(String[] sourcepaths) {
+        this.sourcepaths = sourcepaths == null ? new String[0] : Arrays.copyOf(sourcepaths, sourcepaths.length);
+    }
+
+    /** {@inheritDoc} */
     @Override
     public GroovyClassDoc classNamed(GroovyClassDoc groovyClassDoc, String name) {
         GroovyClassDoc doc = classDocs.get(name);
@@ -63,68 +96,106 @@ public class SimpleGroovyRootDoc extends SimpleGroovyDoc implements GroovyRootDo
         return classNamedCache.search(groovyClassDoc, name);
     }
 
+    /**
+     * Resolves a class using its exact internal name.
+     *
+     * @param name the exact class name to resolve
+     * @return the matching class documentation, or {@code null} if none exists
+     */
     public GroovyClassDoc classNamedExact(String name) {
         return classDocs.get(name);
     }
 
+    /**
+     * Sets the root description text.
+     *
+     * @param description the root description
+     */
     public void setDescription(String description) {
         this.description = description;
     }
 
+    /**
+     * Returns the root description text.
+     *
+     * @return the configured description
+     */
     public String description() {
         return description;
     }
 
+    /**
+     * Returns the first-sentence summary derived from {@link #description()}.
+     *
+     * @return the first-sentence summary
+     */
     public String summary() {
         return SimpleGroovyDoc.calculateFirstSentence(description);
     }
 
+    /** {@inheritDoc} */
     @Override
     public GroovyClassDoc[] classes() {
         if (classDocValues == null) {
-            classDocValues = new ArrayList<GroovyClassDoc>(classDocs.values());
+            classDocValues = new ArrayList<>(classDocs.values());
             Collections.sort(classDocValues);
         }
         return classDocValues.toArray(EMPTY_GROOVYCLASSDOC_ARRAY);
     }
 
+    /** {@inheritDoc} */
     @Override
     public String[][] options() {/*todo*/
         return null;
     }
 
+    /** {@inheritDoc} */
     @Override
     public GroovyPackageDoc packageNamed(String packageName) {
         return packageDocs.get(packageName);
     }
 
+    /**
+     * Adds all supplied classes to this root document.
+     *
+     * @param classes the classes to add
+     */
     public void putAllClasses(Map<String, GroovyClassDoc> classes) {
         classDocs.putAll(classes);
         classDocValues = null;
     }
 
+    /**
+     * Adds a package to this root document.
+     *
+     * @param packageName the package name key
+     * @param packageDoc the package documentation object
+     */
     public void put(String packageName, GroovyPackageDoc packageDoc) {
         packageDocs.put(packageName, packageDoc);
         packageDocValues = null;
     }
 
+    /** {@inheritDoc} */
     @Override
     public GroovyClassDoc[] specifiedClasses() {/*todo*/
         return null;
     }
 
+    /** {@inheritDoc} */
     @Override
     public GroovyPackageDoc[] specifiedPackages() {
         if (packageDocValues == null) {
-            packageDocValues = new ArrayList<GroovyPackageDoc>(packageDocs.values());
+            packageDocValues = new ArrayList<>(packageDocs.values());
             Collections.sort(packageDocValues);
         }
         return packageDocValues.toArray(EMPTY_GROOVYPACKAGEDOC_ARRAY);
     }
 
+    /** {@inheritDoc} */
     @Override
     public Map<String, GroovyClassDoc> getVisibleClasses(List importedClassesAndPackages) {
-        Map<String, GroovyClassDoc> visibleClasses = new LinkedHashMap<String, GroovyClassDoc>();
+        Map<String, GroovyClassDoc> visibleClasses = new LinkedHashMap<>();
         for (Map.Entry<String, GroovyClassDoc> entry : classDocs.entrySet()) {
             String fullClassName = entry.getKey();
             String equivalentPackageImport = findEquivalentPackageImport(fullClassName);
@@ -146,24 +217,31 @@ public class SimpleGroovyRootDoc extends SimpleGroovyDoc implements GroovyRootDo
         return eq;
     }
 
+    /** {@inheritDoc} */
     @Override
     public Map<String, GroovyClassDoc> getResolvedClasses() {
         return cachedResolvedClasses;
     }
 
     // GroovyDocErrorReporter interface
+    /** {@inheritDoc} */
     @Override
     public void printError(String arg0) {/*todo*/}
 
     //    public void printError(GroovySourcePosition arg0, String arg1) {/*todo*/}
+    /** {@inheritDoc} */
     @Override
     public void printNotice(String arg0) {/*todo*/}
 
     //    public void printNotice(GroovySourcePosition arg0, String arg1) {/*todo*/}
+    /** {@inheritDoc} */
     @Override
     public void printWarning(String arg0) {/*todo*/}
 //    public void printWarning(GroovySourcePosition arg0, String arg1) {/*todo*/}
 
+    /**
+     * Resolves deferred type references across all collected classes.
+     */
     public void resolve() {
         //resolve class names at the end of adding all files to the tree
         for (GroovyClassDoc groovyClassDoc : classDocs.values()) {
@@ -173,14 +251,19 @@ public class SimpleGroovyRootDoc extends SimpleGroovyDoc implements GroovyRootDo
 
     }
 
-    private static class ClassNamedCache {
+    private static final class ClassNamedCache {
         private final Map<String, GroovyClassDoc> classDocs;
-        private final Map<Entry, GroovyClassDoc> store = new HashMap<>();
+        private final Map<Entry, GroovyClassDoc> store = new LinkedHashMap<>();
 
         private ClassNamedCache(final Map<String, GroovyClassDoc> classDocs) {
             this.classDocs = classDocs;
         }
 
+        /**
+         * Resolves {@code name} relative to {@code groovyClassDoc}, remembering
+         * both hits and misses. A simple-name match is limited to the same
+         * directory when the starting class has a package path.
+         */
         public GroovyClassDoc search(GroovyClassDoc groovyClassDoc, String name) {
             Entry entry = new Entry(groovyClassDoc, name);
             GroovyClassDoc result = store.get(entry);
@@ -208,15 +291,14 @@ public class SimpleGroovyRootDoc extends SimpleGroovyDoc implements GroovyRootDo
                 if (lastSlashIdx > 0) {
                     String shortKey = key.substring(lastSlashIdx + 1);
                     if (shortKey.equals(name) && (!hasPackage || key.startsWith(fullPathName))) {
-                        GroovyClassDoc value = entry.getValue();
-                        return value;
+                        return entry.getValue();
                     }
                 }
             }
             return null;
         }
 
-        private static class Entry {
+        private static final class Entry {
             private final GroovyClassDoc groovyClass;
             private final String name;
             private final int hashCode;
@@ -227,6 +309,10 @@ public class SimpleGroovyRootDoc extends SimpleGroovyDoc implements GroovyRootDo
                 this.hashCode = computeHash();
             }
 
+            /**
+             * Returns whether {@code o} is an entry for the same class documentation
+             * and the same name.
+             */
             @Override
             public boolean equals(final Object o) {
                 if (this == o) return true;
@@ -245,6 +331,10 @@ public class SimpleGroovyRootDoc extends SimpleGroovyDoc implements GroovyRootDo
                 return result;
             }
 
+            /**
+             * Returns the hash of the class documentation and name computed when the
+             * entry was created.
+             */
             @Override
             public int hashCode() {
                 return hashCode;

@@ -20,10 +20,6 @@ package org.apache.groovy.ginq.provider.collection.runtime;
 
 import org.apache.groovy.internal.util.Supplier;
 
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReadWriteLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
-
 /**
  * Hold an object thread-safely
  *
@@ -31,47 +27,31 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * @since 4.0.0
  */
 class ConcurrentObjectHolder<T> {
-    private final ReadWriteLock rwl = new ReentrantReadWriteLock();
-    private final Lock readLock = rwl.readLock();
-    private final Lock writeLock = rwl.writeLock();
-
     private volatile T object;
+    private final Supplier<T> supplier;
 
-    public ConcurrentObjectHolder() {}
-
-    public ConcurrentObjectHolder(T object) {
-        this.object = object;
+    /**
+     * Creates a holder that lazily initializes its object from the given supplier.
+     *
+     * @param supplier the supplier used to create the object
+     */
+    ConcurrentObjectHolder(Supplier<T> supplier) {
+        this.supplier = supplier;
     }
 
+    /**
+     * Returns the cached object, creating it on first access.
+     *
+     * @return the cached object
+     */
     public T getObject() {
-        readLock.lock();
-        try {
-            return object;
-        } finally {
-            readLock.unlock();
-        }
-    }
-
-    public T getObject(Supplier<? extends T> def) {
         if (null != object) return object;
 
-        writeLock.lock();
-        try {
+        synchronized(this) {
             if (null == object) {
-                object = def.get();
+                object = supplier.get();
             }
             return object;
-        } finally {
-            writeLock.unlock();
-        }
-    }
-
-    public void setObject(T object) {
-        writeLock.lock();
-        try {
-            this.object = object;
-        } finally {
-            writeLock.unlock();
         }
     }
 }

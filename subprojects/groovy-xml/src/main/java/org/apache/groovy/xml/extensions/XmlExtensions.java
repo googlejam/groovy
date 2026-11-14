@@ -19,11 +19,14 @@
 package org.apache.groovy.xml.extensions;
 
 import groovy.xml.XmlUtil;
+import org.codehaus.groovy.runtime.InvokerHelper;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
 import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * This class defines all the new XML-related groovy methods which enhance
@@ -44,16 +47,29 @@ public class XmlExtensions {
         return new Iterator<Node>() {
             private int current /* = 0 */;
 
+            /**
+             * Reports whether {@code current} is still inside the node list.
+             *
+             * @return {@code true} when another node remains
+             */
             @Override
             public boolean hasNext() {
                 return current < nodeList.getLength();
             }
 
+            /**
+             * Returns the node at {@code current} and then advances.
+             *
+             * @return the next node
+             */
             @Override
             public Node next() {
                 return nodeList.item(current++);
             }
 
+            /**
+             * Rejects removal. The iterator only walks the node list.
+             */
             @Override
             public void remove() {
                 throw new UnsupportedOperationException("Cannot remove() from a NodeList iterator");
@@ -71,5 +87,30 @@ public class XmlExtensions {
      */
     public static String serialize(Element element) {
         return XmlUtil.serialize(element).replaceFirst("<\\?xml version=\"1.0\".*\\?>", "");
+    }
+
+    /**
+     * Enables {@code node as Type} coercion for XML Nodes.
+     * If the {@code Node} already has the requested type it is just returned.
+     * Otherwise, converts the Node to a Map via {@link groovy.util.Node#toMap()} and then
+     * uses Groovy's standard Map coercion to produce the typed object.
+     * Does not require Jackson on the classpath.
+     *
+     * @param self the Node to convert
+     * @param type the target type
+     * @param <T>  the target type
+     * @return a typed object
+     * @since 6.0.0
+     */
+    @SuppressWarnings("unchecked")
+    public static <T> T asType(groovy.util.Node self, Class<T> type) {
+        if (type.isInstance(self)) {
+            return (T) self;
+        }
+        if (type == Map.class || type == LinkedHashMap.class) {
+            return (T) self.toMap();
+        }
+        Map<String, Object> map = self.toMap();
+        return (T) InvokerHelper.invokeConstructorOf(type, new Object[]{map});
     }
 }

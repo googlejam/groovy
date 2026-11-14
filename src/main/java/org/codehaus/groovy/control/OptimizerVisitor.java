@@ -19,12 +19,13 @@
 package org.codehaus.groovy.control;
 
 import org.codehaus.groovy.ast.ClassCodeExpressionTransformer;
-import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.FieldNode;
 import org.codehaus.groovy.ast.expr.ClosureExpression;
 import org.codehaus.groovy.ast.expr.ConstantExpression;
 import org.codehaus.groovy.ast.expr.Expression;
+import org.codehaus.groovy.control.messages.WarningMessage;
+import org.codehaus.groovy.syntax.Token;
 import org.objectweb.asm.Opcodes;
 
 import java.util.ArrayList;
@@ -34,6 +35,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveType;
+import static org.codehaus.groovy.ast.ClassHelper.isGroovyObjectType;
 
 /**
  * Visitor to produce several optimizations:
@@ -52,9 +54,20 @@ public class OptimizerVisitor extends ClassCodeExpressionTransformer {
     private int index;
     private final List<FieldNode> missingFields = new LinkedList<FieldNode>();
 
+    /**
+     * Creates an optimizer visitor.
+     *
+     * @param cu the owning compilation unit
+     */
     public OptimizerVisitor(CompilationUnit cu) {
     }
 
+    /**
+     * Applies optimizer rewrites to the supplied class.
+     *
+     * @param node the class to optimize
+     * @param source the source unit containing the class
+     */
     public void visitClass(ClassNode node, SourceUnit source) {
         this.currentClass = node;
         this.source = source;
@@ -74,7 +87,7 @@ public class OptimizerVisitor extends ClassCodeExpressionTransformer {
             ClassNode[] interfaces = node.getInterfaces();
             boolean needsFix = false;
             for (ClassNode classNode : interfaces) {
-                if (classNode.equals(ClassHelper.GROOVY_OBJECT_TYPE)) {
+                if (isGroovyObjectType(classNode)) {
                     needsFix = true;
                     break;
                 }
@@ -82,7 +95,7 @@ public class OptimizerVisitor extends ClassCodeExpressionTransformer {
             if (needsFix) {
                 List<ClassNode> newInterfaces = new ArrayList<ClassNode>(interfaces.length);
                 for (ClassNode classNode : interfaces) {
-                    if (!classNode.equals(ClassHelper.GROOVY_OBJECT_TYPE)) {
+                    if (!isGroovyObjectType(classNode)) {
                         newInterfaces.add(classNode);
                     }
                 }
@@ -106,7 +119,7 @@ public class OptimizerVisitor extends ClassCodeExpressionTransformer {
         boolean isPrimitive = isPrimitiveType(constantExpression.getType());
         FieldNode field = isPrimitive ? const2Prims.get(n) : const2Objects.get(n);
         if (field != null) {
-            constantExpression.setConstantName(field.getName());
+            stampConstantName(constantExpression, field.getName());
             return;
         }
         String name;
@@ -121,7 +134,7 @@ public class OptimizerVisitor extends ClassCodeExpressionTransformer {
                 constantExpression);
         field.setSynthetic(true);
         missingFields.add(field);
-        constantExpression.setConstantName(field.getName());
+        stampConstantName(constantExpression, field.getName());
         if (isPrimitive) {
             const2Prims.put(n, field);
         } else {
@@ -129,6 +142,42 @@ public class OptimizerVisitor extends ClassCodeExpressionTransformer {
         }
     }
 
+    /**
+     * Records the cached-constant field name on the expression node, warning when the node was
+     * already stamped with a different name (GROOVY-12131). The field name lives on the node
+     * itself, which assumes each node is reachable from exactly one class — the parser only ever
+     * produces such trees, and closure bodies are exempt from caching (GROOVY-3339). An AST
+     * transform that aliases a constant-bearing subtree into a second class breaks the
+     * assumption: the classes overwrite each other's stamp and whichever class generates
+     * bytecode against the other's numbering silently reads the wrong {@code $const$} field at
+     * runtime. A same-name re-stamp is harmless (each class reads its own field, holding the
+     * same value), so only a diverging name is reported.
+     *
+     * @param constantExpression the constant being cached
+     * @param name the {@code $const$} field name assigned for the current class
+     */
+    private void stampConstantName(ConstantExpression constantExpression, String name) {
+        String previousName = constantExpression.getConstantName();
+        if (previousName != null && !previousName.equals(name)) {
+            source.getErrorCollector().addWarning(WarningMessage.LIKELY_ERRORS,
+                    "Constant expression " + constantExpression.getText() + " is shared between classes: cached as "
+                            + previousName + " in a previously optimized class and now as " + name + " in "
+                            + currentClass.getName() + ". One of the classes will read the wrong cached constant"
+                            + " at runtime; the responsible AST transform should copy expression nodes rather than"
+                            + " alias them across classes.",
+                    Token.newString(constantExpression.getText(),
+                            constantExpression.getLineNumber(), constantExpression.getColumnNumber()),
+                    source);
+        }
+        constantExpression.setConstantName(name);
+    }
+
+    /**
+     * Rewrites constant expressions that can be cached in synthetic fields.
+     *
+     * @param exp the expression to transform
+     * @return the transformed expression
+     */
     @Override
     public Expression transform(Expression exp) {
         if (exp == null) return null;
@@ -138,11 +187,21 @@ public class OptimizerVisitor extends ClassCodeExpressionTransformer {
         return exp.transformExpression(this);
     }
 
+    /**
+     * Returns the source unit currently being optimized.
+     *
+     * @return the active source unit
+     */
     @Override
     protected SourceUnit getSourceUnit() {
         return source;
     }
 
+    /**
+     * Leaves closure bodies untouched so constant caching does not leak into closure classes.
+     *
+     * @param expression the closure expression being skipped
+     */
     @Override
     public void visitClosureExpression(ClosureExpression expression) {
         /*

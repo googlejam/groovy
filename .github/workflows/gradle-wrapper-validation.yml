@@ -14,12 +14,35 @@
 # limitations under the License.
 
 name: "Validate Gradle Wrapper"
-on: [push, pull_request]
+
+on:
+  push:
+    branches:
+      - master
+      - GROOVY_*
+    paths:
+      - 'gradlew'
+      - 'gradlew.bat'
+      - 'gradle/wrapper/'
+      - '.github/workflows/gradle-wrapper-validation.yml'
+  pull_request:
+    paths:
+      - 'gradlew'
+      - 'gradlew.bat'
+      - 'gradle/wrapper/'
+      - '.github/workflows/gradle-wrapper-validation.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   validation:
     name: "Validation"
-    runs-on: ubuntu-18.04
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: gradle/wrapper-validation-action@e2c57acffb2c9aa5a8dc6eda2bbae0b6e495bd4c #v1.0.3
+      - uses: actions/checkout@v7.0.1
+      - uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1

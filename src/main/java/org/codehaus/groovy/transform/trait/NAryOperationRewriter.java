@@ -22,6 +22,8 @@ import org.codehaus.groovy.ast.ClassCodeExpressionTransformer;
 import org.codehaus.groovy.ast.FieldNode;
 import org.codehaus.groovy.ast.Variable;
 import org.codehaus.groovy.ast.expr.BinaryExpression;
+import org.codehaus.groovy.ast.expr.ClosureExpression;
+import org.codehaus.groovy.ast.expr.ElvisOperatorExpression;
 import org.codehaus.groovy.ast.expr.Expression;
 import org.codehaus.groovy.ast.expr.PostfixExpression;
 import org.codehaus.groovy.ast.expr.PrefixExpression;
@@ -34,27 +36,46 @@ import org.codehaus.groovy.syntax.TokenUtil;
 
 import java.util.Collection;
 
+import static org.codehaus.groovy.syntax.Types.ELVIS_EQUAL;
 import static org.codehaus.groovy.syntax.Types.EQUAL;
+import static org.codehaus.groovy.syntax.Types.NULL_COALESCE_EQUAL;
 
 
 /**
- * Rewrites some expressions found in traits so that they are compatible. For example, x++ will be rewritten into x = x
- * + 1 and x += y into x = x + y
+ * Rewrites some expressions found in traits so that they are compatible. For example, if x is a trait field, x += y
+ * will be rewritten into x = x + y, x ?= y into x = x ?: y, and x++ is rejected
  */
 class NAryOperationRewriter extends ClassCodeExpressionTransformer {
     private final SourceUnit sourceUnit;
     private final Collection<String> knownFields;
 
+    /**
+     * Creates a rewriter for compound operations that target trait fields.
+     *
+     * @param sourceUnit the source unit that receives rewrite errors
+     * @param knownFields the trait field names that need special handling
+     */
     public NAryOperationRewriter(final SourceUnit sourceUnit, final Collection<String> knownFields) {
         this.sourceUnit = sourceUnit;
         this.knownFields = knownFields;
     }
 
+    /**
+     * Returns the source unit used for rewrite diagnostics.
+     *
+     * @return the current source unit
+     */
     @Override
     protected SourceUnit getSourceUnit() {
         return sourceUnit;
     }
 
+    /**
+     * Rewrites compound assignments and rejects unsupported prefix or postfix updates on trait fields.
+     *
+     * @param exp the expression to transform
+     * @return the rewritten expression
+     */
     @Override
     public Expression transform(final Expression exp) {
         if (exp instanceof BinaryExpression) {
@@ -65,6 +86,10 @@ class NAryOperationRewriter extends ClassCodeExpressionTransformer {
         }
         if (exp instanceof PostfixExpression) {
             return transformPostfixExpression((PostfixExpression) exp);
+        }
+        if (exp instanceof ClosureExpression) { // GROOVY-12603: closure or lambda in trait code
+            ((ClosureExpression) exp).getCode().visit(this);
+            return exp;
         }
         return super.transform(exp);
     }
@@ -97,7 +122,7 @@ class NAryOperationRewriter extends ClassCodeExpressionTransformer {
     private Expression transformPostfixExpression(final PostfixExpression exp) {
         if (isInternalFieldAccess(exp.getExpression())) {
             Token operation = exp.getOperation();
-            sourceUnit.addError(new SyntaxException("Postfix expressions on trait fields/properties  are not supported in traits.", operation.getStartLine(), operation.getStartColumn()));
+            sourceUnit.addError(new SyntaxException("Postfix expressions on trait fields/properties are not supported in traits.", operation.getStartLine(), operation.getStartColumn()));
             return exp;
         } else {
             return super.transform(exp);
@@ -107,15 +132,22 @@ class NAryOperationRewriter extends ClassCodeExpressionTransformer {
     private Expression transformBinaryExpression(final BinaryExpression exp) {
         final int op = exp.getOperation().getType();
         int token = TokenUtil.removeAssignment(op);
-        if (token == op) {
+        boolean elvis = (op == ELVIS_EQUAL || op == NULL_COALESCE_EQUAL);
+        if (token == op && !elvis) {
             // no transform needed
             return super.transform(exp);
         }
-        BinaryExpression operation = new BinaryExpression(
-                exp.getLeftExpression(),
-                Token.newSymbol(token, -1, -1),
-                exp.getRightExpression()
-        );
+        if (!isInternalFieldAccess(exp.getLeftExpression())) {
+            // GROOVY-12613: only a trait field needs the rewrite; others keep single evaluation of the target
+            return super.transform(exp);
+        }
+        Expression right = transform(exp.getRightExpression()); // GROOVY-12615: rewrite nested compound assignments too
+        Expression operation;
+        if (elvis) { // GROOVY-12638: x ?= y is x = x ?: y and x ??= y is x = x ?? y
+            operation = new ElvisOperatorExpression(exp.getLeftExpression(), right, op == NULL_COALESCE_EQUAL);
+        } else {
+            operation = new BinaryExpression(exp.getLeftExpression(), Token.newSymbol(token, -1, -1), right);
+        }
         operation.setSourcePosition(exp);
         BinaryExpression result = new BinaryExpression(
                 exp.getLeftExpression(),

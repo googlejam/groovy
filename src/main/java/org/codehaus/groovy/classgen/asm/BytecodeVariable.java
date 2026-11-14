@@ -22,53 +22,142 @@ import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
 import org.objectweb.asm.Label;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
 /**
  * Represents compile time variable metadata while compiling a method.
  */
 public class BytecodeVariable {
-    
+
+    /**
+     * Sentinel metadata for the implicit {@code this} receiver.
+     */
     public static final BytecodeVariable THIS_VARIABLE = new BytecodeVariable();
+    /**
+     * Sentinel metadata for the implicit {@code super} receiver.
+     */
     public static final BytecodeVariable SUPER_VARIABLE = new BytecodeVariable();
 
     private final int index;
     private ClassNode type;
+    private ClassNode declaredType;
     private String name;
     private final int prevCurrent;
+    private boolean dynamicTyped;
     private boolean holder;
 
     // br for setting on the LocalVariableTable in the class file
     // these fields should probably go to jvm Operand class
-    private Label startLabel = null;
-    private Label endLabel = null;
-    private boolean dynamicTyped;
+    private Label startLabel;
+    private Label endLabel;
 
-    private BytecodeVariable(){
+    // GROOVY-12242: flow-scoped pattern variables are visible over several
+    // disjoint bytecode regions (e.g. condition + then-arm, then again after
+    // the if). Each completed region is kept here and emitted as its own
+    // LocalVariableTable entry; startLabel/endLabel describe the currently
+    // open region only. Ordinary locals never close a range, so this stays
+    // null for them and emission is unchanged.
+    private List<Label[]> closedRanges;
+    private boolean rangeClosed;
+
+    private BytecodeVariable() {
+        index = 0;
+        prevCurrent = 0;
         dynamicTyped = true;
-        index=0;
-        holder=false;
-        prevCurrent=0;
     }
-    
-    public BytecodeVariable(int index, ClassNode type, String name, int prevCurrent) {
+
+    /**
+     * Creates bytecode metadata for a local variable slot.
+     *
+     * @param index the JVM local-variable index
+     * @param type the variable type
+     * @param name the variable name
+     * @param prevCurrent the previous current-variable index
+     */
+    public BytecodeVariable(final int index, final ClassNode type, final String name, final int prevCurrent) {
         this.index = index;
         this.type = type;
         this.name = name;
         this.prevCurrent = prevCurrent;
+        this.dynamicTyped = ClassHelper.isDynamicTyped(type);
     }
 
-    public String getName() {
-        return name;
-    }
-
-    public ClassNode getType() {
-        return type;
-    }
- 
     /**
      * @return the stack index for this variable
      */
     public int getIndex() {
         return index;
+    }
+
+    /**
+     * @return the source-level variable name
+     */
+    public String getName() {
+        return name;
+    }
+
+    /**
+     * @return the variable type
+     */
+    public ClassNode getType() {
+        return type;
+    }
+
+    /**
+     * Updates the tracked variable type.
+     *
+     * @param type the new variable type
+     */
+    public void setType(final ClassNode type) {
+        this.type = type;
+        dynamicTyped = dynamicTyped || ClassHelper.isDynamicTyped(type);
+    }
+
+    /**
+     * Returns the type as declared in source, which carries any type annotations
+     * (JSR 308). This may differ from {@link #getType()}, e.g. when the slot type
+     * is an inferred or boxed type.
+     *
+     * @return the declared type, or the slot type if no declared type was recorded
+     * @since 6.0.1
+     */
+    public ClassNode getDeclaredType() {
+        return declaredType != null ? declaredType : type;
+    }
+
+    /**
+     * Records the type as declared in source.
+     *
+     * @param declaredType the declared type
+     * @since 6.0.1
+     */
+    public void setDeclaredType(final ClassNode declaredType) {
+        this.declaredType = declaredType;
+    }
+
+    /**
+     * @return the previous current-variable index
+     */
+    public int getPrevIndex() {
+        return prevCurrent;
+    }
+
+    /**
+     * @return whether the variable uses dynamic typing
+     */
+    public boolean isDynamicTyped() {
+        return dynamicTyped;
+    }
+
+    /**
+     * Marks whether the variable should be treated as dynamically typed.
+     *
+     * @param dynamicTyped {@code true} if the variable is dynamically typed
+     */
+    public void setDynamicTyped(final boolean dynamicTyped) {
+        this.dynamicTyped = dynamicTyped;
     }
 
     /**
@@ -78,45 +167,102 @@ public class BytecodeVariable {
         return holder;
     }
 
-    public void setHolder(boolean holder) {
+    /**
+     * Marks whether this variable must be stored through a holder object.
+     *
+     * @param holder {@code true} if the variable is closure-shared
+     */
+    public void setHolder(final boolean holder) {
         this.holder = holder;
     }
-    
+
+    /**
+     * @return the start label used for local-variable table metadata
+     */
     public Label getStartLabel() {
         return startLabel;
     }
 
-    public void setStartLabel(Label startLabel) {
+    /**
+     * Sets the start label used for local-variable table metadata.
+     *
+     * @param startLabel the starting label
+     */
+    public void setStartLabel(final Label startLabel) {
         this.startLabel = startLabel;
     }
 
+    /**
+     * @return the end label used for local-variable table metadata
+     */
     public Label getEndLabel() {
         return endLabel;
     }
 
-    public void setEndLabel(Label endLabel) {
+    /**
+     * Sets the end label used for local-variable table metadata.
+     *
+     * @param endLabel the ending label
+     */
+    public void setEndLabel(final Label endLabel) {
         this.endLabel = endLabel;
     }
 
+    /**
+     * Ends the currently open local-variable-table range at the given label,
+     * recording it for later emission. Used when flow scoping hides this
+     * variable (GROOVY-12242); a later {@link #reopenRange} starts a new range
+     * if the variable becomes visible again.
+     *
+     * @param end the label at which visibility ends; ignored if {@code null}
+     *            or if no range is open
+     */
+    public void closeRange(final Label end) {
+        if (!rangeClosed && startLabel != null && end != null) {
+            if (closedRanges == null) closedRanges = new ArrayList<>(2);
+            closedRanges.add(new Label[]{startLabel, end});
+            rangeClosed = true;
+        }
+    }
+
+    /**
+     * Starts a new local-variable-table range at the given label after a
+     * {@link #closeRange}. The end label is reset to the start and extended
+     * by subsequent scope pops; a range that is never extended has zero
+     * width and is not emitted.
+     *
+     * @param start the label at which visibility resumes; ignored if
+     *              {@code null} or if no range was closed
+     */
+    public void reopenRange(final Label start) {
+        if (rangeClosed && start != null) {
+            startLabel = start;
+            endLabel = start;
+            rangeClosed = false;
+        }
+    }
+
+    /**
+     * @return whether the current local-variable-table range has been closed
+     *         without being reopened (the variable is hidden by flow scoping)
+     */
+    public boolean isRangeClosed() {
+        return rangeClosed;
+    }
+
+    /**
+     * @return the completed local-variable-table ranges as {start, end} label
+     *         pairs, oldest first; empty for variables never hidden
+     */
+    public List<Label[]> getClosedRanges() {
+        return closedRanges == null ? Collections.emptyList() : closedRanges;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public String toString() {
         return name + "(index=" + index + ",type=" + type + ",holder="+holder+")";
-    }
-
-    public void setType(ClassNode type) {
-        this.type = type;
-        dynamicTyped |= type==ClassHelper.DYNAMIC_TYPE;
-    }
-
-    public void setDynamicTyped(boolean b) {
-        dynamicTyped = b;
-    }
-    
-    public boolean isDynamicTyped() {
-        return dynamicTyped;
-    }
-
-    public int getPrevIndex() {
-        return prevCurrent;
     }
 }

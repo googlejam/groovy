@@ -25,15 +25,19 @@ import com.github.javaparser.ast.body.AnnotationDeclaration;
 import com.github.javaparser.ast.body.AnnotationMemberDeclaration;
 import com.github.javaparser.ast.body.CallableDeclaration;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
+import com.github.javaparser.ast.body.CompactConstructorDeclaration;
 import com.github.javaparser.ast.body.ConstructorDeclaration;
 import com.github.javaparser.ast.body.EnumConstantDeclaration;
 import com.github.javaparser.ast.body.EnumDeclaration;
 import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.Parameter;
+import com.github.javaparser.ast.body.RecordDeclaration;
 import com.github.javaparser.ast.body.TypeDeclaration;
+import com.github.javaparser.ast.comments.JavadocComment;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import com.github.javaparser.ast.expr.Name;
+import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.nodeTypes.NodeWithAnnotations;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
 import com.github.javaparser.ast.type.Type;
@@ -43,6 +47,7 @@ import org.codehaus.groovy.GroovyBugError;
 import org.codehaus.groovy.control.ResolveVisitor;
 import org.codehaus.groovy.groovydoc.GroovyClassDoc;
 import org.codehaus.groovy.runtime.DefaultGroovyMethods;
+import org.codehaus.groovy.tools.groovydoc.GroovydocAnnotationUtils;
 import org.codehaus.groovy.tools.groovydoc.LinkArgument;
 import org.codehaus.groovy.tools.groovydoc.SimpleGroovyAbstractableElementDoc;
 import org.codehaus.groovy.tools.groovydoc.SimpleGroovyAnnotationRef;
@@ -57,31 +62,55 @@ import org.codehaus.groovy.tools.groovydoc.SimpleGroovyProgramElementDoc;
 import org.codehaus.groovy.tools.groovydoc.SimpleGroovyType;
 
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Properties;
 
-public class GroovydocJavaVisitor extends VoidVisitorAdapter<Object> {
+/**
+ * JavaParser AST visitor that extracts Groovydoc information from Java source files, producing
+ * a map of {@link GroovyClassDoc} instances keyed by full path.
+ */
+public class GroovydocJavaVisitor
+    extends VoidVisitorAdapter<Object> {
     private final List<LinkArgument> links;
     private SimpleGroovyClassDoc currentClassDoc = null;
-    private Map<String, GroovyClassDoc> classDocs = new HashMap<>();
-    private String packagePath;
-    private final Map<String, String> aliases = new HashMap<>();
-    private List<String> imports = new ArrayList<>();
+    private final Map<String, GroovyClassDoc> classDocs = new LinkedHashMap<>();
+    private final String packagePath;
+    private final Map<String, String> aliases = new LinkedHashMap<>();
+    private final List<String> imports = new ArrayList<>();
+    private final Properties properties;
     private static final String FS = "/";
 
+    /**
+     * Creates a visitor for the given package path and link arguments with default properties.
+     */
     public GroovydocJavaVisitor(String packagePath, List<LinkArgument> links) {
-        this.packagePath = packagePath;
-        this.links = links;
+        this(packagePath, links, new Properties());
     }
 
+    /**
+     * Creates a visitor for the given package path, link arguments, and generation properties.
+     *
+     * @since 6.0.0
+     */
+    public GroovydocJavaVisitor(String packagePath, List<LinkArgument> links, Properties properties) {
+        this.packagePath = packagePath;
+        this.links = links;
+        this.properties = properties;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visit(ImportDeclaration n, Object arg) {
         Optional<Name> qualPath = n.getName().getQualifier();
         String qual = qualPath.map(value -> value.asString().replace('.', '/') + "/").orElse("");
         String id = n.getName().getIdentifier();
         String name = qual + id;
+        if (n.isAsterisk()) name +="/*";
         imports.add(name);
         aliases.put(id, name);
         super.visit(n, arg);
@@ -96,8 +125,12 @@ public class GroovydocJavaVisitor extends VoidVisitorAdapter<Object> {
         return imports;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visit(EnumDeclaration n, Object arg) {
+        if (shouldSkipTypeDeclaration(n)) return;
         SimpleGroovyClassDoc parent = visit(n);
         currentClassDoc.setTokenType(SimpleGroovyDoc.ENUM_DEF);
         super.visit(n, arg);
@@ -106,6 +139,9 @@ public class GroovydocJavaVisitor extends VoidVisitorAdapter<Object> {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visit(EnumConstantDeclaration n, Object arg) {
         if (!currentClassDoc.isEnum()) {
@@ -117,13 +153,18 @@ public class GroovydocJavaVisitor extends VoidVisitorAdapter<Object> {
         enumConstantDoc.setPublic(true);
         currentClassDoc.addEnumConstant(enumConstantDoc);
         processAnnotations(enumConstantDoc, n);
-        n.getJavadocComment().ifPresent(javadocComment ->
-                enumConstantDoc.setRawCommentText(javadocComment.getContent()));
+        applyJavadocComment(n.getJavadocComment(), enumConstantDoc);
+        // Per-constant class bodies are anonymous implementation details.
+        if (!n.getClassBody().isEmpty()) return;
         super.visit(n, arg);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visit(AnnotationDeclaration n, Object arg) {
+        if (shouldSkipTypeDeclaration(n)) return;
         SimpleGroovyClassDoc parent = visit(n);
         currentClassDoc.setTokenType(SimpleGroovyDoc.ANNOTATION_DEF);
         super.visit(n, arg);
@@ -133,6 +174,9 @@ public class GroovydocJavaVisitor extends VoidVisitorAdapter<Object> {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visit(AnnotationMemberDeclaration n, Object arg) {
         if (!currentClassDoc.isAnnotationType()) {
@@ -144,17 +188,24 @@ public class GroovydocJavaVisitor extends VoidVisitorAdapter<Object> {
         fieldDoc.setPublic(true);
         processAnnotations(fieldDoc, n);
         currentClassDoc.add(fieldDoc);
-        n.getJavadocComment().ifPresent(javadocComment ->
-                fieldDoc.setRawCommentText(javadocComment.getContent()));
+        applyJavadocComment(n.getJavadocComment(), fieldDoc);
         n.getDefaultValue().ifPresent(defValue -> {
-            fieldDoc.setRawCommentText(fieldDoc.getRawCommentText() + "\n* @default " + defValue.toString());
+            // For Markdown-form comments (no `*` line prefix), the synthesized
+            // @default tag goes on a bare line; traditional /** */ form keeps
+            // the `* ` prefix for visual parity with existing continuation lines.
+            String prefix = fieldDoc.isMarkdown() ? "\n@default " : "\n* @default ";
+            fieldDoc.setRawCommentText(fieldDoc.getRawCommentText() + prefix + defValue);
             fieldDoc.setConstantValueExpression(defValue.toString());
         });
         super.visit(n, arg);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visit(ClassOrInterfaceDeclaration n, Object arg) {
+        if (shouldSkipTypeDeclaration(n)) return;
         SimpleGroovyClassDoc parent = visit(n);
         if (n.isInterface()) {
             currentClassDoc.setTokenType(SimpleGroovyDoc.INTERFACE_DEF);
@@ -168,6 +219,9 @@ public class GroovydocJavaVisitor extends VoidVisitorAdapter<Object> {
                 currentClassDoc.setSuperClassName(fullName(et));
             }
         });
+        if (!n.isInterface() && currentClassDoc.getSuperClassName() == null && currentClassDoc.superclass() == null) {
+            currentClassDoc.setSuperClassName("Object");
+        }
         currentClassDoc.setNameWithTypeArgs(currentClassDoc.name() + genericTypesAsString(n.getTypeParameters()));
         n.getImplementedTypes().forEach(classOrInterfaceType ->
                 currentClassDoc.addInterfaceName(fullName(classOrInterfaceType)));
@@ -175,6 +229,33 @@ public class GroovydocJavaVisitor extends VoidVisitorAdapter<Object> {
         if (parent != null) {
             currentClassDoc = parent;
         }
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void visit(final RecordDeclaration n, final Object arg) {
+        if (shouldSkipTypeDeclaration(n)) return;
+        SimpleGroovyClassDoc parent = visit(n);
+        if (n.isRecordDeclaration()) {
+            currentClassDoc.setTokenType(SimpleGroovyDoc.RECORD_DEF);
+        }
+        super.visit(n,arg);
+        if (parent != null) {
+            currentClassDoc = parent;
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void visit(final CompactConstructorDeclaration c, Object arg) {
+        SimpleGroovyConstructorDoc meth = new SimpleGroovyConstructorDoc(c.getNameAsString(), currentClassDoc);
+        setCompactConstructor(c, meth);
+        currentClassDoc.add(meth);
+        super.visit(c, arg);
     }
 
     private String fullName(ClassOrInterfaceType et) {
@@ -185,9 +266,13 @@ public class GroovydocJavaVisitor extends VoidVisitorAdapter<Object> {
     }
 
     private String genericTypesAsString(NodeList<TypeParameter> typeParameters) {
-        if (typeParameters == null || typeParameters.size() == 0)
+        if (typeParameters == null || typeParameters.isEmpty())
             return "";
         return "<" + DefaultGroovyMethods.join(typeParameters, ", ") + ">";
+    }
+
+    private static boolean shouldSkipTypeDeclaration(TypeDeclaration<?> n) {
+        return !n.isTopLevelType() && !n.isNestedType();
     }
 
     private SimpleGroovyClassDoc visit(TypeDeclaration<?> n) {
@@ -211,28 +296,99 @@ public class GroovydocJavaVisitor extends VoidVisitorAdapter<Object> {
         processAnnotations(currentClassDoc, n);
         currentClassDoc.setFullPathName(withSlashes(packagePath + FS + name));
         classDocs.put(currentClassDoc.getFullPathName(), currentClassDoc);
-        n.getJavadocComment().ifPresent(javadocComment ->
-                currentClassDoc.setRawCommentText(javadocComment.getContent()));
+        applyJavadocComment(n.getJavadocComment(), currentClassDoc);
         return parent;
     }
 
     private void processAnnotations(SimpleGroovyProgramElementDoc element, NodeWithAnnotations<?> n) {
         for (AnnotationExpr an : n.getAnnotations()) {
-            element.addAnnotationRef(new SimpleGroovyAnnotationRef(an.getNameAsString(), getAnnotationText(an)));
+            String name = an.getNameAsString();
+            if (!shouldDocument(name)) continue;
+            element.addAnnotationRef(new SimpleGroovyAnnotationRef(name, getAnnotationText(an)));
         }
     }
 
     private void processAnnotations(SimpleGroovyParameter param, NodeWithAnnotations<?> n) {
         for (AnnotationExpr an : n.getAnnotations()) {
-            param.addAnnotationRef(new SimpleGroovyAnnotationRef(an.getNameAsString(), getAnnotationText(an)));
+            String name = an.getNameAsString();
+            if (!shouldDocument(name)) continue;
+            param.addAnnotationRef(new SimpleGroovyAnnotationRef(name, getAnnotationText(an)));
+        }
+    }
+
+    // GROOVY-4634: emit an annotation reference only when the annotation type is
+    // itself marked {@code @Documented}, matching Javadoc's behavior. When the
+    // annotation type cannot be resolved on the current classpath, default to
+    // including it so that groovydoc does not silently drop user annotations.
+    private boolean shouldDocument(String name) {
+        String fqn = resolveAnnotationFqn(name);
+        if (fqn == null) return true; // unresolved — show
+        return GroovydocAnnotationUtils.shouldDocument(fqn);
+    }
+
+    private String resolveAnnotationFqn(String name) {
+        // already fully qualified
+        if (name.contains(".")) {
+            if (tryLoad(name) != null) return name;
+            // nested-name like "CommandLine.Parameters" — resolve outer via aliases
+            int dot = name.indexOf('.');
+            String outer = name.substring(0, dot);
+            String rest = name.substring(dot);
+            String outerFqn = aliases.get(outer);
+            if (outerFqn != null) {
+                String candidate = outerFqn.replace('/', '.') + rest.replace('.', '$');
+                if (tryLoad(candidate) != null) return candidate;
+            }
+            return null;
+        }
+        String importedFqn = aliases.get(name);
+        if (importedFqn != null) {
+            String candidate = importedFqn.replace('/', '.');
+            if (tryLoad(candidate) != null) return candidate;
+        }
+        String javaLang = "java.lang." + name;
+        if (tryLoad(javaLang) != null) return javaLang;
+        return null;
+    }
+
+    private static Class<?> tryLoad(String fqn) {
+        try {
+            return Class.forName(fqn);
+        } catch (Throwable t) {
+            return null;
         }
     }
 
     private String getAnnotationText(final AnnotationExpr an) {
-        if (an != null && an.getTokenRange().isPresent()) {
-            return an.getTokenRange().get().toString();
+        if (an != null) {
+            return an.getTokenRange().map(Object::toString).orElse("");
         }
         return "";
+    }
+
+    // GROOVY-9572: hide members annotated with groovy.transform.@Internal (per GEP-17)
+    // or deemed internal by name convention (contains '$'), unless the user opts
+    // in with -showInternal / showInternal=true. Mirrors the policy of
+    // org.apache.groovy.ast.tools.AnnotatedNodeUtils#deemedInternal on
+    // the Groovy-AST side, expressed against JavaParser AST nodes here.
+    private boolean isInternal(NodeWithAnnotations<?> n) {
+        if ("true".equals(properties.getProperty("showInternal", "false"))) return false;
+        for (AnnotationExpr an : n.getAnnotations()) {
+            String name = an.getNameAsString();
+            if ("Internal".equals(name) || name.endsWith(".Internal")) return true;
+        }
+        if (n instanceof FieldDeclaration fd) {
+            // Java allows multiple variables per field declaration (`int a, b$;`).
+            // Treat the whole declaration as internal if *any* variable name
+            // contains the synthetic-name marker; picking only the first would
+            // mis-classify `int a, b$;` as non-internal.
+            for (int k = 0; k < fd.getVariables().size(); k++) {
+                if (fd.getVariable(k).getNameAsString().contains("$")) return true;
+            }
+        }
+        if (n instanceof MethodDeclaration md && md.getNameAsString().contains("$")) return true;
+        if (n instanceof ConstructorDeclaration cd && cd.getNameAsString().contains("$")) return true;
+        return false;
     }
 
     private void setModifiers(NodeList<Modifier> modifiers, SimpleGroovyAbstractableElementDoc elementDoc) {
@@ -260,9 +416,14 @@ public class GroovydocJavaVisitor extends VoidVisitorAdapter<Object> {
         return s.replace('.', '/').replace('$', '.');
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visit(MethodDeclaration m, Object arg) {
+        boolean hidden = isInternal(m);
         SimpleGroovyMethodDoc meth = new SimpleGroovyMethodDoc(m.getNameAsString(), currentClassDoc);
+        meth.setHidden(hidden);
         meth.setTypeParameters(genericTypesAsString(m.getTypeParameters()));
         meth.setReturnType(makeType(m.getType()));
         setConstructorOrMethodCommon(m, meth);
@@ -274,17 +435,21 @@ public class GroovydocJavaVisitor extends VoidVisitorAdapter<Object> {
         return new SimpleGroovyType(withSlashes(t.asString()));
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visit(ConstructorDeclaration c, Object arg) {
+        boolean hidden = isInternal(c);
         SimpleGroovyConstructorDoc meth = new SimpleGroovyConstructorDoc(c.getNameAsString(), currentClassDoc);
+        meth.setHidden(hidden);
         setConstructorOrMethodCommon(c, meth);
         currentClassDoc.add(meth);
         super.visit(c, arg);
     }
 
     private void setConstructorOrMethodCommon(CallableDeclaration<? extends CallableDeclaration<?>> n, SimpleGroovyExecutableMemberDoc methOrCons) {
-        n.getJavadocComment().ifPresent(javadocComment ->
-                methOrCons.setRawCommentText(javadocComment.getContent()));
+        applyJavadocComment(n.getJavadocComment(), methOrCons);
         NodeList<Modifier> mods = n.getModifiers();
         if (currentClassDoc.isInterface()) {
             mods.add(Modifier.publicModifier());
@@ -299,21 +464,104 @@ public class GroovydocJavaVisitor extends VoidVisitorAdapter<Object> {
         }
     }
 
+    private void setCompactConstructor(CompactConstructorDeclaration n, SimpleGroovyExecutableMemberDoc methOrCons) {
+        n.getComment().ifPresent(javadocComment ->
+                                            methOrCons.setRawCommentText(javadocComment.getContent()));
+        NodeList<Modifier> mods = n.getModifiers();
+        if (currentClassDoc.isInterface()) {
+            mods.add(Modifier.publicModifier());
+        }
+        setModifiers(mods, methOrCons);
+        processAnnotations(methOrCons, n);
+        for (TypeParameter param : n.getTypeParameters()) {
+            SimpleGroovyParameter p = new SimpleGroovyParameter(param.getNameAsString());
+            processAnnotations(p, param);
+            p.setType(makeType(param));
+            methOrCons.add(p);
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visit(FieldDeclaration f, Object arg) {
+        boolean hidden = isInternal(f);
         String name = f.getVariable(0).getNameAsString();
         SimpleGroovyFieldDoc field = new SimpleGroovyFieldDoc(name, currentClassDoc);
+        field.setHidden(hidden);
         field.setType(makeType(f.getVariable(0).getType()));
         setModifiers(f.getModifiers(), field);
         processAnnotations(field, f);
-        f.getJavadocComment().ifPresent(javadocComment ->
-                field.setRawCommentText(javadocComment.getContent()));
+        applyJavadocComment(f.getJavadocComment(), field);
         currentClassDoc.add(field);
         super.visit(f, arg);
     }
 
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void visit(ObjectCreationExpr n, Object arg) {
+        // Anonymous class bodies must not contribute members to the enclosing type doc.
+        if (n.getAnonymousClassBody().isPresent()) return;
+        super.visit(n, arg);
+    }
+
+    /**
+     * Returns the collected class documentation, keyed by full path name.
+     */
     public Map<String, GroovyClassDoc> getGroovyClassDocs() {
         return classDocs;
+    }
+
+    /**
+     * Apply the content of a JavaParser-recognised Javadoc comment to the
+     * given target. Handles both traditional {@code /** ... *}{@code /} form and
+     * JEP 467 Markdown form (runs of {@code ///} lines). For Markdown, the
+     * {@code ///} line prefixes are stripped and the target is flagged via
+     * {@link SimpleGroovyDoc#setMarkdown(boolean)} so downstream rendering
+     * routes through CommonMark.
+     */
+    private static void applyJavadocComment(Optional<JavadocComment> optComment, SimpleGroovyDoc target) {
+        if (!optComment.isPresent()) return;
+        String content = optComment.get().getContent();
+        String markdownBody = tryExtractMarkdownBody(content);
+        if (markdownBody != null) {
+            target.setRawCommentText(markdownBody);
+            target.setMarkdown(true);
+        } else {
+            target.setRawCommentText(content);
+        }
+    }
+
+    /**
+     * If {@code content} is a JEP 467 Markdown Javadoc body (every non-blank
+     * line starts with {@code ///}), return the body with those line prefixes
+     * stripped (one optional trailing space after {@code ///} is also
+     * consumed). Returns {@code null} if the content isn't Markdown form.
+     */
+    private static String tryExtractMarkdownBody(String content) {
+        if (content == null || content.isEmpty()) return null;
+        String[] lines = content.split("\n", -1);
+        boolean anyMarkdownLine = false;
+        for (String line : lines) {
+            String trimmed = line.trim();
+            if (trimmed.isEmpty()) continue;
+            if (!trimmed.startsWith("///")) return null;
+            anyMarkdownLine = true;
+        }
+        if (!anyMarkdownLine) return null;
+        StringBuilder body = new StringBuilder();
+        for (int k = 0; k < lines.length; k++) {
+            if (k > 0) body.append('\n');
+            String trimmed = lines[k].trim();
+            if (trimmed.isEmpty()) continue;
+            String rest = trimmed.substring(3);
+            if (rest.startsWith(" ")) rest = rest.substring(1);
+            body.append(rest);
+        }
+        return body.toString();
     }
 
 }

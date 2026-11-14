@@ -21,10 +21,11 @@ package org.codehaus.groovy.transform.sc.transformers;
 import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.GroovyCodeVisitor;
-import org.codehaus.groovy.ast.InnerClassNode;
 import org.codehaus.groovy.ast.MethodNode;
+import org.codehaus.groovy.ast.Parameter;
 import org.codehaus.groovy.ast.expr.BinaryExpression;
 import org.codehaus.groovy.ast.expr.BooleanExpression;
+import org.codehaus.groovy.ast.expr.DeclarationExpression;
 import org.codehaus.groovy.ast.expr.Expression;
 import org.codehaus.groovy.ast.expr.ExpressionTransformer;
 import org.codehaus.groovy.ast.expr.NotExpression;
@@ -32,7 +33,6 @@ import org.codehaus.groovy.classgen.AsmClassGenerator;
 import org.codehaus.groovy.classgen.asm.BytecodeHelper;
 import org.codehaus.groovy.classgen.asm.OperandStack;
 import org.codehaus.groovy.classgen.asm.WriterController;
-import org.codehaus.groovy.classgen.asm.sc.StaticTypesTypeChooser;
 import org.codehaus.groovy.transform.stc.ExtensionMethodNode;
 import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
@@ -45,139 +45,164 @@ import static org.codehaus.groovy.transform.stc.StaticTypeCheckingSupport.findDG
 import static org.objectweb.asm.Opcodes.DUP;
 import static org.objectweb.asm.Opcodes.GOTO;
 import static org.objectweb.asm.Opcodes.ICONST_0;
+import static org.objectweb.asm.Opcodes.ICONST_1;
 import static org.objectweb.asm.Opcodes.IFNONNULL;
 import static org.objectweb.asm.Opcodes.INVOKEVIRTUAL;
 import static org.objectweb.asm.Opcodes.POP;
 
-public class BooleanExpressionTransformer {
+/**
+ * Applies boolean-expression optimizations used by the static compiler.
+ */
+class BooleanExpressionTransformer {
+
     private final StaticCompilationTransformer transformer;
 
-    public BooleanExpressionTransformer(StaticCompilationTransformer staticCompilationTransformer) {
-        transformer = staticCompilationTransformer;
+    /**
+     * Creates a boolean-expression transformer backed by the owning static compilation transformer.
+     *
+     * @param transformer the shared transformer context
+     */
+    BooleanExpressionTransformer(final StaticCompilationTransformer transformer) {
+        this.transformer = transformer;
     }
 
-    Expression transformBooleanExpression(final BooleanExpression booleanExpression) {
-        if (booleanExpression instanceof NotExpression) {
-            return transformer.superTransform(booleanExpression);
+    /**
+     * Rewrites a boolean expression into a form better suited for static bytecode generation.
+     *
+     * @param boolX the boolean expression to transform
+     * @return the transformed expression
+     */
+    Expression transformBooleanExpression(final BooleanExpression boolX) {
+        Expression expr = boolX;
+        boolean reverse = false;
+        do { // undo arbitrary nesting of (Boolean|Not)Expressions
+            if (expr instanceof NotExpression) reverse = !reverse;
+            expr = ((BooleanExpression) expr).getExpression();
+        } while (expr instanceof BooleanExpression);
+
+        if (!(expr instanceof BinaryExpression)) {
+            expr = transformer.transform(expr);
+
+            Expression opt = new OptimizingBooleanExpression(expr);
+            if (reverse) opt = new NotExpression(opt);
+            opt.setSourcePosition(boolX);
+            opt.copyNodeMetaData(boolX);
+            return opt;
+
+        } else if (!(expr instanceof DeclarationExpression)) {
+            // TODO: apply reverse to operation
+            expr = transformer.transform(expr);
+
+            expr = reverse ? new NotExpression(expr) : new BooleanExpression(expr);
+            expr.setSourcePosition(boolX);
+            expr.copyNodeMetaData(boolX);
+            return expr;
         }
-        final Expression expression = booleanExpression.getExpression();
-        if (!(expression instanceof BinaryExpression)) {
-            StaticTypesTypeChooser typeChooser = transformer.getTypeChooser();
-            final ClassNode type = typeChooser.resolveType(expression, transformer.getClassNode());
-            BooleanExpression transformed = new OptimizingBooleanExpression(transformer.transform(expression),type);
-            transformed.setSourcePosition(booleanExpression);
-            transformed.copyNodeMetaData(booleanExpression);
-            return transformed;
-        }
-        return transformer.superTransform(booleanExpression);
+
+        return transformer.superTransform(boolX);
     }
-    
-    private static boolean isExtended(ClassNode owner, Iterator<InnerClassNode> classes) {
-        while (classes.hasNext()) {
-            InnerClassNode next =  classes.next();
-            if (next!=owner && next.isDerivedFrom(owner)) return true;
-        }
-        if (owner.getInnerClasses().hasNext()) {
-            return isExtended(owner, owner.getInnerClasses());
-        }
-        return false;
-    }
+
+    //--------------------------------------------------------------------------
 
     private static class OptimizingBooleanExpression extends BooleanExpression {
 
-        private final Expression expression;
-        private final ClassNode type;
-
-        public OptimizingBooleanExpression(final Expression expression, final ClassNode type) {
+        OptimizingBooleanExpression(final Expression expression) {
             super(expression);
-            this.expression = expression;
-            // we must use the redirect node, otherwise InnerClassNode would not have the "correct" type
-            this.type = type.redirect();
         }
 
         @Override
         public Expression transformExpression(final ExpressionTransformer transformer) {
-            Expression ret = new OptimizingBooleanExpression(transformer.transform(expression), type);
-            ret.setSourcePosition(this);
-            ret.copyNodeMetaData(this);
-            return ret;
+            Expression opt = new OptimizingBooleanExpression(transformer.transform(getExpression()));
+            opt.setSourcePosition(this);
+            opt.copyNodeMetaData(this);
+            return opt;
         }
 
         @Override
         public void visit(final GroovyCodeVisitor visitor) {
             if (visitor instanceof AsmClassGenerator) {
-                AsmClassGenerator acg = (AsmClassGenerator) visitor;
-                WriterController controller = acg.getController();
+                WriterController controller = ((AsmClassGenerator) visitor).getController();
+                MethodVisitor mv = controller.getMethodVisitor();
                 OperandStack os = controller.getOperandStack();
 
-                if (type.equals(ClassHelper.boolean_TYPE)) {
-                    expression.visit(visitor);
-                    os.doGroovyCast(ClassHelper.boolean_TYPE);
-                    return;
-                }
-                if (type.equals(ClassHelper.Boolean_TYPE)) {
-                    MethodVisitor mv = controller.getMethodVisitor();
-                    expression.visit(visitor);
-                    Label unbox = new Label();
-                    Label exit = new Label();
-                    // check for null
+                int mark = os.getStackLength();
+                getExpression().visit(visitor);
+
+                ClassNode type = os.getTopOperand(); // GROOVY-6270, GROOVY-9501, GROOVY-9569, GROOVY-10920, GROOVY-11840
+
+                if (ClassHelper.isPrimitiveType(type)) {
+                    BytecodeHelper.convertPrimitiveToBoolean(mv, type);
+                } else {
                     mv.visitInsn(DUP);
-                    mv.visitJumpInsn(IFNONNULL, unbox);
+                    Label end = new Label();
+                    Label asBoolean = new Label();
+                    mv.visitJumpInsn(IFNONNULL, asBoolean);
+
+                    // null => false
                     mv.visitInsn(POP);
                     mv.visitInsn(ICONST_0);
-                    mv.visitJumpInsn(GOTO, exit);
-                    mv.visitLabel(unbox);
-                    // unbox
-                    // GROOVY-6270
-                    if (!os.getTopOperand().equals(type)) BytecodeHelper.doCast(mv, type);
-                    mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Boolean", "booleanValue", "()Z", false);
-                    mv.visitLabel(exit);
-                    os.replace(ClassHelper.boolean_TYPE);
-                    return;
-                }
-                ClassNode top = type;
-                if (ClassHelper.isPrimitiveType(top)) {
-                    expression.visit(visitor);
-                    // in case of null safe invocation, it is possible that what was supposed to be a primitive type
-                    // becomes the "null" constant, so we need to recheck
-                    top = controller.getOperandStack().getTopOperand();
-                    if (ClassHelper.isPrimitiveType(top)) {
-                        BytecodeHelper.convertPrimitiveToBoolean(controller.getMethodVisitor(), top);
-                        controller.getOperandStack().replace(ClassHelper.boolean_TYPE);
-                        return;
+                    mv.visitJumpInsn(GOTO, end);
+
+                    mv.visitLabel(asBoolean);
+                    if (ClassHelper.isWrapperBoolean(type)) {
+                        mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Boolean", "booleanValue", "()Z", false);
+                    } else if (replaceAsBooleanWithCompareToNull(type, controller.getSourceUnit().getClassLoader())) {
+                        // value => true
+                        mv.visitInsn(POP);
+                        mv.visitInsn(ICONST_1);
+                    } else {
+                        os.castToBool(mark, true);
                     }
+                    mv.visitLabel(end);
                 }
-                List<MethodNode> asBoolean = findDGMMethodsByNameAndArguments(controller.getSourceUnit().getClassLoader(), top, "asBoolean", ClassNode.EMPTY_ARRAY);
-                if (asBoolean.size() == 1) {
-                    MethodNode node = asBoolean.get(0);
-                    if (node instanceof ExtensionMethodNode) {
-                        MethodNode dgmNode = ((ExtensionMethodNode) node).getExtensionMethodNode();
-                        ClassNode owner = dgmNode.getParameters()[0].getType();
-                        if (ClassHelper.OBJECT_TYPE.equals(owner)) {
-                            // we may inline a var!=null check instead of calling a helper method iff
-                            // (1) the class doesn't define an asBoolean method (already tested)
-                            // (2) no subclass defines an asBoolean method
-                            // For (2), we check that we are in one of those cases
-                            // (a) a final class
-                            // (b) a private inner class without subclass
-                            if (Modifier.isFinal(top.getModifiers())
-                                    || (top instanceof InnerClassNode
-                                    && Modifier.isPrivate(top.getModifiers())
-                                    && !isExtended(top, top.getOuterClass().getInnerClasses()))
-                                    ) {
-                                CompareToNullExpression expr = new CompareToNullExpression(
-                                        expression, false
-                                );
-                                expr.visit(acg);
-                                return;
-                            }
-                        }
-                    }
-                }
-                super.visit(visitor);
+                os.replace(ClassHelper.boolean_TYPE);
             } else {
                 super.visit(visitor);
             }
+        }
+
+        /**
+         * Inline an "expr != null" check instead of boolean conversion iff:
+         * (1) the class doesn't define an {@code asBoolean()} method
+         * (2) no subclass defines an {@code asBoolean()} method
+         * For (2), check that we are in one of these cases:
+         *   (a) a final class
+         *   (b) an effectively-final inner class
+         */
+        private static boolean replaceAsBooleanWithCompareToNull(final ClassNode type, final ClassLoader dgmProvider) {
+            if (type.getMethod("asBoolean", Parameter.EMPTY_ARRAY) != null) {
+                // GROOVY-10711
+            } else if (Modifier.isFinal(type.getModifiers()) || isEffectivelyFinal(type.redirect())) {
+                List<MethodNode> asBoolean = findDGMMethodsByNameAndArguments(dgmProvider, type, "asBoolean", ClassNode.EMPTY_ARRAY);
+                if (asBoolean.size() == 1) {
+                    MethodNode theAsBoolean = asBoolean.get(0);
+                    if (theAsBoolean instanceof ExtensionMethodNode) {
+                        ClassNode selfType = (((ExtensionMethodNode) theAsBoolean).getExtensionMethodNode()).getParameters()[0].getType();
+                        if (ClassHelper.isObjectType(selfType)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+
+        private static boolean isEffectivelyFinal(final ClassNode type) {
+            if (!Modifier.isPrivate(type.getModifiers())) return false;
+
+            List<ClassNode> outers = type.getOuterClasses();
+            ClassNode outer = outers.get(outers.size() - 1);
+            return !isExtended(type, outer.getInnerClasses());
+        }
+
+        private static boolean isExtended(final ClassNode type, final Iterator<? extends ClassNode> inners) {
+            while (inners.hasNext()) { ClassNode next = inners.next();
+                if (next != type && next.isDerivedFrom(type))
+                    return true;
+                if (isExtended(type, next.getInnerClasses()))
+                    return true;
+            }
+            return false;
         }
     }
 }

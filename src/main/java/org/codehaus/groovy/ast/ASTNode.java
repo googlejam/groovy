@@ -46,57 +46,131 @@ public class ASTNode implements NodeMetaDataHandler {
     private int lastLineNumber = -1;
     private int lastColumnNumber = -1;
 
-    private Map<?, ?> metaDataMap;
+    private volatile Map<?, ?> metaDataMap;
 
-    public void visit(GroovyCodeVisitor visitor) {
+    /**
+     * Accepts a code visitor for AST traversal and transformation.
+     * Subclasses must implement this method to support visitor pattern-based processing.
+     * The visitor pattern enables decoupling of AST structure from processing logic.
+     *
+     * @param visitor the {@link GroovyCodeVisitor} to process this node
+     * @throws RuntimeException if visitor pattern support is not implemented for this node type
+     */
+    public void visit(final GroovyCodeVisitor visitor) {
         throw new RuntimeException("No visit() method implemented for class: " + getClass().getName());
     }
 
+    /**
+     * Returns a human-readable text representation of this AST node.
+     * Used for debugging and error messages. Default implementation returns a message
+     * indicating the representation is not yet implemented for this node type.
+     *
+     * @return text representation of this node, or placeholder for unimplemented types
+     */
     public String getText() {
-        return "<not implemented yet for class: " + getClass().getName() + ">";
+        Class<?> nodeType = getClass();
+        if (nodeType.isAnonymousClass()) nodeType = nodeType.getSuperclass();
+        return "<not implemented yet for class: " + nodeType.getName() + ">";
     }
 
+    /**
+     * Returns the line number where this AST node begins in the source file.
+     * Line numbers start from 1. Returns -1 if position information is not available
+     * (for synthetic or generated nodes).
+     *
+     * @return the starting line number, or -1 if not available
+     */
     public int getLineNumber() {
         return lineNumber;
     }
 
-    public void setLineNumber(int lineNumber) {
+    /**
+     * Sets the starting line number for this AST node in the source file.
+     * Line numbers are 1-indexed. Use -1 to indicate unavailable position.
+     *
+     * @param lineNumber the starting line number to set
+     */
+    public void setLineNumber(final int lineNumber) {
         this.lineNumber = lineNumber;
     }
 
+    /**
+     * Returns the column number where this AST node begins in the source file.
+     * Column numbers are 1-based and count Unicode code points (the lexer reads
+     * an ANTLR {@code CodePointCharStream}). Returns -1 if position information
+     * is unavailable (for synthetic or generated nodes).
+     *
+     * @return the starting column number, or -1 if not available
+     */
     public int getColumnNumber() {
         return columnNumber;
     }
 
-    public void setColumnNumber(int columnNumber) {
+    /**
+     * Sets the starting column number for this AST node in the source file.
+     * Column numbers are 1-based and count Unicode code points. Use -1 to
+     * indicate unavailable position.
+     *
+     * @param columnNumber the starting column number to set
+     */
+    public void setColumnNumber(final int columnNumber) {
         this.columnNumber = columnNumber;
     }
 
+    /**
+     * Returns the line number where this AST node ends in the source file.
+     * Line numbers start from 1. Returns -1 if position information is unavailable.
+     * The end line is inclusive (the last line of the node's span).
+     *
+     * @return the ending line number, or -1 if not available
+     */
     public int getLastLineNumber() {
         return lastLineNumber;
     }
 
-    public void setLastLineNumber(int lastLineNumber) {
+    /**
+     * Sets the ending line number for this AST node in the source file.
+     * Line numbers are 1-indexed. Use -1 to indicate unavailable position.
+     * The end line should be inclusive (the last line of the node's span).
+     *
+     * @param lastLineNumber the ending line number to set
+     */
+    public void setLastLineNumber(final int lastLineNumber) {
         this.lastLineNumber = lastLineNumber;
     }
 
+    /**
+     * Returns the column number where this AST node ends in the source file.
+     * Column numbers are 1-based and count Unicode code points. Returns -1 if
+     * position information is unavailable. The end column is exclusive (one
+     * past the last code point of the node's span).
+     *
+     * @return the ending column number, or -1 if not available
+     */
     public int getLastColumnNumber() {
         return lastColumnNumber;
     }
 
-    public void setLastColumnNumber(int lastColumnNumber) {
+    /**
+     * Sets the ending column number for this AST node in the source file.
+     * Column numbers are 1-based and count Unicode code points. Use -1 to
+     * indicate unavailable position. The end column should be exclusive
+     * (one past the last code point of the node's span).
+     *
+     * @param lastColumnNumber the ending column number to set
+     */
+    public void setLastColumnNumber(final int lastColumnNumber) {
         this.lastColumnNumber = lastColumnNumber;
     }
 
     /**
-     * Sets the source position using another ASTNode.
-     * The sourcePosition consists of a line/column pair for
-     * the start and a line/column pair for the end of the
-     * expression or statement
+     * Sets the source position information using another ASTNode as reference.
+     * Copies all position data (line/column start and end) from the source node,
+     * enabling consistent source location tracking for synthetic or transformed nodes.
      *
-     * @param node - the node used to configure the position information
+     * @param node the reference node providing position information
      */
-    public void setSourcePosition(ASTNode node) {
+    public void setSourcePosition(final ASTNode node) {
         this.lineNumber = node.getLineNumber();
         this.columnNumber = node.getColumnNumber();
         this.lastLineNumber = node.getLastLineNumber();
@@ -104,20 +178,37 @@ public class ASTNode implements NodeMetaDataHandler {
     }
 
     /**
-     * Copies all node meta data from the other node to this one
-     * @param other - the other node
+     * Copies all node metadata from another ASTNode.
+     * Metadata is arbitrary information attached by compiler phases or AST transforms
+     * for inter-phase communication. This method performs a deep metadata transfer.
+     *
+     * @param other the source node to copy metadata from
      */
-    public void copyNodeMetaData(ASTNode other) {
+    public void copyNodeMetaData(final ASTNode other) {
         copyNodeMetaData((NodeMetaDataHandler) other);
     }
 
+    /**
+     * Returns the metadata map for this node.
+     * Metadata stores arbitrary phase-specific information attached during compilation.
+     * Returns null if no metadata has been set.
+     *
+     * @return the metadata map, or null if empty
+     */
     @Override
     public Map<?, ?> getMetaDataMap() {
         return metaDataMap;
     }
 
+    /**
+     * Sets the metadata map for this node.
+     * Replaces any existing metadata. Metadata stores arbitrary phase-specific
+     * information for inter-phase communication during compilation.
+     *
+     * @param metaDataMap the metadata map to set
+     */
     @Override
-    public void setMetaDataMap(Map<?, ?> metaDataMap) {
+    public void setMetaDataMap(final Map<?, ?> metaDataMap) {
         this.metaDataMap = metaDataMap;
     }
 }

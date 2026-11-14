@@ -18,6 +18,8 @@
  */
 package org.codehaus.groovy.tools;
 
+import org.codehaus.groovy.runtime.StringGroovyMethods;
+
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
@@ -37,23 +39,13 @@ public abstract class Utilities
    /**
     *  Returns a string made up of repetitions of the specified string.
     */
-
-    public static String repeatString( String pattern, int repeats )
-    {
-        StringBuilder buffer = new StringBuilder( pattern.length() * repeats );
-        for( int i = 0; i < repeats; i++ )
-        {
-            buffer.append( pattern );
-        }
-
-        return new String( buffer );
+    public static String repeatString(String pattern, int repeats) {
+        return StringGroovyMethods.multiply(pattern, repeats);
     }
-
 
    /**
     *  Returns the end-of-line marker.
     */
-
     public static String eol()
     {
         return eol;
@@ -63,15 +55,15 @@ public abstract class Utilities
      * Tells if the given string is a valid Java identifier.
      */
     public static boolean isJavaIdentifier(String name) {
-        if (name.length() == 0 || INVALID_JAVA_IDENTIFIERS.contains(name)) return false;
+        if (name.isEmpty() || INVALID_JAVA_IDENTIFIERS.contains(name)) return false;
         char[] chars = name.toCharArray();
         if (!Character.isJavaIdentifierStart(chars[0])) return false;
         for (int i = 1; i < chars.length; i++ ) {
             if (!Character.isJavaIdentifierPart(chars[i])) return false;
         }
         return true;
-    }    
-    
+    }
+
     private static String eol = System.lineSeparator();
 
 }

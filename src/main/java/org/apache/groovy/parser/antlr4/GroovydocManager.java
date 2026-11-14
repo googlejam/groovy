@@ -30,6 +30,7 @@ import org.codehaus.groovy.ast.AnnotationNode;
 import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.expr.ConstantExpression;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.regex.Pattern;
 
@@ -44,13 +45,28 @@ import static org.codehaus.groovy.runtime.DefaultGroovyMethods.asBoolean;
  */
 public class GroovydocManager {
 
-    public static final String DOC_COMMENT = GroovydocHolder.DOC_COMMENT; // keys for meta data
+    /**
+     * Metadata key for the doc comment stored on a node. Same string as
+     * {@code GroovydocHolder.DOC_COMMENT}.
+     */
+    public static final String DOC_COMMENT = GroovydocHolder.DOC_COMMENT;
     private static final String GROOVYDOC_PREFIX = "/**";
     private static final String RUNTIME_GROOVYDOC_PREFIX = GROOVYDOC_PREFIX + "@";
     private static final String VALUE = "value";
     private static final Pattern SPACES_PATTERN = Pattern.compile("\\s+");
     private final boolean groovydocEnabled, runtimeGroovydocEnabled;
 
+    /**
+     * Stores which groovydoc attachments are active. When
+     * {@code groovydocEnabled} is true, a doc comment is stored as node
+     * metadata. When {@code runtimeGroovydocEnabled} is true, a comment
+     * that begins with the runtime prefix (a block-comment opener plus
+     * {@code @}) is also attached as a {@code Groovydoc} annotation.
+     *
+     * @param groovydocEnabled whether to keep the comment as node metadata
+     * @param runtimeGroovydocEnabled whether to attach a runtime
+     *        {@code Groovydoc} annotation
+     */
     public GroovydocManager(final boolean groovydocEnabled, final boolean runtimeGroovydocEnabled) {
         this.groovydocEnabled = groovydocEnabled;
         this.runtimeGroovydocEnabled = runtimeGroovydocEnabled;
@@ -101,7 +117,7 @@ public class GroovydocManager {
             return;
         }
 
-        if (!(node instanceof AnnotatedNode)) {
+        if (!(node instanceof AnnotatedNode annotatedNode)) {
             return;
         }
 
@@ -109,7 +125,6 @@ public class GroovydocManager {
             return;
         }
 
-        AnnotatedNode annotatedNode = (AnnotatedNode) node;
         AnnotationNode annotationNode = new AnnotationNode(ClassHelper.make(Groovydoc.class));
         annotationNode.addMember(VALUE, new ConstantExpression(docCommentNodeText));
         annotatedNode.addAnnotation(annotationNode);
@@ -150,15 +165,9 @@ public class GroovydocManager {
                 continue;
             }
 
-            if (!(child instanceof GroovyParser.NlsContext || child instanceof GroovyParser.SepContext)) {
-                continue;
-            }
-
-            // doc comments are treated as NL
-            List<? extends TerminalNode> nlList =
-                    child instanceof GroovyParser.NlsContext
-                            ? ((GroovyParser.NlsContext) child).NL()
-                            : ((GroovyParser.SepContext) child).NL();
+            // Doc comments are lexed as NL. After inlining `nls : NL*`, those
+            // tokens are direct children; `sep` still wraps mixed NL / SEMI.
+            List<? extends TerminalNode> nlList = newlineNodes(child);
 
             int nlListSize = nlList.size();
             if (0 == nlListSize) {
@@ -183,5 +192,15 @@ public class GroovydocManager {
         }
 
         throw new GroovyBugError("node can not be found: " + node.getText()); // The exception should never be thrown!
+    }
+
+    private static List<? extends TerminalNode> newlineNodes(ParseTree child) {
+        if (child instanceof GroovyParser.SepContext sepContext) {
+            return sepContext.NL();
+        }
+        if (child instanceof TerminalNode terminal && terminal.getSymbol().getType() == GroovyParser.NL) {
+            return Collections.singletonList(terminal);
+        }
+        return Collections.emptyList();
     }
 }

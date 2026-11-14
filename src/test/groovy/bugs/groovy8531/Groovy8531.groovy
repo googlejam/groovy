@@ -16,21 +16,19 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs.groovy8531
+package bugs.groovy8531
 
-import groovy.transform.CompileStatic
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 import static groovy.test.GroovyAssert.assertScript
 import static groovy.test.GroovyAssert.shouldFail
 
-@CompileStatic
 final class Groovy8531 {
 
     @Test
     void testVisibleInnerTypes() {
         assertScript '''
-            package groovy.bugs.groovy8531
+            package bugs.groovy8531
 
             class Example extends Reducer {
                 public void reduce1(PublicContext context) {}
@@ -77,39 +75,36 @@ final class Groovy8531 {
     @Test
     void testPrivateInnerType1() {
         def err = shouldFail '''
-            package groovy.bugs.groovy8531
+            package bugs.groovy8531
             class Example extends Reducer {
                 void reduce(PrivateContext context) {}
             }
         '''
-
         assert err.message.contains('unable to resolve class PrivateContext')
     }
 
     @Test
     void testPrivateInnerType2() {
         def err = shouldFail '''
-            package groovy.bugs.groovy8531
+            package bugs.groovy8531
             class Example extends Reducer {
                 void reduce(PrivateBaseContext context) {}
             }
         '''
-
         assert err.message.contains('unable to resolve class PrivateBaseContext')
     }
 
     @Test
     void testPackagePrivateInnerType() {
         def err = shouldFail '''
-            package groovy.bugs.groovy9281
+            package bugs.groovy9281
 
-            import groovy.bugs.groovy8531.Reducer
+            import bugs.groovy8531.Reducer
 
             class Example extends Reducer {
                 void reduce(PackagePrivateContext context) {}
             }
         '''
-
         assert err.message.contains('unable to resolve class PackagePrivateContext')
     }
 }

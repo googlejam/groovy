@@ -16,11 +16,16 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-import groovy.test.GroovyTestCase
+
 import groovy.transform.CompileStatic
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.assertScript
 
 @CompileStatic
-class BaseScriptSpecTest extends GroovyTestCase {
+final class BaseScriptSpecTest {
+
+    @Test
     void testSimpleScript() {
         def script = '''
 // tag::simple_script[]
@@ -33,6 +38,7 @@ assert (this instanceof Script)
         assert o instanceof Script
     }
 
+    @Test
     void testScriptWithBinding() {
         // tag::integ_binding[]
         def binding = new Binding()             // <1>
@@ -44,6 +50,7 @@ assert (this instanceof Script)
         // end::integ_binding[]
     }
 
+    @Test
     void testBaseClassThroughConfig() {
         assertScript '''import org.codehaus.groovy.control.CompilerConfiguration
             // tag::baseclass_def[]
@@ -65,6 +72,7 @@ assert (this instanceof Script)
         '''
     }
 
+    @Test
     void testBaseClassThroughBaseScript() {
         assertScript '''
             abstract class MyBaseClass extends Script {
@@ -103,7 +111,7 @@ assert (this instanceof Script)
         '''
     }
 
-
+    @Test
     void testBaseClassCustomRunMethod() {
         assertScript '''import org.codehaus.groovy.control.CompilerConfiguration
 
@@ -139,4 +147,19 @@ assert (this instanceof Script)
         '''
     }
 
+    @Test
+    void testBaseScriptJep445Example() {
+        assertScript '''import groovy.transform.BaseScript
+            // tag::jep445_example[]
+            abstract class CustomScript extends Script {
+                int getTheMeaningOfLife() { 42 }
+            }
+
+            @BaseScript(CustomScript)
+            def run() {
+                assert theMeaningOfLife == 42
+            }
+            // end::jep445_example[]
+        '''
+    }
 }

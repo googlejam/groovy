@@ -29,7 +29,6 @@ import org.codehaus.groovy.ast.expr.PropertyExpression;
 import org.codehaus.groovy.ast.expr.VariableExpression;
 import org.codehaus.groovy.ast.stmt.ReturnStatement;
 
-import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
@@ -47,20 +46,40 @@ import java.util.List;
  * @since 2.1.0
  */
 public class DefaultTypeCheckingExtension extends TypeCheckingExtension {
+
+    /** Registered delegate extensions consulted by this composite handler. */
     protected final List<TypeCheckingExtension> handlers = new LinkedList<TypeCheckingExtension>();
 
+    /**
+     * Creates the default composite type-checking extension.
+     */
     public DefaultTypeCheckingExtension(final StaticTypeCheckingVisitor typeCheckingVisitor) {
         super(typeCheckingVisitor);
     }
 
-    public void addHandler(TypeCheckingExtension handler) {
+    /**
+     * Adds a delegate handler without duplicate checks.
+     */
+    @Deprecated
+    public void addHandler$$bridge(final TypeCheckingExtension handler) {
         handlers.add(handler);
     }
 
-    public void removeHandler(TypeCheckingExtension handler) {
+    /**
+     * Adds a delegate handler if it is not already registered.
+     */
+    public boolean addHandler(final TypeCheckingExtension handler) {
+        return !handlers.contains(handler) ? handlers.add(handler) : false;
+    }
+
+    /**
+     * Removes a delegate handler.
+     */
+    public void removeHandler(final TypeCheckingExtension handler) {
         handlers.remove(handler);
     }
 
+    /** {@inheritDoc} */
     @Override
     public boolean handleUnresolvedVariableExpression(VariableExpression vexp) {
         for (TypeCheckingExtension handler : handlers) {
@@ -69,6 +88,7 @@ public class DefaultTypeCheckingExtension extends TypeCheckingExtension {
         return false;
     }
 
+    /** {@inheritDoc} */
     @Override
     public boolean handleUnresolvedProperty(final PropertyExpression pexp) {
         for (TypeCheckingExtension handler : handlers) {
@@ -77,6 +97,7 @@ public class DefaultTypeCheckingExtension extends TypeCheckingExtension {
         return false;
     }
 
+    /** {@inheritDoc} */
     @Override
     public boolean handleUnresolvedAttribute(final AttributeExpression aexp) {
         for (TypeCheckingExtension handler : handlers) {
@@ -85,6 +106,7 @@ public class DefaultTypeCheckingExtension extends TypeCheckingExtension {
         return false;
     }
 
+    /** {@inheritDoc} */
     @Override
     public boolean handleIncompatibleAssignment(final ClassNode lhsType, final ClassNode rhsType, final Expression assignmentExpression) {
         for (TypeCheckingExtension handler : handlers) {
@@ -93,6 +115,7 @@ public class DefaultTypeCheckingExtension extends TypeCheckingExtension {
         return false;
     }
 
+    /** {@inheritDoc} */
     @Override
     public boolean handleIncompatibleReturnType(ReturnStatement returnStatement, ClassNode inferredReturnType) {
         for (TypeCheckingExtension handler : handlers) {
@@ -101,6 +124,7 @@ public class DefaultTypeCheckingExtension extends TypeCheckingExtension {
         return false;
     }
 
+    /** {@inheritDoc} */
     @Override
     public List<MethodNode> handleAmbiguousMethods(final List<MethodNode> nodes, final Expression origin) {
         List<MethodNode> result = nodes;
@@ -111,6 +135,7 @@ public class DefaultTypeCheckingExtension extends TypeCheckingExtension {
         return result;
     }
 
+    /** {@inheritDoc} */
     @Override
     public List<MethodNode> handleMissingMethod(final ClassNode receiver, final String name, final ArgumentListExpression argumentList, final ClassNode[] argumentTypes, final MethodCall call) {
         List<MethodNode> result = new LinkedList<MethodNode>();
@@ -126,6 +151,7 @@ public class DefaultTypeCheckingExtension extends TypeCheckingExtension {
         return result;
     }
 
+    /** {@inheritDoc} */
     @Override
     public void afterVisitMethod(final MethodNode node) {
         for (TypeCheckingExtension handler : handlers) {
@@ -133,6 +159,7 @@ public class DefaultTypeCheckingExtension extends TypeCheckingExtension {
         }
     }
 
+    /** {@inheritDoc} */
     @Override
     public boolean beforeVisitMethod(final MethodNode node) {
         for (TypeCheckingExtension handler : handlers) {
@@ -141,6 +168,7 @@ public class DefaultTypeCheckingExtension extends TypeCheckingExtension {
         return false;
     }
 
+    /** {@inheritDoc} */
     @Override
     public void afterVisitClass(final ClassNode node) {
         for (TypeCheckingExtension handler : handlers) {
@@ -148,6 +176,7 @@ public class DefaultTypeCheckingExtension extends TypeCheckingExtension {
         }
     }
 
+    /** {@inheritDoc} */
     @Override
     public boolean beforeVisitClass(final ClassNode node) {
         for (TypeCheckingExtension handler : handlers) {
@@ -156,6 +185,7 @@ public class DefaultTypeCheckingExtension extends TypeCheckingExtension {
         return false;
     }
 
+    /** {@inheritDoc} */
     @Override
     public void afterMethodCall(final MethodCall call) {
         for (TypeCheckingExtension handler : handlers) {
@@ -164,6 +194,7 @@ public class DefaultTypeCheckingExtension extends TypeCheckingExtension {
 
     }
 
+    /** {@inheritDoc} */
     @Override
     public boolean beforeMethodCall(final MethodCall call) {
         for (TypeCheckingExtension handler : handlers) {
@@ -172,6 +203,7 @@ public class DefaultTypeCheckingExtension extends TypeCheckingExtension {
         return false;
     }
 
+    /** {@inheritDoc} */
     @Override
     public void onMethodSelection(final Expression expression, final MethodNode target) {
         for (TypeCheckingExtension handler : handlers) {
@@ -179,18 +211,19 @@ public class DefaultTypeCheckingExtension extends TypeCheckingExtension {
         }
     }
 
+    /** {@inheritDoc} */
     @Override
     public void setup() {
-        ArrayList<TypeCheckingExtension> copy = new ArrayList<TypeCheckingExtension>(handlers);
-        // we're using a copy here because new extensions can be added during the "setup" phase
-        for (TypeCheckingExtension handler : copy) {
+        // We're using a copy here because new extensions can be added during the setup phase!
+        for (TypeCheckingExtension handler : handlers.toArray(new TypeCheckingExtension[0])) {
             handler.setup();
         }
     }
 
+    /** {@inheritDoc} */
     @Override
     public void finish() {
-        for (TypeCheckingExtension handler : handlers) {
+        for (TypeCheckingExtension handler : handlers.toArray(new TypeCheckingExtension[0])) {
             handler.finish();
         }
     }

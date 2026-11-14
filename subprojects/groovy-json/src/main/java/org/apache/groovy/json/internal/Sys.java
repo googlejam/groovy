@@ -22,7 +22,31 @@ import java.math.BigDecimal;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import static java.lang.System.Logger.Level.WARNING;
+
+/**
+ * JVM version helpers used by the JSON parser internals.
+ */
 class Sys {
+
+    /**
+     * Holds the logger so that loading this class does not resolve
+     * {@code System.Logger}, a Java 9 API absent from some runtimes built on
+     * the JDK class library (Android's ART); the logger is only needed on a
+     * failure path (GROOVY-12386).
+     */
+    private static final class Log {
+        static final System.Logger LOGGER = create();
+
+        private static System.Logger create() {
+            try {
+                return System.getLogger(Sys.class.getName());
+            } catch (LinkageError | RuntimeException e) {
+                // NoSuchMethodError where the Java 9 logging API is absent; SecurityException in a sandbox
+                return null;
+            }
+        }
+    }
 
     private static final boolean is1_8OrLater;
     private static final boolean is1_7;
@@ -48,8 +72,9 @@ class Sys {
                     v = new BigDecimal("1.9");
                 }
             } catch (Exception ex) {
-                ex.printStackTrace();
-                System.err.println("Unable to determine build number or version");
+                if (Log.LOGGER != null) {
+                    Log.LOGGER.log(WARNING, "Unable to determine build number or version", ex);
+                }
             }
         } else if ("1.8.0".equals(sversion)) {
             v = new BigDecimal("1.8");
@@ -66,18 +91,38 @@ class Sys {
         is1_8 = v.compareTo(new BigDecimal("1.8")) == 0;
     }
 
+    /**
+     * Reports whether the runtime is Java 7 or later.
+     *
+     * @return always {@code true} on supported runtimes
+     */
     public static boolean is1_7OrLater() {
         return true;
     }
 
+    /**
+     * Reports whether the runtime is Java 8 or later.
+     *
+     * @return {@code true} when the detected runtime version is at least 1.8
+     */
     public static boolean is1_8OrLater() {
         return is1_8OrLater;
     }
 
+    /**
+     * Reports whether the runtime version is Java 7.
+     *
+     * @return {@code true} when the detected runtime version is 1.7
+     */
     public static boolean is1_7() {
         return is1_7;
     }
 
+    /**
+     * Reports whether the runtime version is Java 8.
+     *
+     * @return {@code true} when the detected runtime version is 1.8
+     */
     public static boolean is1_8() {
         return is1_8;
     }

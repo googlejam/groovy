@@ -31,20 +31,31 @@ import java.util.regex.Pattern;
  * @since 1.8.0
  */
 public enum JsonTokenType {
-    OPEN_CURLY      ( "an openning curly brace '{'",        "{"         ),
+    /** Opening curly brace token. */
+    OPEN_CURLY      ( "an opening curly brace '{'",        "{"         ),
+    /** Closing curly brace token. */
     CLOSE_CURLY     ( "a closing curly brace '}'",          "}"         ),
-    OPEN_BRACKET    ( "an openning square bracket '['",     "["         ),
+    /** Opening square bracket token. */
+    OPEN_BRACKET    ( "an opening square bracket '['",     "["         ),
+    /** Closing square bracket token. */
     CLOSE_BRACKET   ( "a closing square bracket ']'",       "]"         ),
+    /** Colon token. */
     COLON           ( "a colon ':'",                        ":"         ),
+    /** Comma token. */
     COMMA           ( "a comma ','",                        ","         ),
+    /** {@code null} literal token. */
     NULL            ( "the constant 'null'",                "null"      ),
+    /** {@code true} literal token. */
     TRUE            ( "the constant 'true'",                "true"      ),
+    /** {@code false} literal token. */
     FALSE           ( "the constant 'false'",               "false"     ),
+    /** Numeric literal token. */
     NUMBER          ( "a number",                           Pattern.compile("-?\\d+(\\.\\d+)?((e|E)(\\+|-)?\\d+)?")),
-    //STRING          ( "a string",                           Pattern.compile("\"([^\"\\\\]*|\\\\[\"\\\\bfnrt\\/]|\\\\u[0-9a-fA-F]{4})*\"", Pattern.DOTALL));
     /**
-     * Original pattern throws the StackOverflowError for long strings with backslashes.
-     * So it is replaced by a 2-step approach inspired from json2.js sources:
+     * String literal token.
+     * <p>
+     * Original pattern throws the {@link StackOverflowError} for long strings with backslashes.
+     * It is therefore replaced by a 2-step approach inspired by json2.js sources:
      *     https://github.com/douglascrockford/JSON-js/blob/master/json2.js#L462
      *
      * See JsonTokenTypeTest#testMatchingLongStringWithBackslashes() for details.
@@ -52,6 +63,13 @@ public enum JsonTokenType {
     STRING          ( "a string",                           new Closure(null) {
         private Pattern replacePattern = Pattern.compile("(?:\\\\[\"\\\\bfnrt\\/]|\\\\u[0-9a-fA-F]{4})");
         private Pattern validatePattern = Pattern.compile("\"[^\"\\\\]*\"");
+
+        /**
+         * Validates a candidate JSON string token.
+         *
+         * @param it the candidate token text
+         * @return {@code true} if the text is a valid JSON string token
+         */
         public boolean doCall(String it) {
             return validatePattern.matcher(replacePattern.matcher(it).replaceAll("@")).matches();
         }
@@ -108,40 +126,36 @@ public enum JsonTokenType {
      * @return the possible token type found
      */
     public static JsonTokenType startingWith(char c) {
-        switch (c) {
-            case '{': return OPEN_CURLY;
-            case '}': return CLOSE_CURLY;
-            case '[': return OPEN_BRACKET;
-            case ']': return CLOSE_BRACKET;
-            case ',': return COMMA;
-            case ':': return COLON;
-
-            case 't': return TRUE;
-            case 'f': return FALSE;
-            case 'n': return NULL;
-
-            case '"': return STRING;
-
-            case '-':
-            case '0':
-            case '1':
-            case '2':
-            case '3':
-            case '4':
-            case '5':
-            case '6':
-            case '7':
-            case '8':
-            case '9':
-                return NUMBER;
-        }
-        return null;
+        return switch (c) {
+            case '{' -> OPEN_CURLY;
+            case '}' -> CLOSE_CURLY;
+            case '[' -> OPEN_BRACKET;
+            case ']' -> CLOSE_BRACKET;
+            case ',' -> COMMA;
+            case ':' -> COLON;
+            case 't' -> TRUE;
+            case 'f' -> FALSE;
+            case 'n' -> NULL;
+            case '"' -> STRING;
+            case '-', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' -> NUMBER;
+            default -> null;
+        };
     }
 
+    /**
+     * Returns the human-readable description of this token type.
+     *
+     * @return the token label
+     */
     public String getLabel() {
         return label;
     }
 
+    /**
+     * Returns the validator used to recognize this token type.
+     *
+     * @return the token validator
+     */
     public Object getValidator() {
         return validator;
     }

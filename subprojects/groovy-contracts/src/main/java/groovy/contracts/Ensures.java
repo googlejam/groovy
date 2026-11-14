@@ -21,12 +21,14 @@ package groovy.contracts;
 import org.apache.groovy.contracts.annotations.meta.AnnotationProcessorImplementation;
 import org.apache.groovy.contracts.annotations.meta.Postcondition;
 import org.apache.groovy.contracts.common.impl.EnsuresAnnotationProcessor;
-import org.apache.groovy.lang.annotation.Incubating;
 
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
+import java.lang.annotation.Repeatable;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+import java.util.Map;
 
 /**
  * <p>
@@ -51,7 +53,7 @@ import java.lang.annotation.Target;
  * immutability.
  * </p>
  * <p>
- * <tt>old</tt> is available in every postcondition. It is a {@link java.util.Map} which holds the values
+ * <tt>old</tt> is available in every postcondition. It is a {@link Map} which holds the values
  * of value types and {@link Cloneable} types before the method has been executed.
  * </p>
  * <p>
@@ -75,12 +77,20 @@ import java.lang.annotation.Target;
  *   }
  * </pre>
  * </p>
+ *
+ * @since 4.0.0
  */
+@Documented
 @Retention(RetentionPolicy.RUNTIME)
 @Target({ElementType.CONSTRUCTOR, ElementType.METHOD})
-@Incubating
 @Postcondition
+@Repeatable(EnsuresConditions.class)
 @AnnotationProcessorImplementation(EnsuresAnnotationProcessor.class)
 public @interface Ensures {
+    /**
+     * Returns the closure class that evaluates the postcondition expression.
+     *
+     * @return the generated closure class backing the postcondition
+     */
     Class value();
 }

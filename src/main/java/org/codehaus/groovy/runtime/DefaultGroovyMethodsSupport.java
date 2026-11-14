@@ -33,7 +33,6 @@ import java.nio.charset.Charset;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Comparator;
 import java.util.Hashtable;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
@@ -71,10 +70,18 @@ import java.util.logging.Logger;
  */
 public class DefaultGroovyMethodsSupport {
 
-    private static final Logger LOG = Logger.getLogger(DefaultGroovyMethodsSupport.class.getName());
-    private static final Object[] EMPTY_OBJECT_ARRAY = new Object[0];
-
-    // helper method for getAt and putAt
+    /**
+     * Resolves {@code range} to list borders for getAt and putAt.
+     * An {@link IntRange} or {@link NumberRange} supplies its own borders.
+     * Any other range has its endpoints normalised against {@code size},
+     * and the ends are swapped when the normalised start sits past the
+     * normalised end, which is how a range written with a negative end is applied.
+     * The end border is one past the last included index.
+     *
+     * @param size length of the list being indexed
+     * @param range range to resolve
+     * @return the start index, the exclusive end index, and whether the slice runs backwards
+     */
     protected static RangeInfo subListBorders(int size, Range range) {
         if (range instanceof IntRange) {
             return ((IntRange) range).subListBorders(size);
@@ -95,18 +102,34 @@ public class DefaultGroovyMethodsSupport {
         return new RangeInfo(from, to + 1, reverse);
     }
 
-    // helper method for getAt and putAt
+    /**
+     * Resolves an empty range to list borders for getAt and putAt.
+     * Both borders are the normalised start, so the slice contains no elements.
+     *
+     * @param size length of the list being indexed
+     * @param range empty range whose start is normalised
+     * @return a forward slice whose start and exclusive end are equal
+     */
     protected static RangeInfo subListBorders(int size, EmptyRange range) {
         int from = normaliseIndex(DefaultTypeTransformation.intUnbox(range.getFrom()), size);
         return new RangeInfo(from, from, false);
     }
 
-    // Helper method for primitive array getAt
+    /**
+     * Rebuilds an {@link IntRange} from borders that were prepared for a
+     * sub-list. The exclusive end in {@code info} becomes an inclusive end,
+     * an exclusive bound is stepped back to the original endpoint, and the
+     * inclusive ends are swapped when {@code info} runs backwards.
+     *
+     * @param info borders previously computed for {@code range}
+     * @param range original range, whose inclusive ends are restored
+     * @return an inclusive-aware range covering the same indexes
+     */
     protected static IntRange subListRange(RangeInfo info, IntRange range) {
         int from = info.from;
         int to = info.to - 1;
 
-        // Undo inclusiveness effects done by subListBorders()
+        // undo inclusiveness effects done by subListBorders()
         if (!info.reverse) {
             if (Boolean.FALSE.equals(range.getInclusiveLeft())) {
                 from--;
@@ -130,8 +153,10 @@ public class DefaultGroovyMethodsSupport {
     }
 
     /**
-     * This converts a possibly negative index to a real index into the array.
+     * Converts a possibly negative index to a real index into the array.
      *
+     * Throws {@code ArrayIndexOutOfBoundsException} when {@code i} is negative and its magnitude
+     * exceeds {@code size}.
      * @param i    the unnormalized index
      * @param size the array size
      * @return the normalised index
@@ -172,7 +197,8 @@ public class DefaultGroovyMethodsSupport {
             } catch (Exception e) {
                 thrown = e;
                 if (logWarning) {
-                    LOG.warning("Caught exception during close(): " + e);
+                    String name = DefaultGroovyMethodsSupport.class.getName();
+                    Logger.getLogger(name).warning("Caught exception during close(): " + e);
                 }
             }
         }
@@ -180,7 +206,7 @@ public class DefaultGroovyMethodsSupport {
     }
 
     /**
-     * Close the Closeable. Ignore any problems that might occur.
+     * Closes the Closeable, ignoring any problems that might occur.
      *
      * @param c the thing to close
      */
@@ -188,53 +214,118 @@ public class DefaultGroovyMethodsSupport {
         if (c != null) {
             try {
                 c.close();
-            } catch (IOException e) {
-                /* ignore */
+            } catch (IOException ignore) {
             }
         }
     }
 
-    @SuppressWarnings("unchecked")
-    protected static <T> Collection<T> cloneSimilarCollection(Collection<T> orig, int newCapacity) {
-        Collection<T> answer = (Collection<T>) cloneObject(orig);
-        if (answer != null) return answer;
+    //--------------------------------------------------------------------------
 
-        // fall back to creation
-        answer = createSimilarCollection(orig, newCapacity);
-        answer.addAll(orig);
-        return answer;
+    /**
+     * Copies {@code orig}. When {@code orig} implements {@link Cloneable},
+     * the copy is the result of calling {@code clone} and {@code newCapacity}
+     * is ignored. Otherwise an empty collection of a similar concrete type
+     * is created with room for {@code newCapacity} elements, then filled
+     * from {@code orig}.
+     *
+     * @param <T> element type
+     * @param orig collection to copy
+     * @param newCapacity capacity of the replacement when {@code orig} cannot be cloned
+     * @return a copy of {@code orig}
+     */
+    protected static <T> Collection<T> cloneSimilarCollection(Collection<T> orig, int newCapacity) {
+        var copy = maybeClone(orig);
+        if (copy == null) {
+            copy = createSimilarCollection(orig, newCapacity);
+            copy.addAll(orig);
+        }
+        return copy;
     }
 
-    private static Object cloneObject(Object orig) {
-        if (orig instanceof Cloneable) {
-            try {
-                return InvokerHelper.invokeMethod(orig, "clone", EMPTY_OBJECT_ARRAY);
-            } catch (Exception ex) {
-                // ignore
-            }
+    /**
+     * Copies {@code orig}. When {@code orig} implements {@link Cloneable},
+     * the copy is the result of calling {@code clone}. Otherwise an empty
+     * map of a similar concrete type is created and filled from {@code orig}.
+     *
+     * @param <K> key type
+     * @param <V> value type
+     * @param orig map to copy
+     * @return a copy of {@code orig}
+     */
+    protected static <K, V> Map<K ,V> cloneSimilarMap(Map<K, V> orig) {
+        var copy = maybeClone(orig);
+        if (copy == null) {
+            copy = createSimilarMap(orig);
+            copy.putAll(orig);
+        }
+        return copy;
+    }
+
+    private static <T> T maybeClone(T object) {
+        if (object instanceof Cloneable) {
+            @SuppressWarnings("unchecked")
+            T copy = (T) InvokerHelper.invokeMethod(object, "clone", null);
+            return copy;
         }
         return null;
     }
 
+    /**
+     * Builds an empty collection whose concrete type matches {@code object}
+     * when {@code object} is a {@link Collection}. Any other value,
+     * including null, yields a new {@link ArrayList}.
+     *
+     * @param object collection to imitate, or any other value
+     * @return an empty collection of a similar type, or an {@link ArrayList}
+     */
     protected static Collection createSimilarOrDefaultCollection(Object object) {
         if (object instanceof Collection) {
             return createSimilarCollection((Collection<?>) object);
         }
-        return new ArrayList();
+        return new ArrayList<>();
     }
 
+    /**
+     * Builds an empty collection whose concrete type matches {@code iterable}
+     * when it is a {@link Collection}. Any other iterable yields a new
+     * {@link ArrayList}. Elements of {@code iterable} are not copied.
+     *
+     * @param <T> element type
+     * @param iterable source of the concrete collection type
+     * @return an empty collection of a similar type
+     */
     protected static <T> Collection<T> createSimilarCollection(Iterable<T> iterable) {
         if (iterable instanceof Collection) {
             return createSimilarCollection((Collection<T>) iterable);
         } else {
-            return new ArrayList<T>();
+            return new ArrayList<>();
         }
     }
 
+    /**
+     * Builds an empty collection of the same kind as {@code collection},
+     * using {@code collection.size()} as the capacity where the kind
+     * accepts one.
+     *
+     * @param <T> element type
+     * @param collection collection to imitate
+     * @return an empty collection of a similar type
+     */
     protected static <T> Collection<T> createSimilarCollection(Collection<T> collection) {
         return createSimilarCollection(collection, collection.size());
     }
 
+    /**
+     * Builds an empty collection of the same kind as {@code orig}.
+     * A set, list, or queue keeps that kind. Anything else becomes an
+     * {@link ArrayList} with capacity {@code newCapacity}. The capacity
+     * is not applied to a set or a queue.
+     *
+     * @param <T> element type
+     * @param orig collection to imitate
+     * @param newCapacity initial capacity of a list that is not one of the preserved list classes
+     * @return an empty collection of a similar type
+     */
     protected static <T> Collection<T> createSimilarCollection(Collection<T> orig, int newCapacity) {
         if (orig instanceof Set) {
             return createSimilarSet((Set<T>) orig);
@@ -245,159 +336,185 @@ public class DefaultGroovyMethodsSupport {
         if (orig instanceof Queue) {
             return createSimilarQueue((Queue<T>) orig);
         }
-        return new ArrayList<T>(newCapacity);
+        return new ArrayList<>(newCapacity);
     }
 
+    /**
+     * Builds an empty list of the same kind as {@code orig}.
+     * {@link LinkedList}, {@link Stack}, {@link Vector}, and
+     * {@link CopyOnWriteArrayList} are preserved. Any other list becomes
+     * an {@link ArrayList} with capacity {@code newCapacity}.
+     *
+     * @param <T> element type
+     * @param orig list to imitate
+     * @param newCapacity initial capacity when the result is an {@link ArrayList}
+     * @return an empty list of a similar type
+     */
     protected static <T> List<T> createSimilarList(List<T> orig, int newCapacity) {
-        if (orig instanceof LinkedList)
-            return new LinkedList<T>();
-
-        if (orig instanceof Stack)
-            return new Stack<T>();
-
-        if (orig instanceof Vector)
-            return new Vector<T>();
-
-        if (orig instanceof CopyOnWriteArrayList)
-            return new CopyOnWriteArrayList<T>();
-
-        return new ArrayList<T>(newCapacity);
+        if (orig instanceof LinkedList) {
+            return new LinkedList<>();
+        }
+        if (orig instanceof Stack) {
+            return new Stack<>();
+        }
+        if (orig instanceof Vector) {
+            return new Vector<>();
+        }
+        if (orig instanceof CopyOnWriteArrayList) {
+            return new CopyOnWriteArrayList<>();
+        }
+        return new ArrayList<>(newCapacity);
     }
 
+    /**
+     * Allocates an array with the component type of {@code orig} and
+     * length {@code newCapacity}. Elements of {@code orig} are not copied.
+     * An {@code Object[]} source produces an {@code Object[]} result
+     * rather than a reflective array of {@code Object}.
+     *
+     * @param <T> component type
+     * @param orig array whose component type is reused
+     * @param newCapacity length of the allocated array
+     * @return a new array of length {@code newCapacity}
+     */
     @SuppressWarnings("unchecked")
-    protected static <T> T[] createSimilarArray(T[] orig, int newCapacity) {
-        Class<T> componentType = (Class<T>) orig.getClass().getComponentType();
-        return (T[]) Array.newInstance(componentType, newCapacity);
+    protected static <T> T[] createSimilarArray(final T[] orig, final int newCapacity) {
+        Class<?> type = orig.getClass();
+        if (type == Object[].class) return (T[]) new Object[newCapacity];
+        return (T[]) Array.newInstance(type.getComponentType(), newCapacity);
     }
 
-    @SuppressWarnings("unchecked")
+    /**
+     * Builds an empty set of the same kind as {@code orig}. A sorted set
+     * keeps its comparator: a {@link ConcurrentSkipListSet} stays that
+     * class, and any other {@link SortedSet} becomes a {@link TreeSet}.
+     * A {@link CopyOnWriteArraySet} is preserved. Any other set becomes
+     * a {@link LinkedHashSet}, so insertion order is kept.
+     *
+     * @param <T> element type
+     * @param orig set to imitate
+     * @return an empty set of a similar type
+     */
     protected static <T> Set<T> createSimilarSet(Set<T> orig) {
         if (orig instanceof SortedSet) {
-            Comparator comparator = ((SortedSet) orig).comparator();
+            var comparator = ((SortedSet<T>)orig).comparator();
             if (orig instanceof ConcurrentSkipListSet) {
-                return new ConcurrentSkipListSet<T>(comparator);
+                return new ConcurrentSkipListSet<>(comparator);
             } else {
-                return new TreeSet<T>(comparator);
+                return new TreeSet<>(comparator);
             }
         } else {
             if (orig instanceof CopyOnWriteArraySet) {
-                return new CopyOnWriteArraySet<T>();
+                return new CopyOnWriteArraySet<>();
             } else {
-                // Do not use HashSet
-                return new LinkedHashSet<T>();
-            }
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    protected static <T> Queue<T> createSimilarQueue(Queue<T> orig) {
-        if (orig instanceof ArrayBlockingQueue) {
-            ArrayBlockingQueue queue = (ArrayBlockingQueue) orig;
-            return new ArrayBlockingQueue<T>(queue.size() + queue.remainingCapacity());
-        } else if (orig instanceof ArrayDeque) {
-            return new ArrayDeque<T>();
-        } else if (orig instanceof ConcurrentLinkedQueue) {
-            return new ConcurrentLinkedQueue<T>();
-        } else if (orig instanceof DelayQueue) {
-            return new DelayQueue();
-        } else if (orig instanceof LinkedBlockingDeque) {
-            return new LinkedBlockingDeque<T>();
-        } else if (orig instanceof LinkedBlockingQueue) {
-            return new LinkedBlockingQueue<T>();
-        } else if (orig instanceof PriorityBlockingQueue) {
-            return new PriorityBlockingQueue<T>();
-        } else if (orig instanceof PriorityQueue) {
-            return new PriorityQueue<T>(11, ((PriorityQueue) orig).comparator());
-        } else if (orig instanceof SynchronousQueue) {
-            return new SynchronousQueue<T>();
-        } else {
-            return new LinkedList<T>();
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    protected static <K, V> Map<K, V> createSimilarMap(Map<K, V> orig) {
-        if (orig instanceof SortedMap) {
-            Comparator comparator = ((SortedMap) orig).comparator();
-            if (orig instanceof ConcurrentSkipListMap) {
-                return new ConcurrentSkipListMap<K, V>(comparator);
-            } else {
-                return new TreeMap<K, V>(comparator);
-            }
-        } else {
-            if (orig instanceof ConcurrentHashMap) {
-                return new ConcurrentHashMap<K, V>();
-            } else if (orig instanceof Hashtable) {
-                if (orig instanceof Properties) {
-                    return (Map<K, V>) new Properties();
-                } else {
-                    return new Hashtable<K, V>();
-                }
-            } else if (orig instanceof IdentityHashMap) {
-                return new IdentityHashMap<K, V>();
-            } else if (orig instanceof WeakHashMap) {
-                return new WeakHashMap<K, V>();
-            } else {
-                // Do not use HashMap
-                return new LinkedHashMap<K, V>();
-            }
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    protected static <K, V> Map<K ,V> cloneSimilarMap(Map<K, V> orig) {
-        Map<K, V> answer = (Map<K, V>) cloneObject(orig);
-        if (answer != null) return answer;
-
-        // fall back to some defaults
-        if (orig instanceof SortedMap) {
-            if (orig instanceof ConcurrentSkipListMap) {
-                return new ConcurrentSkipListMap<K, V>(orig);
-            } else {
-                return new TreeMap<K, V>(orig);
-            }
-        } else {
-            if (orig instanceof ConcurrentHashMap) {
-                return new ConcurrentHashMap<K, V>(orig);
-            } else if (orig instanceof Hashtable) {
-                if (orig instanceof Properties) {
-                    Map<K, V> map = (Map<K, V>) new Properties();
-                    map.putAll(orig);
-                    return map;
-                } else {
-                    return new Hashtable<K, V>(orig);
-                }
-            } else if (orig instanceof IdentityHashMap) {
-                return new IdentityHashMap<K, V>(orig);
-            } else if (orig instanceof WeakHashMap) {
-                return new WeakHashMap<K, V>(orig);
-            } else {
-                // Do not use HashMap
-                return new LinkedHashMap<K, V>(orig);
+                return new LinkedHashSet<>(); // not HashSet
             }
         }
     }
 
     /**
-     * Determines if all items of this array are of the same type.
+     * Builds an empty queue of the same kind as {@code orig}.
+     * An {@link ArrayBlockingQueue} is recreated with its original
+     * capacity, the sum of its size and remaining capacity. A
+     * {@link PriorityQueue} keeps its comparator. {@link ArrayDeque},
+     * {@link ConcurrentLinkedQueue}, {@link DelayQueue},
+     * {@link LinkedBlockingDeque}, {@link LinkedBlockingQueue},
+     * {@link PriorityBlockingQueue}, and {@link SynchronousQueue} are
+     * each recreated as the same class. Any other queue becomes a
+     * {@link LinkedList}.
+     *
+     * @param <T> element type
+     * @param orig queue to imitate
+     * @return an empty queue of a similar type
+     */
+    protected static <T> Queue<T> createSimilarQueue(Queue<T> orig) {
+        if (orig instanceof ArrayBlockingQueue<T> queue) {
+            return new ArrayBlockingQueue<>(queue.size() + queue.remainingCapacity());
+        } else if (orig instanceof ArrayDeque) {
+            return new ArrayDeque<>();
+        } else if (orig instanceof ConcurrentLinkedQueue) {
+            return new ConcurrentLinkedQueue<>();
+        } else if (orig instanceof DelayQueue) {
+            return new DelayQueue(); // T extends Delayed
+        } else if (orig instanceof LinkedBlockingDeque) {
+            return new LinkedBlockingDeque<>();
+        } else if (orig instanceof LinkedBlockingQueue) {
+            return new LinkedBlockingQueue<>();
+        } else if (orig instanceof PriorityBlockingQueue) {
+            return new PriorityBlockingQueue<>();
+        } else if (orig instanceof PriorityQueue) {
+            return new PriorityQueue<>(11, ((PriorityQueue<T>) orig).comparator());
+        } else if (orig instanceof SynchronousQueue) {
+            return new SynchronousQueue<>();
+        } else {
+            return new LinkedList<>();
+        }
+    }
+
+    /**
+     * Builds an empty map of the same kind as {@code orig}. A sorted map
+     * keeps its comparator: a {@link ConcurrentSkipListMap} stays that
+     * class, and any other {@link SortedMap} becomes a {@link TreeMap}.
+     * {@link ConcurrentHashMap}, {@link Hashtable}, {@link Properties},
+     * {@link IdentityHashMap}, and {@link WeakHashMap} are preserved.
+     * Any other map becomes a {@link LinkedHashMap}, so insertion order
+     * is kept.
+     *
+     * @param <K> key type
+     * @param <V> value type
+     * @param orig map to imitate
+     * @return an empty map of a similar type
+     */
+    protected static <K, V> Map<K, V> createSimilarMap(Map<K, V> orig) {
+        if (orig instanceof SortedMap) {
+            var comparator = ((SortedMap<K,V>)orig).comparator();
+            if (orig instanceof ConcurrentSkipListMap) {
+                return new ConcurrentSkipListMap<>(comparator);
+            } else {
+                return new TreeMap<>(comparator);
+            }
+        } else {
+            if (orig instanceof ConcurrentHashMap) {
+                return new ConcurrentHashMap<>();
+            } else if (orig instanceof Hashtable) {
+                if (orig instanceof Properties) {
+                    @SuppressWarnings("unchecked") // safe?
+                    var props = (Map<K,V>)new Properties();
+                    return props;
+                } else {
+                    return new Hashtable<>();
+                }
+            } else if (orig instanceof IdentityHashMap) {
+                return new IdentityHashMap<>();
+            } else if (orig instanceof WeakHashMap) {
+                return new WeakHashMap<>();
+            } else {
+                return new LinkedHashMap<>(); // not HashMap
+            }
+        }
+    }
+
+    //--------------------------------------------------------------------------
+
+    /**
+     * Determines if all items of given array are of the same type.
      *
      * @param cols an array of collections
      * @return true if the collections are all of the same type
      */
-    @SuppressWarnings("unchecked")
     protected static boolean sameType(Collection[] cols) {
-        List all = new LinkedList();
-        for (Collection col : cols) {
+        List<Object> all = new ArrayList<>(cols.length*8);
+        for (Collection<?> col : cols) {
             all.addAll(col);
         }
-        if (all.isEmpty())
+        if (all.isEmpty()) {
             return true;
+        }
 
         Object first = all.get(0);
-
-        //trying to determine the base class of the collections
-        //special case for Numbers
-        Class baseClass;
+        // trying to determine the base class of the collections
+        // special case for Numbers
+        Class<?> baseClass;
         if (first instanceof Number) {
             baseClass = Number.class;
         } else if (first == null) {
@@ -406,7 +523,7 @@ public class DefaultGroovyMethodsSupport {
             baseClass = first.getClass();
         }
 
-        for (Collection col : cols) {
+        for (Collection<?> col : cols) {
             for (Object o : col) {
                 if (!baseClass.isInstance(o)) {
                     return false;
@@ -416,10 +533,64 @@ public class DefaultGroovyMethodsSupport {
         return true;
     }
 
+    /**
+     * Reports whether the elements of {@code iters} fit one type.
+     * The type is taken from the first element. When that element is a
+     * {@link Number}, later numbers of any numeric class are accepted.
+     * No elements counts as one type.
+     *
+     * @param iters iterables whose elements are compared
+     * @return {@code true} when every element fits the type of the first element
+     */
+    protected static boolean sameType(Iterable[] iters) {
+        Object first;
+        Class<?> baseClass = null;
+
+        for (var iter : iters) {
+            for (Object o : iter) {
+                if (baseClass == null) {
+                    first = o;
+                    if (first instanceof Number) {
+                        baseClass = Number.class;
+                    } else if (first == null) {
+                        baseClass = NullObject.class;
+                    } else {
+                        baseClass = first.getClass();
+                    }
+                } else {
+                    if (!baseClass.isInstance(o)) {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Writes a UTF-16 byte-order mark to {@code writer} when {@code charset}
+     * names {@code UTF-16BE} or {@code UTF-16LE}. Any other charset name
+     * writes nothing. The name is resolved with {@link Charset#forName(String)}.
+     * An illegal name or an unsupported charset fails in that call.
+     *
+     * @param writer destination for the mark
+     * @param charset charset name to test
+     * @throws IOException when writing the mark fails
+     */
     protected static void writeUTF16BomIfRequired(final Writer writer, final String charset) throws IOException {
         writeUTF16BomIfRequired(writer, Charset.forName(charset));
     }
 
+    /**
+     * Writes a UTF-16 byte-order mark to {@code writer} when the canonical
+     * name of {@code charset} is {@code UTF-16BE} or {@code UTF-16LE}.
+     * Any other charset writes nothing.
+     *
+     * @param writer destination for the mark
+     * @param charset charset whose canonical name is tested
+     * @throws IOException when writing the mark fails
+     */
     protected static void writeUTF16BomIfRequired(final Writer writer, final Charset charset) throws IOException {
         if ("UTF-16BE".equals(charset.name())) {
             writeUtf16Bom(writer, true);
@@ -428,10 +599,30 @@ public class DefaultGroovyMethodsSupport {
         }
     }
 
+    /**
+     * Writes a UTF-16 byte-order mark to {@code stream} when {@code charset}
+     * names {@code UTF-16BE} or {@code UTF-16LE}. Any other charset name
+     * writes nothing. The name is resolved with {@link Charset#forName(String)}.
+     * An illegal name or an unsupported charset fails in that call.
+     *
+     * @param stream destination for the mark
+     * @param charset charset name to test
+     * @throws IOException when writing the mark fails
+     */
     protected static void writeUTF16BomIfRequired(final OutputStream stream, final String charset) throws IOException {
         writeUTF16BomIfRequired(stream, Charset.forName(charset));
     }
 
+    /**
+     * Writes a UTF-16 byte-order mark to {@code stream} when the canonical
+     * name of {@code charset} is {@code UTF-16BE} or {@code UTF-16LE}.
+     * Big-endian writes {@code FE FF}; little-endian writes {@code FF FE}.
+     * Any other charset writes nothing.
+     *
+     * @param stream destination for the mark
+     * @param charset charset whose canonical name is tested
+     * @throws IOException when writing the mark fails
+     */
     protected static void writeUTF16BomIfRequired(final OutputStream stream, final Charset charset) throws IOException {
         if ("UTF-16BE".equals(charset.name())) {
             writeUtf16Bom(stream, true);

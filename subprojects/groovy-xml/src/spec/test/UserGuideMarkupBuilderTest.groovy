@@ -18,14 +18,15 @@
  */
 package groovy.xml
 
-import groovy.test.GroovyTestCase
 import org.apache.groovy.xml.tools.DomToGroovy
+import org.junit.jupiter.api.Test
 
 /**
  * Tests for the Groovy Xml user guide related to MarkupBuilderTest.
  */
-class UserGuideMarkupBuilderTest extends GroovyTestCase {
+class UserGuideMarkupBuilderTest {
 
+    @Test
     void createCarsTest() {
         // tag::createCarsTest[]
         def writer = new StringWriter()
@@ -44,11 +45,12 @@ class UserGuideMarkupBuilderTest extends GroovyTestCase {
 
         def records = new XmlSlurper().parseText(writer.toString()) // <3>
 
-        assert records.car.first().name.text() == 'HSV Maloo'
-        assert records.car.last().name.text() == 'Royale'
+        assert records.car.first().@name == 'HSV Maloo'
+        assert records.car.last().@name == 'Royale'
         // end::createCarsTest[]
     }
 
+    @Test
     void testCreateSimpleXml1() {
         // tag::testCreateSimpleXml1[]
         def xmlString = "<movie>the godfather</movie>" // <1>
@@ -63,6 +65,7 @@ class UserGuideMarkupBuilderTest extends GroovyTestCase {
     }
 
 
+    @Test
     void testCreateSimpleXml2() {
         // tag::testCreateSimpleXml2[]
         def xmlString = "<movie id='2'>the godfather</movie>"
@@ -76,6 +79,7 @@ class UserGuideMarkupBuilderTest extends GroovyTestCase {
         // end::testCreateSimpleXml2[]
     }
 
+    @Test
     void testCreateSimpleXml3() {
         // tag::testCreateSimpleXml3[]
         def xmlWriter = new StringWriter()
@@ -92,6 +96,7 @@ class UserGuideMarkupBuilderTest extends GroovyTestCase {
         // end::testCreateSimpleXml3[]
     }
 
+    @Test
     void testNamespaceAware() {
         // tag::testNamespaceAware[]
         def xmlWriter = new StringWriter()
@@ -113,6 +118,7 @@ class UserGuideMarkupBuilderTest extends GroovyTestCase {
         // end::testNamespaceAware[]
     }
 
+    @Test
     void testComplexUse1() {
         // tag::testComplexUse1[]
         def xmlWriter = new StringWriter()
@@ -138,6 +144,7 @@ class UserGuideMarkupBuilderTest extends GroovyTestCase {
         // end::testComplexUse1[]
     }
 
+    @Test
     void testComplexUse2() {
         // tag::testComplexUse2[]
         def xmlWriter = new StringWriter()
@@ -169,6 +176,7 @@ class UserGuideMarkupBuilderTest extends GroovyTestCase {
         // end::testComplexUse2[]
     }
 
+    @Test
     void testDOMToGroovy() {
         // tag::testDOMToGroovy[]
         def songs = """
@@ -204,6 +212,7 @@ class UserGuideMarkupBuilderTest extends GroovyTestCase {
         // end::testDOMToGroovy[]
     }
 
+    @Test
     void testMkp1() {
         // tag::testMkp1[]
         def xmlWriter = new StringWriter()

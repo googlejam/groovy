@@ -55,7 +55,7 @@ include::../test/IntegrationTest.groovy[tags=eval_x,indent=0]
 <4> Simple evaluation with three bound parameters named `x`, `y` and `z`
 
 The `Eval` class makes it very easy to evaluate simple scripts, but doesn't scale: there is no caching of the script, and
-it isn't meant to evaluate more than one liners.
+it isn't meant to evaluate more than one-liners.
 
 [[integ-groovyshell]]
 === GroovyShell
@@ -217,7 +217,7 @@ creating multiple classes at runtime for the same source.
 === GroovyScriptEngine
 
 The `groovy.util.GroovyScriptEngine` class provides a flexible foundation for applications which rely on script
-reloading and script dependencies. While `GroovyShell` focuses on standalone `Script`s and `GroovyClassLoader` handles
+reloading and script dependencies. While `GroovyShell` focuses on standalone ``Script``s and `GroovyClassLoader` handles
 dynamic compilation and loading of any Groovy class, the `GroovyScriptEngine` will add a layer on top of `GroovyClassLoader`
 to handle both script dependencies and reloading.
 
@@ -274,7 +274,7 @@ But it is also possible to have a dependency on another script. To illustrate th
 the same directory, without interrupting the executing script:
 
 [source,groovy]
-.Depencency.groovy
+.Dependency.groovy
 ----
 include::../test-resources/reloading/dependency1.groovy[tags=dependency,indent=0]
 ----
@@ -300,7 +300,7 @@ Hello, dependency 1!
 And as a last test, you can update the `Dependency.groovy` file without touching the `ReloadingTest` file:
 
 [source,groovy]
-.Depencency.groovy
+.Dependency.groovy
 ----
 include::../test-resources/reloading/dependency2.groovy[tags=dependency,indent=0]
 ----
@@ -314,6 +314,61 @@ Hello, dependency 2!
 Hello, dependency 2!
 ----
 
+[[integ-javashell]]
+=== JavaShell
+
+While `GroovyShell` and `GroovyClassLoader` compile Groovy source, `org.apache.groovy.util.JavaShell`
+compiles _Java_ source in-memory using the platform `javax.tools.JavaCompiler`. It is useful when a
+Groovy or polyglot application needs to compile and load Java classes at runtime: code generation,
+plug-in loaders, scripting-style Java endpoints, or mixed-language testing setups.
+
+NOTE: `JavaShell` requires a JDK at runtime, not just a JRE — `ToolProvider.getSystemJavaCompiler()`
+returns `null` on a JRE.
+
+The simplest usage compiles a single source string and returns the loaded `Class`:
+
+[source,groovy]
+----
+include::../test/IntegrationTest.groovy[tags=javashell_compile,indent=0]
+----
+<1> create a new `JavaShell` (an optional `ClassLoader` argument sets the parent loader)
+<2> compile the source; `className` is the fully-qualified binary name and must match the
+    `package` declaration — see the `JavaShell` javadoc for the full naming rules
+<3> invoke the compiled method reflectively
+
+`compileAll` returns _every_ class produced from the source unit — useful when the source declares
+auxiliary or nested classes:
+
+[source,groovy]
+----
+include::../test/IntegrationTest.groovy[tags=javashell_compile_all,indent=0]
+----
+<1> compile a primary public class together with its package-private helper
+<2> the returned map is keyed by binary class name
+
+To additionally persist the generated class files to disk (for tools that consume `.class` files
+or to seed a classpath outside the JVM), use `compileAllTo`. It accepts a `Path` output directory
+and writes each class to its conventional package subdirectory:
+
+[source,groovy]
+----
+include::../test/IntegrationTest.groovy[tags=javashell_compile_all_to,indent=0]
+----
+<1> compile and write to disk in one call; the second argument passes `javac` options (here
+    `-parameters` to retain formal parameter names)
+<2> packaged classes land under `<outputDir>/<package as path>/<ClassName>.class`; default-package
+    classes land directly under `outputDir`
+
+The compiled classes remain available through `js.getClassLoader()` after `compileAllTo` returns,
+so the same instance covers both "compile to memory" and "compile to memory and disk".
+
+When the source fails to compile, `JavaShell` throws `JavaShellCompilationException` carrying the
+`javac` diagnostics. See the `JavaShell` javadoc for the full set of overloads (with/without an
+`Iterable<String>` options argument) and the expected `className`/`options` formats.
+
+NOTE: `compileAllTo` and its no-options overload are marked `@Incubating` — their signatures may
+evolve in a subsequent 6.x release based on usage feedback.
+
 === CompilationUnit
 
 Ultimately, it is possible to perform more operations during compilation by relying directly on the
@@ -322,6 +377,62 @@ compilation and would let you introduce new steps or even stop compilation at va
 stub generation is done, for the joint compiler.
 
 However, overriding `CompilationUnit` is not recommended and should only be done if no other standard solution works.
+
+== Class loader release in managed environments
+
+Applications that load and discard Groovy repeatedly — a web container performing (parallel)
+redeployments with Groovy inside each web application, plugin systems, or any host that expects
+class loaders to be garbage collected — need one extra consideration.
+
+Groovy associates runtime metadata (`ClassInfo`) with every class it dispatches on, including
+JDK classes such as `String`. By default those associations use `java.lang.ClassValue`, which
+gives the fastest possible lookup. A `ClassValue` association lives exactly as long as the key
+class does — by design (see
+https://bugs.openjdk.org/browse/JDK-8136353[JDK-8136353], resolved as working as intended) —
+so an association on a long-lived class such as `String` never releases its value, and with it
+holds the Groovy class loader the value belongs to. In a container this shows up as metaspace
+growth on every redeployment, even after the old application is undeployed.
+
+Three supported measures release the class loader; any one suffices:
+
+* Start the JVM with `-Dgroovy.use.classvalue=soft`. Groovy keeps the `ClassValue` per-class
+  fast path but holds each association through a `SoftReference`, so immortal JDK classes no
+  longer hold a strong chain to the Groovy class loader. Metadata carrying state that cannot
+  be rebuilt — an installed or per-instance metaclass, registry-written extension methods —
+  is strong-rooted while in use, and associations cleared under memory pressure are rebuilt
+  on demand, with call-site guards remaining sound for `invokedynamic` and classic call sites
+  alike. This preserves default-mode dispatch performance while letting the collector reclaim
+  the loader.
+* Start the JVM with `-Dgroovy.use.classvalue=false`. Groovy then stores the associations in a
+  weak-key map instead of `ClassValue`. The trade-off is a hash lookup where `ClassValue` has a
+  per-class fast path. Compilation speed is unaffected (within 1% in our measurements), and for
+  applications that are not dispatch-heavy the difference is unlikely to be noticed; heavily
+  dynamic code, however, can see a few percent overall, with hot dynamic idioms on JDK-class
+  receivers (string coercions, ranges, safe navigation, map property access) up to roughly
+  1.4 times slower. Measure with your own workload if dispatch performance matters.
+* Clean up explicitly when the application is discarded (for example from
+  `ServletContextListener#contextDestroyed`), as the last thing that copy of Groovy runs. Write
+  the cleanup in Java or in statically compiled Groovy: a dynamic call made after the first
+  removal, including one made by the cleanup loop itself, can associate a class again.
++
+[source,groovy]
+----
+import groovy.transform.CompileStatic
+import org.codehaus.groovy.reflection.ClassInfo
+
+@CompileStatic
+static void releaseGroovy() {
+    for (ClassInfo ci : ClassInfo.getAllClassInfo()) {
+        Class<?> c = ci.getTheClass()
+        if (c != null) ClassInfo.remove(c)
+    }
+}
+----
+
+NOTE: Groovy itself starts no non-terminating background threads, so no thread of Groovy's will
+pin the class loader. Threads started by user code (including via `Thread.start` from scripts, or
+executors created by scripts) capture the creating context and must be shut down by the
+application as usual.
 
 include::../../../subprojects/groovy-jsr223/src/spec/doc/_integrating-jsr223.adoc[leveloffset=+1]
 

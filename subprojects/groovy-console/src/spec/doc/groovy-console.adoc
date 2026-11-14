@@ -64,9 +64,9 @@ The Groovy Swing Console allows a user to enter and run Groovy scripts.
                                argument
   -D, --define=<name=value>  Define a system property
   -h, --help                 Display this help message
-  -pa, --parameters          Generate metadata for reflection on method parameter
-                               names (jdk8+ only)
-  -pr, --enable-preview             Enable preview Java features (JEP 12) (jdk12+ only)
+  -pa, --parameters          Generate metadata for reflection on method parameter names
+  -pr, --enable-preview      Enable preview Java features - must
+                               be after classpath but before other arguments
   -V, --version              Display the version
 -----------------------------------------------------------------
 
@@ -83,6 +83,23 @@ executed.
 * You can turn the System.out capture on and off by selecting `Capture
 System.out` from the `Actions` menu
 
+[[GroovyConsole-RunningAsJava]]
+=== Running and compiling as Java
+
+The console can also treat the editor contents as Java source rather than Groovy:
+
+* `Script > Run as Java` (shortcut `Alt+R`) compiles the input as Java and invokes its `main`
+  method, with any program arguments taken from `Script > Set Script Arguments`.
+* `Script > Run Selection as Java` does the same for just the highlighted text.
+* `Script > Compile as Java` compiles the input without running it — useful as a quick syntax
+  check.
+
+The source must declare a single top-level public class whose name matches a fully-qualified
+binary name in any `package` declaration; the console parses the source to locate that class
+and reports if none is found. Compilation and execution go through the
+`org.apache.groovy.util.JavaShell` API, so the same `javac` diagnostics surface in the output
+area.
+
 [[GroovyConsole-EditingFiles]]
 === Editing Files
 
@@ -97,7 +114,7 @@ blank input area
 [[GroovyConsole-Historyandresults]]
 === History and results
 
-* You can pop-up a gui inspector on the last (non-null) result by
+* You can pop up a gui inspector on the last (non-null) result by
 selecting `Inspect Last` from the `Actions` menu. The inspector is a
 convenient way to view lists and maps.
 * The console remembers the last ten script runs. You can scroll back
@@ -118,7 +135,7 @@ find yourself running a script multiple times until it works the way you want
 it to. However, what if your code takes too long to finish or worse, creates
 an infinite loop? Interrupting script execution can be achieved by clicking
 the `interrupt` button on the small dialog box that pops up when a script
-is executing or through the `interrupt` icon in the tool bar.
+is executing or through the `interrupt` icon in the toolbar.
 
 image:{reldir_console}/assets/img/gconsole-toolbar.png[Toolbar]
 
@@ -136,14 +153,72 @@ handle interruption, at the cost of extra execution time.
 
 * You can change the font size by selecting `Smaller Font` or `Larger
 Font` from the `Actions menu`
-* The console can be run as an Applet thanks to `groovy.ui.ConsoleApplet`
+* You can switch between Light, Dark, and System (if supported by your OS) themes from the
+`View -> Theme` menu or by clicking the theme cycle button in the toolbar.
+The theme preference is remembered across sessions. The System option
+follows your operating system's dark mode setting.
+
+image:{reldir_console}/assets/img/gconsole-dark-theme.png[Dark Theme]
+
 * Code is auto indented when you hit return
+* The editor highlights Groovy source from groovy-lsp semantic tokens
+(`textDocument/semanticTokens` on each edit, without compiling). A multiline string
+keeps the color of its opening delimiter (single quote, double quote, or
+slashy). The `$` that opens a GString expression is left uncolored.
+Matching brackets, including `?[`, come from the same semantic tokens, so a bracket inside a string or comment is not paired.
+A regex highlighter remains available from `View -> Smart Highlighter`.
 * You can drag'n'drop a Groovy script over the text area to open a file
 * You can modify the classpath with which the script in the console is
 being run by adding a new JAR or a directory to the classpath from the
 `Script` menu
 * Error hyperlinking from the output area when a compilation error is
-expected or when an exception is thrown
+expected or when an exception is thrown. Clicking the line and column of a compilation error, or a stack-trace
+reference to the script being edited, moves the caret to that position
+without selecting any characters
+* The editor compiles the unsaved buffer in the background and marks
+compiler diagnostics with a thin red wavy underline. A diagnostic that only marks the end of the buffer,
+such as unfinished input (`a.` or `a?.`), does not paint the operator or the
+character before the caret.
+Highlighting restyles only the spans that changed and does not add those
+attribute edits to the undo stack.
+`View -> Compiler Assistance` turns the language host off in every open
+console window. The preference is one shared value. Diagnostics,
+completion and the background compile then stay off. `Script -> Inspect CST`
+and `Script -> Inspect Tokens` still show the buffer.
+`View -> Smart Highlighter` still selects semantic-token or regex colouring.
+If `groovy-lsp` or Gson is not on the classpath, the editor opens with
+the regex highlighter and logs one warning. Compiler Assistance is
+disabled for that window, the language host stays unset, and a second
+warning is logged. The saved preference is left unchanged.
+The completion key stroke defaults to `Alt+/`
+(`Ctrl+Space` is left free for the system input method).
+On a layout where `/` is typed with Shift, such as Swedish Shift+7,
+completion opens when the key event's character is `/`, or when the
+following typed character is `/`. Alt+Shift+/ on a US layout types `?`
+and does not. macOS Swedish Option+Shift+7 types `\`; choose another
+stroke there.
+`View -> Completion Shortcut...` stores another stroke, for example `ctrl SPACE`,
+in the `completionShortcut` preference. The value is a Swing key-stroke
+string (`alt SLASH`, `ctrl SPACE`, `alt shift SLASH`).
+After `.`, `?.`, or `*.`, the list is the methods, fields, and properties
+that receiver can access, including when the statement is not finished yet.
+A method is shown with its parameter types and names, and its return type
+at the right of the row, apart from the name and the parameters.
+The list stays open while you type. Entries narrow to names that start
+with the characters after the list opened. Up and down move the selection,
+and moving the pointer over a row selects it the same way.
+Enter inserts the selected method name only. Parameter names stay in the
+list and are not written into the buffer. Escape closes the list.
+Each entry starts with a colored initial for its kind (`m` method, `f` field,
+`p` property, `v` variable, `c` class, `i` interface, `e` enum, `k` keyword,
+`s` snippet), drawn in its own disc so the mark is not part of the name.
+The list scrolls when there are more entries than fit.
+Accepting an entry inserts the whole name at the caret. The characters
+already typed after the dot are the only prefix that is replaced.
+Adding jars or directories to the classpath is picked up on the next
+background compile. The editor shares the console `CompilerConfiguration`
+(imports and AST customizers) with that compile. Scripts still run through
+`GroovyShell`. The language host answers questions about the buffer.
 
 [[GroovyConsole-EmbeddingtheConsole]]
 == Embedding the Console
@@ -235,7 +310,7 @@ image:{reldir_console}/assets/img/astbrowser_bytecode.png[AST Browser]
 [[GroovyConsole-CSTbrowser]]
 == Advanced debugging: CST browser
 
-Groovy Console can visualize the CST (Concrete Syntax Tree) representing
+Groovy Console can visualize the CST (Concrete Syntax Tree) that groovy-lsp builds for the current buffer, representing
 the initial parsing of the script. This is mainly useful for parsing gurus.
 
 image:{reldir_console}/assets/img/cstbrowser.png[CST Browser]

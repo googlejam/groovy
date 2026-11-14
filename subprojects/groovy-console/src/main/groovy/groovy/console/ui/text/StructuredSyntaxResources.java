@@ -18,62 +18,100 @@
  */
 package groovy.console.ui.text;
 
-import java.awt.*;
+import java.awt.AWTPermission;
+import java.awt.Font;
+import java.awt.Toolkit;
 import java.awt.datatransfer.Clipboard;
 
 /**
- * Contains all the basic resources and values used by the utility frame work
- * framework.
+ * Contains all the basic resources and values used by the utility framework.
  */
 public final class StructuredSyntaxResources {
 
     // ==================================================
     // ClipBoard
     // ==================================================
-    
-    public static final Clipboard SYSTEM_CLIPBOARD;
-    static {
-        Clipboard systemClipboard = null;
+
+    /**
+     * Shared clipboard used by the console text components.
+     */
+    public static final Clipboard SYSTEM_CLIPBOARD = getSystemOrAppLevelClipboard();
+
+    private static Clipboard getSystemOrAppLevelClipboard() {
+        Clipboard systemClipboard = getSystemClipboard();
+        if (systemClipboard == null) {
+            systemClipboard = new Clipboard("UIResourceMgr");
+        }
+        return systemClipboard;
+    }
+
+    @SuppressWarnings("removal") // TODO a future Groovy version should skip clipboard security check
+    private static Clipboard getSystemClipboard() {
         try {
-            // if we don't have access to the system clipboard, will throw
-            // a security exception
+            // if we don't have access to the system clipboard, will throw a security exception
             SecurityManager mgr = System.getSecurityManager();
             if (mgr != null) {
                 mgr.checkPermission(new AWTPermission("accessClipboard"));
             }
-            systemClipboard = Toolkit.getDefaultToolkit().getSystemClipboard();
-        }
-        catch (SecurityException e) {
-            // means we can't get to system clipboard, so create app level one
-            systemClipboard = new Clipboard("UIResourceMgr");
+            return Toolkit.getDefaultToolkit().getSystemClipboard();
         }
         catch (Exception e) {
-            e.printStackTrace();               
+            // means we can't get to system clipboard
+            return null;
         }
-        SYSTEM_CLIPBOARD = systemClipboard;
     }
 
     // =====================================================
     // STANDARD FONTS
     // =====================================================
 
+    /**
+     * Large UI font used by legacy console components.
+     */
     public static final Font LARGE_FONT = Font.decode("Arial-24");
+    /**
+     * Medium UI font used by legacy console components.
+     */
     public static final Font MEDIUM_FONT = Font.decode("Arial-18");
+    /**
+     * Small UI font used by legacy console components.
+     */
     public static final Font SMALL_FONT = Font.decode("Arial-12");
-    
+
+    /**
+     * Default monospaced font for editors.
+     */
     public static final Font EDITOR_FONT = Font.decode("Monospaced-12");
 
     // =====================================================
     // UNDO/REDO NAMES
     // =====================================================
 
+    /**
+     * Presentation name for undo actions.
+     */
     public static final String UNDO = "Undo";
+    /**
+     * Presentation name for redo actions.
+     */
     public static final String REDO = "Redo";
+    /**
+     * Presentation name for print actions.
+     */
     public static final String PRINT = "Print";
+    /**
+     * Presentation name for find actions.
+     */
     public static final String FIND = "Find";
+    /**
+     * Presentation name for find-next actions.
+     */
     public static final String FIND_NEXT = "Find Next";
+    /**
+     * Presentation name for replace actions.
+     */
     public static final String REPLACE = "Replace";
-        
+
     // singleton
     private StructuredSyntaxResources() {
     }

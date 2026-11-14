@@ -18,12 +18,14 @@
  */
 package groovy.contracts;
 
+import org.apache.groovy.contracts.PreconditionViolation;
 import org.apache.groovy.contracts.annotations.meta.AnnotationProcessorImplementation;
 import org.apache.groovy.contracts.annotations.meta.Precondition;
 import org.apache.groovy.contracts.common.impl.RequiresAnnotationProcessor;
-import org.apache.groovy.lang.annotation.Incubating;
 
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
+import java.lang.annotation.Repeatable;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
@@ -52,12 +54,54 @@ import java.lang.annotation.Target;
  *   }
  * </pre>
  * </p>
+ *
+ * @since 4.0.0
  */
+@Documented
 @Retention(RetentionPolicy.RUNTIME)
 @Target({ElementType.CONSTRUCTOR, ElementType.METHOD})
-@Incubating
 @Precondition
 @AnnotationProcessorImplementation(RequiresAnnotationProcessor.class)
+@Repeatable(RequiresConditions.class)
 public @interface Requires {
+    /**
+     * Returns the closure class that evaluates the precondition expression.
+     *
+     * @return the generated closure class backing the precondition
+     */
     Class value();
+
+    /**
+     * {@code true} (default): weave the precondition assertion — the current
+     * behaviour, a violating caller observes a
+     * {@link PreconditionViolation}.
+     * {@code false}: the obligation is <em>already enforced</em> (see
+     * {@code direct} for where) — no assertion is generated, and a violating
+     * caller observes whatever the existing enforcement does (for example the
+     * {@code NullPointerException} of an {@code Objects.requireNonNull}) rather
+     * than a {@code PreconditionViolation}. The annotation remains the caller's
+     * documented obligation, consumable by readers and tools (verifiers discharge
+     * it at call sites regardless of where enforcement lives). An unwoven
+     * precondition never contributes to generated assertions — including the
+     * inherited precondition weaving of overriding methods.
+     *
+     * @return whether the precondition assertion is generated
+     * @since 6.0.0
+     */
+    boolean woven() default true;
+
+    /**
+     * Information for readers and tools, with no effect on bytecode; ignored
+     * (implicitly {@code true}) for woven preconditions. {@code true} (default):
+     * a hand-written check enforces the obligation in this body. {@code false}:
+     * the obligation is enforced by code this method executes — a validator call
+     * such as {@code Objects.requireNonNull} or Guava's {@code Preconditions},
+     * possibly transitively — so there is no check to find in this body. Most
+     * users never set this; a verification or analysis tool unable to find the
+     * claimed enforcement is the usual prompt.
+     *
+     * @return whether the body itself contains the enforcement
+     * @since 6.0.0
+     */
+    boolean direct() default true;
 }

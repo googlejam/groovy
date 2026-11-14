@@ -41,13 +41,13 @@ import java.util.LinkedList;
 import java.util.List;
 
 /**
- * <p>An AST transformation which adapts the AST generated from a script as a class extending {@link groovy.text.markup.BaseTemplate}.</p>
+ * <p>An AST transformation which adapts the AST generated from a script as a class extending {@link BaseTemplate}.</p>
  *
  * <p>This transformation:</p>
  *
  * <ul>
  *     <li>Sets the super class of the script to the selected {@link TemplateConfiguration#getBaseTemplateClass() template class}</li>
- *     <li>Calls the {@link groovy.text.markup.MarkupBuilderCodeTransformer} on the "run" method</li>
+ *     <li>Calls the {@link MarkupBuilderCodeTransformer} on the "run" method</li>
  *     <li>Creates the appropriate constructor</li>
  * </ul>
  */
@@ -56,15 +56,24 @@ class TemplateASTTransformer extends CompilationCustomizer {
     private static final ClassNode TEMPLATECONFIG_CLASSNODE = ClassHelper.make(TemplateConfiguration.class);
     private final TemplateConfiguration config;
 
-    public TemplateASTTransformer(TemplateConfiguration config) {
+    /**
+     * Creates a transformer using the supplied template configuration.
+     *
+     * @param config template configuration that drives generated base class selection
+     */
+    TemplateASTTransformer(TemplateConfiguration config) {
         super(CompilePhase.SEMANTIC_ANALYSIS);
         this.config = config;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void call(final SourceUnit source, final GeneratorContext context, final ClassNode classNode) throws CompilationFailedException {
         if (classNode.isScriptBody()) {
             classNode.setSuperClass(ClassHelper.make(config.getBaseTemplateClass()));
+            classNode.getDeclaredConstructors().clear();
             createConstructor(classNode);
             transformRunMethod(classNode, source);
             VariableScopeVisitor visitor = new VariableScopeVisitor(source);

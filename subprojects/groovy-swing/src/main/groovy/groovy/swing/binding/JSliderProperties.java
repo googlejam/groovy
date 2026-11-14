@@ -18,9 +18,7 @@
  */
 package groovy.swing.binding;
 
-import org.apache.groovy.swing.binding.FullBinding;
 import org.apache.groovy.swing.binding.PropertyBinding;
-import org.apache.groovy.swing.binding.SourceBinding;
 import org.apache.groovy.swing.binding.TargetBinding;
 import org.apache.groovy.swing.binding.TriggerBinding;
 
@@ -33,31 +31,48 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
+ * Supplies synthetic binding definitions for {@link JSlider}.
+ *
  * @since Groovy 1.1
  */
 public class JSliderProperties {
+    /**
+     * Returns the synthetic trigger bindings exposed for {@link JSlider}.
+     *
+     * @return the synthetic trigger binding map
+     */
     public static Map<String, TriggerBinding> getSyntheticProperties() {
         Map<String, TriggerBinding> result = new HashMap<String, TriggerBinding>();
         result.put(JSlider.class.getName() + "#value",
-                new TriggerBinding() {
-                    @Override
-                    public FullBinding createBinding(SourceBinding source, TargetBinding target) {
-                        return new JSliderValueBinding((PropertyBinding) source, target);
-                    }
-                });
+            (source, target) -> new JSliderValueBinding((PropertyBinding) source, target));
         return result;
     }
 }
 
 
+/**
+ * Tracks the synthetic {@code value} property on a {@link JSlider}.
+ */
 class JSliderValueBinding extends AbstractSyntheticBinding implements PropertyChangeListener, ChangeListener {
+    /**
+     * The currently bound slider instance.
+     */
     JSlider boundSlider;
 
 
-    public JSliderValueBinding(PropertyBinding source, TargetBinding target) {
+    /**
+     * Creates a value binding for a slider.
+     *
+     * @param source the source property binding
+     * @param target the target binding
+     */
+    JSliderValueBinding(PropertyBinding source, TargetBinding target) {
         super(source, target, JSlider.class, "value");
     }
 
+    /**
+     * Starts listening to the bound slider and its model.
+     */
     @Override
     public synchronized void syntheticBind() {
         boundSlider = (JSlider) ((PropertyBinding)sourceBinding).getBean();
@@ -65,6 +80,9 @@ class JSliderValueBinding extends AbstractSyntheticBinding implements PropertyCh
         boundSlider.getModel().addChangeListener(this);
     }
 
+    /**
+     * Stops listening to the bound slider and clears the cached reference.
+     */
     @Override
     public synchronized void syntheticUnbind() {
         boundSlider.removePropertyChangeListener("model", this);
@@ -72,6 +90,11 @@ class JSliderValueBinding extends AbstractSyntheticBinding implements PropertyCh
         boundSlider = null;
     }
 
+    /**
+     * Refreshes the binding after the slider model instance changes.
+     *
+     * @param event the model change event
+     */
     @Override
     public void propertyChange(PropertyChangeEvent event) {
         update();
@@ -79,6 +102,11 @@ class JSliderValueBinding extends AbstractSyntheticBinding implements PropertyCh
         ((BoundedRangeModel) event.getNewValue()).addChangeListener(this);
     }
 
+    /**
+     * Refreshes the binding after the slider value changes.
+     *
+     * @param e the change event
+     */
     @Override
     public void stateChanged(ChangeEvent e) {
         update();

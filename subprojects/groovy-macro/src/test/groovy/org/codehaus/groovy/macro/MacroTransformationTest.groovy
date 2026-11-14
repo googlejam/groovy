@@ -18,20 +18,24 @@
  */
 package org.codehaus.groovy.macro
 
-import groovy.test.GroovyTestCase
 import groovy.transform.CompileStatic
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.assertScript
 
 @CompileStatic
-class MacroTransformationTest extends GroovyTestCase {
+class MacroTransformationTest {
 
+    @Test
     void testSimple() {
         assertScript """
         def nullObject = null
-        
+
         assert null == safe(nullObject.hashcode())
 """
     }
 
+    @Test
     void testMacroInClosure() {
         assertScript """
         def cl = {
@@ -42,6 +46,7 @@ class MacroTransformationTest extends GroovyTestCase {
 """
     }
 
+    @Test
     void testCascade() {
         assertScript """
         def nullObject = null
@@ -49,6 +54,7 @@ class MacroTransformationTest extends GroovyTestCase {
 """
     }
 
+    @Test
     void testMethodName() {
         assertScript """
         assert "toString" == methodName(123.toString())
@@ -61,6 +67,7 @@ class MacroTransformationTest extends GroovyTestCase {
 """
     }
 
+    @Test
     void testPropertyName() {
         assertScript """
         assert "bytes" == propertyName("".bytes)

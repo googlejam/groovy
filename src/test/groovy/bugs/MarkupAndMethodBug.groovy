@@ -16,35 +16,35 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
 /**
  * Mixes variables, closures and method calls in markup
- *
  */
-class MarkupAndMethodBug extends GroovyTestCase {
-    
+final class MarkupAndMethodBug {
+
+    @Test
     void testBug() {
         def tree = createTree()
         def name = tree.person[0]['@name']
         assert name == 'James'
     }
-    
-    protected def createTree() {
+
+    protected createTree() {
         def builder = NodeBuilder.newInstance()
-        
+
         def root = builder.people() {
             person(name:getTestName())
         }
-        
+
         assert root != null
-        
+
         return root
     }
-    
-    protected def getTestName() {
-        "James"
+
+    protected getTestName() {
+        'James'
     }
 }

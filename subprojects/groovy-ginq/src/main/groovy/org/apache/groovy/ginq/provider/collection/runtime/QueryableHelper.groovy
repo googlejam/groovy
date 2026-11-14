@@ -18,14 +18,24 @@
  */
 package org.apache.groovy.ginq.provider.collection.runtime
 
+import groovy.transform.CompileDynamic
 import groovy.transform.CompileStatic
+import groovy.transform.Internal
+import org.apache.groovy.lang.annotation.GroovyABI
+import org.apache.groovy.util.SystemUtil
 
+import java.util.concurrent.Callable
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.ForkJoinPool
+import java.util.concurrent.ForkJoinTask
+import java.util.concurrent.ForkJoinWorkerThread
 import java.util.concurrent.TimeUnit
 import java.util.function.Function
 import java.util.function.Supplier
+import java.util.logging.Level
+import java.util.logging.Logger
 import java.util.stream.Collectors
 
 import static org.apache.groovy.ginq.provider.collection.runtime.Queryable.from
@@ -34,6 +44,7 @@ import static org.apache.groovy.ginq.provider.collection.runtime.Queryable.from
  *
  * @since 4.0.0
  */
+@Internal
 @CompileStatic
 class QueryableHelper {
     /**
@@ -44,6 +55,7 @@ class QueryableHelper {
      * @return the result {@link Queryable} instance
      * @since 4.0.0
      */
+    @GroovyABI(since = "4.0.0")
     static <T> Queryable<SourceRecord<T>> navigate(Queryable<? extends T> queryable, List<String> aliasList) {
         List<SourceRecord<T>> sourceRecordList =
                 queryable.stream()
@@ -61,6 +73,7 @@ class QueryableHelper {
      * @throws TooManyValuesException if the {@link Queryable} instance contains more than one value
      * @since 4.0.0
      */
+    @GroovyABI(since = "4.0.0")
     static <T> T singleValue(final Queryable<? extends T> queryable) {
         List<? extends T> list = queryable.toList()
         int size = list.size()
@@ -75,27 +88,78 @@ class QueryableHelper {
         throw new TooManyValuesException("subquery returns more than one value: $list")
     }
 
+    /**
+     * Executes a supplier asynchronously on the shared thread pool.
+     *
+     * @param supplier the supplier to execute
+     * @return the asynchronous result
+     */
+    @GroovyABI(since = "4.0.0")
     static <U> CompletableFuture<U> supplyAsync(Supplier<U> supplier) {
         return CompletableFuture.supplyAsync(supplier, ThreadPoolHolder.THREAD_POOL)
     }
 
+    /**
+     * Executes a single-argument function asynchronously on the shared thread pool.
+     *
+     * @param function the function to execute
+     * @param param the argument passed to the function
+     * @return the asynchronous result
+     */
+    @GroovyABI(since = "4.0.0")
     static <T, U> CompletableFuture<U> supplyAsync(Function<? super T, ? extends U> function, T param) {
         return CompletableFuture.supplyAsync(() -> { function.apply(param) }, ThreadPoolHolder.THREAD_POOL)
     }
 
+    /**
+     * Submits work to the shared fork-join pool.
+     *
+     * @param callable the task to submit
+     * @return the submitted task
+     */
+    @GroovyABI(since = "4.0.0")
+    static <T> ForkJoinTask<T> submit(Callable<T> callable) {
+        return ThreadPoolHolder.FORKJOIN_POOL.submit(callable)
+    }
+
+    /**
+     * Indicates whether the current query is executing in parallel mode.
+     *
+     * @return {@code true} if parallel mode is enabled
+     */
     static boolean isParallel() {
         return TRUE_STR == getVar(PARALLEL)
     }
 
+    /**
+     * Stores a named execution variable in the thread-local context.
+     *
+     * @param name the variable name
+     * @param value the variable value
+     */
+    @GroovyABI(since = "4.0.0")
     static <T> void setVar(String name, T value) {
         VAR_HOLDER.get().put(name, value)
     }
 
+    /**
+     * Returns a named execution variable from the thread-local context.
+     *
+     * @param name the variable name
+     * @return the stored value
+     */
     static <T> T getVar(String name) {
         (T) VAR_HOLDER.get().get(name)
     }
 
-    static <T> T  removeVar(String name) {
+    /**
+     * Removes a named execution variable from the thread-local context.
+     *
+     * @param name the variable name
+     * @return the removed value
+     */
+    @GroovyABI(since = "4.0.0")
+    static <T> T removeVar(String name) {
         (T) VAR_HOLDER.get().remove(name)
     }
 
@@ -103,30 +167,64 @@ class QueryableHelper {
      * Shutdown to release resources
      *
      * @param mode 0: immediate, 1: abort
-     * @return list of tasks that never commenced execution
      */
-    static List<Runnable> shutdown(int mode) {
+    @GroovyABI(since = "4.0.0")
+    static void shutdown(int mode) {
         if (0 == mode) {
+            ThreadPoolHolder.FORKJOIN_POOL.shutdown()
             ThreadPoolHolder.THREAD_POOL.shutdown()
+
+            while (!ThreadPoolHolder.FORKJOIN_POOL.awaitTermination(250, TimeUnit.MILLISECONDS)) {
+                // do nothing, just wait to terminate
+            }
             while (!ThreadPoolHolder.THREAD_POOL.awaitTermination(250, TimeUnit.MILLISECONDS)) {
                 // do nothing, just wait to terminate
             }
-            return Collections.emptyList()
         } else if (1 == mode) {
-            return ThreadPoolHolder.THREAD_POOL.shutdownNow()
+            ThreadPoolHolder.FORKJOIN_POOL.shutdownNow()
+            ThreadPoolHolder.THREAD_POOL.shutdownNow()
         } else {
             throw new IllegalArgumentException("Invalid mode: $mode")
         }
     }
 
-    private static final ThreadLocal<Map<String, Object>> VAR_HOLDER = ThreadLocal.<Map<String, Object>> withInitial(() -> new LinkedHashMap<>())
+    private static final ThreadLocal<Map<String, Object>> VAR_HOLDER = InheritableThreadLocal.<Map<String, Object>> withInitial(() -> new LinkedHashMap<>())
     private static final String PARALLEL = "parallel"
     private static final String TRUE_STR = "true"
 
     private QueryableHelper() {}
 
     private static class ThreadPoolHolder {
-        static final ExecutorService THREAD_POOL = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors())
+        private static final Logger LOGGER = Logger.getLogger(ThreadPoolHolder.class.getName());
+        static int fjSeq
+        static int seq
+        static final int PARALLELISM = SystemUtil.getIntegerSafe("groovy.ginq.parallelism", Runtime.getRuntime().availableProcessors() + 1);
+        static final ForkJoinPool FORKJOIN_POOL = new ForkJoinPool(PARALLELISM, (ForkJoinPool pool) -> {
+            ForkJoinWorkerThread worker = ForkJoinPool.defaultForkJoinWorkerThreadFactory.newThread(pool)
+            worker.setName("ginq-fj-thread-${fjSeq++}")
+            return worker
+        }, null, false)
+        static final ExecutorService THREAD_POOL = createExecutorService()
+
+        @CompileDynamic
+        private static ExecutorService createExecutorService() {
+            var threadPool
+            try {
+                threadPool = Executors.newVirtualThreadPerTaskExecutor()
+            } catch (e) {
+                if (LOGGER.isLoggable(Level.FINE)) {
+                    LOGGER.fine("Failed to create VirtualThreadPerTaskExecutor.\n${e.asString()}")
+                }
+                threadPool = Executors.newFixedThreadPool(PARALLELISM, (Runnable r) -> {
+                    Thread t = new Thread(r)
+                    t.setName("ginq-thread-${seq++}")
+                    t.setDaemon(true)
+                    return t
+                })
+            }
+            return threadPool
+        }
+
         private ThreadPoolHolder() {}
     }
 }

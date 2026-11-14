@@ -1,0 +1,1114 @@
+/*
+ *  Licensed to the Apache Software Foundation (ASF) under one
+ *  or more contributor license agreements.  See the NOTICE file
+ *  distributed with this work for additional information
+ *  regarding copyright ownership.  The ASF licenses this file
+ *  to you under the Apache License, Version 2.0 (the
+ *  "License"); you may not use this file except in compliance
+ *  with the License.  You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing,
+ *  software distributed under the License is distributed on an
+ *  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *  KIND, either express or implied.  See the License for the
+ *  specific language governing permissions and limitations
+ *  under the License.
+ */
+package org.codehaus.groovy.classgen
+
+import groovy.transform.CompileStatic
+import org.codehaus.groovy.ast.ClassNode
+import org.codehaus.groovy.ast.CodeVisitorSupport
+import org.codehaus.groovy.ast.stmt.BlockStatement
+import org.codehaus.groovy.ast.stmt.YieldStatement
+import org.codehaus.groovy.control.CompilePhase
+import org.codehaus.groovy.control.CompilerConfiguration
+import org.codehaus.groovy.control.MultipleCompilationErrorsException
+import org.codehaus.groovy.control.SourceUnit
+import org.codehaus.groovy.control.customizers.ASTTransformationCustomizer
+import org.codehaus.groovy.control.customizers.CompilationCustomizer
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.assertScript
+import static groovy.test.GroovyAssert.shouldFail
+import static org.codehaus.groovy.ast.tools.GeneralUtils.constX
+import static org.codehaus.groovy.ast.tools.GeneralUtils.stmt
+
+/**
+ * JEP 361 (https://openjdk.org/jeps/361) conformance for first-class switch
+ * expressions. Each scenario from the JEP is executed as dynamic Groovy and
+ * again under {@code @CompileStatic}.
+ */
+final class Jep361SwitchExpressionTest {
+
+    private static void assertBoth(final String script) {
+        assertScript(script)
+        new GroovyShell(staticConfig()).evaluate(script)
+    }
+
+    private static void shouldFailBoth(final String script, final String snippet) {
+        shouldFailBoth(MultipleCompilationErrorsException, script, snippet)
+    }
+
+    private static void shouldFailBoth(final Class<? extends Throwable> type,
+            final String script) {
+        shouldFail(type, script)
+        shouldFail(type) { new GroovyShell(staticConfig()).evaluate(script) }
+    }
+
+    private static void shouldFailBoth(final Class<? extends Throwable> type,
+            final String script, final String snippet) {
+        def dynamic = shouldFail(type, script)
+        assert type.isInstance(dynamic)
+        assert dynamic.message.contains(snippet)
+        def statik = shouldFail(type) { new GroovyShell(staticConfig()).evaluate(script) }
+        assert type.isInstance(statik)
+        assert statik.message.contains(snippet)
+    }
+
+    private static CompilerConfiguration staticConfig() {
+        def config = new CompilerConfiguration()
+        config.addCompilationCustomizers(new ASTTransformationCustomizer(CompileStatic))
+        return config
+    }
+
+    //--------------------------------------------------------------------------
+    // Arrow labels (JEP 361 "Arrow labels")
+
+    @Test
+    void howManyArrowStatement() {
+        // JEP: switch used as a statement with case L ->; 1/2/3 → one/two/many
+        assertBoth '''
+            def out = []
+            [1, 2, 3].each { int k ->
+                switch (k) {
+                    case 1  -> out.add('one')
+                    case 2  -> out.add('two')
+                    default -> out.add('many')
+                }
+            }
+            assert out == ['one', 'two', 'many']
+        '''
+    }
+
+    @Test
+    void commaSeparatedArrowStatement() {
+        // JEP motivation: case MONDAY, FRIDAY, SUNDAY -> ...
+        assertBoth '''
+            import java.time.DayOfWeek
+            import static java.time.DayOfWeek.*
+
+            def letters = { DayOfWeek day ->
+                int n = -1
+                switch (day) {
+                    case MONDAY, FRIDAY, SUNDAY -> n = 6
+                    case TUESDAY                -> n = 7
+                    case THURSDAY, SATURDAY     -> n = 8
+                    case WEDNESDAY              -> n = 9
+                }
+                n
+            }
+            assert letters(MONDAY) == 6
+            assert letters(FRIDAY) == 6
+            assert letters(SUNDAY) == 6
+            assert letters(TUESDAY) == 7
+            assert letters(THURSDAY) == 8
+            assert letters(SATURDAY) == 8
+            assert letters(WEDNESDAY) == 9
+        '''
+    }
+
+    @Test
+    void colonSwitchStatementNeedNotBeExhaustive() {
+        // JEP: switch statements are not required to be exhaustive.
+        // Groovy's arrow form is always a switch expression, so this uses colon
+        // labels (the statement production).
+        assertBoth '''
+            int n = 0
+            switch (2) {
+                case 1:
+                    n = 1
+            }
+            assert n == 0
+        '''
+    }
+
+    @Test
+    void arrowArmMayBeExpressionBlockOrThrow() {
+        assertBoth '''
+            def m = { int k ->
+                switch (k) {
+                    case 1 -> 'expr'
+                    case 2 -> {
+                        def x = 'block'
+                        yield x
+                    }
+                    default -> throw new IllegalArgumentException('nope')
+                }
+            }
+            assert m(1) == 'expr'
+            assert m(2) == 'block'
+            try {
+                m(3)
+                assert false: 'expected IllegalArgumentException'
+            } catch (IllegalArgumentException e) {
+                assert e.message == 'nope'
+            }
+        '''
+    }
+
+    @Test
+    void arrowArmLocalsDoNotLeakAcrossArms() {
+        // JEP: locals to the right of -> must be in a block and are not in
+        // scope for other arms; the same name can be reused.
+        assertBoth '''
+            import java.time.DayOfWeek
+            import static java.time.DayOfWeek.*
+
+            def m = { DayOfWeek day ->
+                switch (day) {
+                    case MONDAY, TUESDAY -> {
+                        int temp = 1
+                        yield temp
+                    }
+                    case WEDNESDAY, THURSDAY -> {
+                        int temp = 2
+                        yield temp
+                    }
+                    default -> {
+                        int temp = 3
+                        yield temp
+                    }
+                }
+            }
+            assert m(MONDAY) == 1
+            assert m(WEDNESDAY) == 2
+            assert m(FRIDAY) == 3
+        '''
+    }
+
+    @Test
+    void multiStatementArrowArmWithoutBlockIsError() {
+        // JEP: the code to the right of -> is an expression, a block, or throw
+        shouldFailBoth '''
+            def r = switch (6) {
+                case 6 -> def x = 'a'; yield x
+                default -> 'z'
+            }
+        ''', 'Arrow switch cases must contain a single statement'
+    }
+
+    //--------------------------------------------------------------------------
+    // Switch expressions (JEP 361 "Switch expressions")
+
+    @Test
+    void howManySwitchExpression() {
+        // JEP: the howMany rewrite that feeds a single println
+        assertBoth '''
+            def howMany = { int k ->
+                switch (k) {
+                    case 1  -> 'one'
+                    case 2  -> 'two'
+                    default -> 'many'
+                }
+            }
+            assert howMany(1) == 'one'
+            assert howMany(2) == 'two'
+            assert howMany(3) == 'many'
+        '''
+    }
+
+    @Test
+    void switchExpressionAsMethodArgument() {
+        assertBoth '''
+            def log = []
+            log.add(switch (2) {
+                case 1  -> 'one'
+                case 2  -> 'two'
+                default -> 'many'
+            })
+            assert log == ['two']
+        '''
+    }
+
+    @Test
+    void numLettersDayExpression() {
+        // JEP: int numLetters = switch (day) { case MONDAY, FRIDAY, SUNDAY -> 6; ... }
+        assertBoth '''
+            import java.time.DayOfWeek
+            import static java.time.DayOfWeek.*
+
+            int numLetters = switch (MONDAY) {
+                case MONDAY, FRIDAY, SUNDAY -> 6
+                case TUESDAY                -> 7
+                case THURSDAY, SATURDAY     -> 8
+                case WEDNESDAY              -> 9
+            }
+            assert numLetters == 6
+            numLetters = switch (TUESDAY) {
+                case MONDAY, FRIDAY, SUNDAY -> 6
+                case TUESDAY                -> 7
+                case THURSDAY, SATURDAY     -> 8
+                case WEDNESDAY              -> 9
+            }
+            assert numLetters == 7
+            numLetters = switch (WEDNESDAY) {
+                case MONDAY, FRIDAY, SUNDAY -> 6
+                case TUESDAY                -> 7
+                case THURSDAY, SATURDAY     -> 8
+                case WEDNESDAY              -> 9
+            }
+            assert numLetters == 9
+        '''
+    }
+
+    @Test
+    void standaloneTypeFromArms() {
+        // JEP: if there is no target type, a standalone type is computed from the arms
+        assertBoth '''
+            CharSequence cs = switch (1) {
+                case 1 -> 'hello'
+                default -> new StringBuilder('x')
+            }
+            assert cs.toString() in ['hello', 'x']
+        '''
+    }
+
+    //--------------------------------------------------------------------------
+    // Yielding a value (JEP 361 "Yielding a value")
+
+    @Test
+    void yieldInArrowBlockWithLocals() {
+        // JEP: default -> { int k = day.toString().length(); yield result; }
+        assertBoth '''
+            import java.time.DayOfWeek
+            import static java.time.DayOfWeek.*
+
+            def f = { int k -> k + 1 }
+            int j = switch (WEDNESDAY) {
+                case MONDAY  -> 0
+                case TUESDAY -> 1
+                default      -> {
+                    int k = WEDNESDAY.toString().length()
+                    int result = f(k)
+                    yield result
+                }
+            }
+            assert j == f('WEDNESDAY'.length())
+            assert switch (MONDAY) {
+                case MONDAY  -> 0
+                case TUESDAY -> 1
+                default      -> 99
+            } == 0
+        '''
+    }
+
+    @Test
+    void colonSwitchExpressionWithYield() {
+        // JEP: case "Foo": yield 1; case "Bar": yield 2; default: println; yield 0
+        assertBoth '''
+            def log = []
+            int foo = switch ('Foo') {
+                case 'Foo':
+                    yield 1
+                case 'Bar':
+                    yield 2
+                default:
+                    log.add('Neither Foo nor Bar, hmmm...')
+                    yield 0
+            }
+            int bar = switch ('Bar') {
+                case 'Foo':
+                    yield 1
+                case 'Bar':
+                    yield 2
+                default:
+                    log.add('Neither Foo nor Bar, hmmm...')
+                    yield 0
+            }
+            int other = switch ('Qux') {
+                case 'Foo':
+                    yield 1
+                case 'Bar':
+                    yield 2
+                default:
+                    log.add('Neither Foo nor Bar, hmmm...')
+                    yield 0
+            }
+            assert foo == 1
+            assert bar == 2
+            assert other == 0
+            assert log == ['Neither Foo nor Bar, hmmm...']
+        '''
+    }
+
+    @Test
+    void colonFallThroughInSwitchExpression() {
+        assertBoth '''
+            def log = []
+            int bar = switch ('Bar') {
+                case 'Foo':
+                    yield 1
+                case 'Bar':
+                    log.add('Bar!!')
+                case 'Baz':
+                    yield 2
+                default:
+                    yield 0
+            }
+            int baz = switch ('Baz') {
+                case 'Foo':
+                    yield 1
+                case 'Bar':
+                    log.add('Bar!!')
+                case 'Baz':
+                    yield 2
+                default:
+                    yield 0
+            }
+            assert bar == 2
+            assert baz == 2
+            assert log == ['Bar!!']
+        '''
+    }
+
+    @Test
+    void commaSeparatedColonLabels() {
+        assertBoth '''
+            assert 10 == switch (1) {
+                case 1, 2, 3:
+                    yield 10
+                default:
+                    yield 0
+            }
+            assert 10 == switch (3) {
+                case 1, 2, 3:
+                    yield 10
+                default:
+                    yield 0
+            }
+            assert 0 == switch (4) {
+                case 1, 2, 3:
+                    yield 10
+                default:
+                    yield 0
+            }
+        '''
+    }
+
+    @Test
+    void yieldStatementTakesPrecedenceOverMethodNamedYield() {
+        // JEP: yield(x) is a yield statement; qualify the method with this
+        assertBoth '''
+            class C {
+                int yield(int x) { x + 100 }
+                int run() {
+                    int a = switch (1) {
+                        case 1 -> {
+                            yield(1)
+                        }
+                        default -> 0
+                    }
+                    int b = this.yield(1)
+                    assert a == 1
+                    assert b == 101
+                    return a + b
+                }
+            }
+            assert new C().run() == 102
+        '''
+    }
+
+    @Test
+    void staticYieldMethodIsQualifiedByTypeName() {
+        assertBoth '''
+            class C {
+                static int yield(int x) { x + 100 }
+                static int run() {
+                    int a = switch (1) {
+                        case 1 -> {
+                            yield(1)
+                        }
+                        default -> 0
+                    }
+                    int b = C.yield(1)
+                    assert a == 1
+                    assert b == 101
+                    return a
+                }
+            }
+            assert C.run() == 1
+        '''
+    }
+
+    @Test
+    void yieldOutsideSwitchExpressionIsAMethodCall() {
+        // JEP: yield is a restricted identifier. Groovy only parses a yield
+        // statement inside a switch expression; elsewhere `yield x` is a call.
+        assertBoth '''
+            def yield = { int x -> x + 5 }
+            assert yield(1) == 6
+        '''
+    }
+
+    //--------------------------------------------------------------------------
+    // Exhaustiveness (JEP 361 "Exhaustiveness")
+
+    @Test
+    void arrowBlockWithoutYieldIsError() {
+        // JEP: case MONDAY -> { println(...); }  // ERROR, no yield
+        shouldFailBoth '''
+            def day = 1
+            int i = switch (day) {
+                case 1 -> {
+                    if (true) {
+                        def unused = 'Monday'
+                    }
+                }
+                default -> 1
+            }
+        ''', 'yield'
+    }
+
+    @Test
+    void colonGroupWithoutYieldIsError() {
+        // JEP: default: println(...);  // ERROR, group has no yield
+        shouldFailBoth '''
+            def day = 1
+            int i = switch (day) {
+                case 1, 2, 3:
+                    yield 0
+                default:
+                    def unused = 0
+            }
+        ''', 'yield'
+    }
+
+    @Test
+    void exhaustiveEnumNeedsNoDefault() {
+        assertBoth '''
+            import java.time.DayOfWeek
+            import static java.time.DayOfWeek.*
+
+            int letters = switch (WEDNESDAY) {
+                case MONDAY, FRIDAY, SUNDAY -> 6
+                case TUESDAY                -> 7
+                case THURSDAY, SATURDAY     -> 8
+                case WEDNESDAY              -> 9
+            }
+            assert letters == 9
+        '''
+    }
+
+    @Test
+    void dynamicNonExhaustiveThrowsAtRuntime() {
+        // JEP requires exhaustiveness; dynamic Groovy checks at run time
+        def err = shouldFail(IllegalStateException, '''
+            def r = switch (99) {
+                case 1 -> 1
+            }
+        ''')
+        assert err.message.contains('does not cover')
+    }
+
+    @Test
+    void staticNonExhaustiveIsCompileError() {
+        def err = shouldFail(MultipleCompilationErrorsException) {
+            new GroovyShell(staticConfig()).evaluate('''
+                def r = switch (99) {
+                    case 1 -> 1
+                }
+            ''')
+        }
+        assert err.message.contains('does not cover all possible input values')
+    }
+
+    @Test
+    void throwCompletesAnArm() {
+        shouldFailBoth(IllegalStateException, '''
+            def r = switch (9) {
+                case 1 -> 1
+                default -> throw new IllegalStateException('Wat: 9')
+            }
+        ''')
+    }
+
+    //--------------------------------------------------------------------------
+    // Control transfer (JEP 361: break / yield / return / continue)
+
+    @Test
+    void continueThroughSwitchExpressionIsError() {
+        // JEP: continue z from inside a switch expression
+        shouldFailBoth '''
+            int MAX = 3
+            z:
+            for (int i = 0; i < MAX; ++i) {
+                int k = switch (i) {
+                    case 0:
+                        yield 1
+                    case 1:
+                        yield 2
+                    default:
+                        continue z
+                }
+            }
+        ''', 'continue'
+    }
+
+    @Test
+    void returnThroughSwitchExpressionIsError() {
+        shouldFailBoth '''
+            def m = {
+                def r = switch (1) {
+                    case 1 -> {
+                        return 1
+                    }
+                    default -> 0
+                }
+            }
+            m()
+        ''', 'does not support `return`'
+    }
+
+    @Test
+    void unlabeledBreakThroughSwitchExpressionIsError() {
+        shouldFailBoth '''
+            def r = switch (1) {
+                case 1:
+                    break
+                default:
+                    yield 0
+            }
+        ''', 'does not support `break`'
+    }
+
+    @Test
+    void breakStillTargetsASwitchStatement() {
+        assertBoth '''
+            int n = 0
+            switch (1) {
+                case 1:
+                    n = 1
+                    break
+                default:
+                    n = 2
+            }
+            assert n == 1
+        '''
+    }
+
+    //--------------------------------------------------------------------------
+    // Control transfer out of an arrow arm in statement position (JEP 361:
+    // "the arrow only decides fall-through"; return/break/continue are legal
+    // in a switch statement whatever its label form)
+
+    @Test
+    void returnFromArrowArmOfSwitchStatement() {
+        assertBoth '''
+            def m(int n) {
+                switch (n) {
+                    case 1 -> return 'one'
+                    case 2 -> { return 'two' }
+                }
+                return 'many'
+            }
+            assert m(1) == 'one'
+            assert m(2) == 'two'
+            assert m(3) == 'many'
+        '''
+    }
+
+    @Test
+    void returnFromArrowArmOfTrailingSwitchStatement() {
+        // the switch is the last statement, so its other arms still supply the implicit return
+        assertBoth '''
+            def m(int n) {
+                switch (n) {
+                    case 1  -> return 'one'
+                    default -> 'other'
+                }
+            }
+            assert m(1) == 'one'
+            assert m(2) == 'other'
+        '''
+    }
+
+    @Test
+    void breakFromArrowArmLeavesTheSwitchStatement() {
+        assertBoth '''
+            def out = []
+            for (i in 1..3) {
+                switch (i) {
+                    case 2  -> { if (i > 0) break; out << 'unreached' }
+                    default -> out << i
+                }
+                out << 'after'
+            }
+            assert out == [1, 'after', 'after', 3, 'after']
+        '''
+    }
+
+    @Test
+    void continueFromArrowArmContinuesTheEnclosingLoop() {
+        assertBoth '''
+            def out = []
+            for (i in 1..3) {
+                switch (i) {
+                    case 2  -> continue
+                    default -> out << i
+                }
+                out << 'after'
+            }
+            assert out == [1, 'after', 3, 'after']
+        '''
+    }
+
+    @Test
+    void labeledBreakFromArrowArmLeavesTheEnclosingLoop() {
+        assertBoth '''
+            def out = []
+            outer:
+            for (i in 1..3) {
+                switch (i) {
+                    case 2  -> break outer
+                    default -> out << i
+                }
+            }
+            assert out == [1]
+        '''
+    }
+
+    @Test
+    void returnFromSwitchExpressionNestedInStatementArmIsStillError() {
+        shouldFailBoth '''
+            def m(int n) {
+                switch (n) {
+                    case 1 -> {
+                        def r = switch (n) { case 1 -> return 'x'; default -> 'y' }
+                    }
+                }
+            }
+        ''', 'does not support `return`'
+    }
+
+    @Test
+    void returnFromStatementSwitchInsideExpressionArmIsStillError() {
+        // the inner switch is a statement, but returning would still leave the outer expression
+        shouldFailBoth '''
+            def m(int a, int b) {
+                def r = switch (a) {
+                    case 1 -> {
+                        switch (b) { case 2 -> return 5 }
+                        yield 1
+                    }
+                    default -> 0
+                }
+            }
+        ''', 'does not support `return`'
+    }
+
+    //--------------------------------------------------------------------------
+    // A yield that does not end its arm still completes the switch when the
+    // switch is in statement position: its value is the result in return
+    // position, and is discarded otherwise
+
+    @Test
+    void earlyYieldInTrailingSwitchStatement() {
+        assertBoth '''
+            def pick(boolean flag) {
+                switch (1) {
+                    case 1 -> {
+                        if (flag) yield 'first'
+                        yield 'second'
+                    }
+                }
+            }
+            assert pick(true) == 'first'
+            assert pick(false) == 'second'
+        '''
+    }
+
+    @Test
+    void earlyYieldInTrailingSwitchStatementWithPrimitiveReturnType() {
+        assertBoth '''
+            int pick(int n) {
+                switch (n) {
+                    case 1 -> {
+                        if (n > 0) yield 10
+                        yield 20
+                    }
+                    default -> 30
+                }
+            }
+            assert pick(1) == 10
+            assert pick(2) == 30
+        '''
+    }
+
+    @Test
+    void earlyYieldInTrailingSwitchStatementOfClosure() {
+        assertBoth '''
+            def pick = { boolean flag ->
+                switch (1) {
+                    case 1 -> {
+                        if (flag) yield 'first'
+                        yield 'second'
+                    }
+                }
+            }
+            assert pick(true) == 'first'
+            assert pick(false) == 'second'
+        '''
+    }
+
+    @Test
+    void earlyYieldLeavesValueDiscardedSwitchStatement() {
+        assertBoth '''
+            List log = []
+            def run(boolean flag, List log) {
+                switch (1) {
+                    case 1 -> {
+                        if (flag) yield 'first'
+                        log << 'fell through'
+                        yield 'second'
+                    }
+                }
+                log << 'after'
+                'end'
+            }
+            assert run(true, log) == 'end'
+            assert log == ['after']
+            log.clear()
+            assert run(false, log) == 'end'
+            assert log == ['fell through', 'after']
+        '''
+    }
+
+    @Test
+    void earlyYieldInsideLoopOfArm() {
+        assertBoth '''
+            def pick(List<Integer> xs) {
+                switch (1) {
+                    case 1 -> {
+                        for (x in xs) {
+                            if (x > 2) yield "big $x".toString()
+                        }
+                        yield 'none'
+                    }
+                }
+            }
+            assert pick([1, 5, 7]) == 'big 5'
+            assert pick([1]) == 'none'
+
+            List log = []
+            def run(List<Integer> xs, List log) {
+                switch (1) {
+                    case 1 -> {
+                        while (!xs.isEmpty()) {
+                            int x = xs.remove(0)
+                            if (x > 2) yield x
+                            log << x
+                        }
+                        log << 'loop done'
+                        yield 0
+                    }
+                }
+                log << 'after'
+            }
+            run([1, 5, 7], log)
+            assert log == [1, 'after']
+        '''
+    }
+
+    @Test
+    void earlyYieldRunsEnclosingFinallyBlock() {
+        assertBoth '''
+            List log = []
+            def pick(boolean flag, List log) {
+                switch (1) {
+                    case 1 -> {
+                        try {
+                            if (flag) yield 'first'
+                            log << 'body'
+                        } finally {
+                            log << 'finally'
+                        }
+                        yield 'second'
+                    }
+                }
+            }
+            assert pick(true, log) == 'first'
+            assert log == ['finally']
+            log.clear()
+            assert pick(false, log) == 'second'
+            assert log == ['body', 'finally']
+        '''
+    }
+
+    @Test
+    void earlyYieldTargetsItsOwnSwitchWhenSwitchStatementsAreNested() {
+        assertBoth '''
+            def pick(int a, int b) {
+                switch (a) {
+                    case 1 -> {
+                        switch (b) {
+                            case 1 -> {
+                                if (a == b) yield 'inner early'
+                                yield 'inner late'
+                            }
+                        }
+                        if (b == 2) yield 'outer early'
+                        yield 'outer late'
+                    }
+                }
+            }
+            assert pick(1, 1) == 'outer late'
+            assert pick(1, 2) == 'outer early'
+            assert pick(1, 3) == 'outer late'
+        '''
+    }
+
+    @Test
+    void earlyYieldInsideNestedColonSwitchStatementCompletesTheArrowSwitch() {
+        assertBoth '''
+            def pick(int a, int b) {
+                switch (a) {
+                    case 1 -> {
+                        switch (b) {
+                            case 2:
+                                yield 'nested colon'
+                        }
+                        yield 'outer'
+                    }
+                }
+            }
+            assert pick(1, 2) == 'nested colon'
+            assert pick(1, 3) == 'outer'
+
+            List log = []
+            def run(int a, int b, List log) {
+                switch (a) {
+                    case 1 -> {
+                        switch (b) {
+                            case 2:
+                                yield 'nested colon'
+                        }
+                        log << 'fell through'
+                        yield 'outer'
+                    }
+                }
+                log << 'after'
+            }
+            run(1, 2, log)
+            assert log == ['after']
+            log.clear()
+            run(1, 3, log)
+            assert log == ['fell through', 'after']
+        '''
+    }
+
+    @Test
+    void earlyYieldInSwitchExpressionPositions() {
+        // a switch whose value is used is an expression, so this does not go through the statement lowering
+        assertBoth '''
+            def viaReturn(int n, boolean flag) {
+                return switch (n) {
+                    case 1 -> { if (flag) yield 'early'; yield 'late' }
+                    default -> 'other'
+                }
+            }
+            def viaAssignment(int n, boolean flag) {
+                def result = switch (n) {
+                    case 1 -> { if (flag) yield 'early'; yield 'late' }
+                    default -> 'other'
+                }
+                result
+            }
+            def viaArgument(int n, boolean flag) {
+                String.valueOf(switch (n) {
+                    case 1 -> { if (flag) yield 'early'; yield 'late' }
+                    default -> 'other'
+                })
+            }
+            assert [viaReturn(1, true), viaReturn(1, false), viaReturn(2, true)] == ['early', 'late', 'other']
+            assert [viaAssignment(1, true), viaAssignment(1, false), viaAssignment(2, true)] == ['early', 'late', 'other']
+            assert [viaArgument(1, true), viaArgument(1, false), viaArgument(2, true)] == ['early', 'late', 'other']
+        '''
+    }
+
+    @Test
+    void earlyYieldInReturnPositionKeepsStatementsAddedBeforeIt() {
+        def script = '''
+            def pick(boolean flag) {
+                switch (1) {
+                    case 1 -> {
+                        if (flag) yield 'first'
+                        yield 'second'
+                    }
+                }
+            }
+            assert pick(true) == 'first'
+            assert pick(false) == 'second'
+        '''
+        [new CompilerConfiguration(), staticConfig()].each { config ->
+            config.addCompilationCustomizers(prependToEarlyYields())
+            new GroovyShell(config).evaluate(script)
+        }
+    }
+
+    // stands in for a transform that adds a statement to the start of each lowered early yield
+    private static CompilationCustomizer prependToEarlyYields() {
+        new CompilationCustomizer(CompilePhase.CANONICALIZATION) {
+            @Override
+            void call(SourceUnit source, GeneratorContext context, ClassNode classNode) {
+                def visitor = new CodeVisitorSupport() {
+                    @Override
+                    void visitBlockStatement(BlockStatement block) {
+                        if (block.statements && block.statements[-1].getNodeMetaData(YieldStatement) != null) {
+                            block.statements.add(0, stmt(constX('added by a transform')))
+                        }
+                        super.visitBlockStatement(block)
+                    }
+                }
+                classNode.methods.each { it.code?.visit(visitor) }
+            }
+        }
+    }
+
+    @Test
+    void mixingArrowAndColonLabelsIsError() {
+        shouldFailBoth '''
+            def r = switch (6) {
+                case 6 -> 'a'
+                case 8:
+                    yield 'b'
+                default -> 'c'
+            }
+        ''', 'cannot be used together'
+    }
+
+    //--------------------------------------------------------------------------
+    // Duplicate case labels (GROOVY-12289)
+
+    @Test
+    void duplicateConstantLabelDynamicFirstMatchWins() {
+        assertScript '''
+            def m(x) { def r = switch (x) { case 1 -> 'a'; case 1 -> 'b'; default -> 'c' }; r }
+            assert m(1) == 'a'
+            assert m(9) == 'c'
+        '''
+    }
+
+    @Test
+    void duplicateConstantLabelIsTypeCheckingError() {
+        for (mode in ['@groovy.transform.TypeChecked', '@groovy.transform.CompileStatic']) {
+            for (dup in [
+                    [decl: 'int x',    arms: "case 1 -> 'a'; case 1 -> 'b'",         label: '1'],
+                    [decl: 'String x', arms: 'case "a" -> 1; case "a" -> 2',         label: 'a'],
+                    [decl: 'int x',    arms: "case 1 -> 'a'; case 1 -> 'b'; case f() -> 'd'", label: '1']]) {
+                def err = shouldFail MultipleCompilationErrorsException, """
+                    class C {
+                        def f() { 5 }
+                        $mode
+                        def m(${dup.decl}) { def r = switch (x) { ${dup.arms}; default -> 'z' }; r }
+                    }
+                """
+                assert err.message.contains('[Static type checking] - Duplicate case label: ' + dup.label)
+            }
+        }
+    }
+
+    @Test
+    void duplicateEnumLabelIsTypeCheckingError() {
+        for (mode in ['@groovy.transform.TypeChecked', '@groovy.transform.CompileStatic']) {
+            def err = shouldFail MultipleCompilationErrorsException, """
+                enum E { X, Y }
+                class C {
+                    $mode
+                    def m(E e) { def r = switch (e) { case E.X -> 1; case E.X -> 2; default -> 0 }; r }
+                }
+            """
+            assert err.message.contains('Duplicate case label: E.X')
+        }
+    }
+
+    @Test
+    void duplicateNonConstantLabelIsNotAnError() {
+        assertBoth '''
+            def m(String x, String y) {
+                def r = switch (x) { case "${y}" -> 1; case "${y}" -> 2; default -> 0 }
+                r
+            }
+            assert m('a', 'a') == 1
+            assert m('b', 'a') == 0
+        '''
+    }
+
+    // an enum constant and a string label with the same spelling are distinct
+    // labels, not duplicates (the string arm simply never matches an enum)
+    @Test
+    void enumAndStringLabelsWithSameNameAreNotDuplicates() {
+        assertBoth '''
+            enum E { X, Y }
+            def m(E e) {
+                def r = switch (e) { case E.X -> 1; case 'X' -> 2; default -> 0 }
+                r
+            }
+            assert m(E.X) == 1
+            assert m(E.Y) == 0
+        '''
+    }
+
+    @Test
+    void duplicateLabelInSwitchStatementIsTypeCheckingError() {
+        // GROOVY-12289 left statements out; GROOVY-12406 closes the gap, so the
+        // diagnostic no longer depends on position, any more than Java's does
+        for (mode in ['@groovy.transform.TypeChecked', '@groovy.transform.CompileStatic']) {
+            for (dup in [
+                    [decl: 'int x',    arms: "case 1: return 'a'; case 1: return 'b'",   label: '1'],
+                    [decl: 'String x', arms: 'case "a": return 1; case "a": return 2',   label: 'a'],
+                    [decl: 'int x',    arms: "case 1: return 'a'; case 2: return 'b'; case 1: return 'c'", label: '1']]) {
+                def err = shouldFail MultipleCompilationErrorsException, """
+                    $mode
+                    def m(${dup.decl}) { switch (x) { ${dup.arms}; default: return 'z' } }
+                """
+                assert err.message.contains('[Static type checking] - Duplicate case label: ' + dup.label)
+            }
+        }
+    }
+
+    @Test
+    void duplicateEnumLabelInSwitchStatementIsTypeCheckingError() {
+        for (mode in ['@groovy.transform.TypeChecked', '@groovy.transform.CompileStatic']) {
+            def err = shouldFail MultipleCompilationErrorsException, """
+                enum E { X, Y }
+                $mode
+                def m(E e) { switch (e) { case E.X: return 1; case E.X: return 2; default: return 0 } }
+            """
+            assert err.message.contains('[Static type checking] - Duplicate case label: E.X')
+        }
+    }
+
+    @Test
+    void repeatedNonConstantLabelInSwitchStatementIsAllowed() {
+        // two labels can only be compared when both values are known statically
+        assertBoth '''
+            @groovy.transform.TypeChecked
+            def m(Object o, Object a, Object b) {
+                switch (o) { case a: return 'x'; case b: return 'y'; default: return 'z' }
+            }
+            assert m('q', 'q', 'q') == 'x'
+        '''
+    }
+
+    @Test
+    void duplicateLabelInSwitchStatementStillRunsDynamically() {
+        assertScript '''
+            def m(int x) { switch (x) { case 1: return 'a'; case 1: return 'b'; default: return 'c' } }
+            assert m(1) == 'a'
+            assert m(9) == 'c'
+        '''
+    }
+}

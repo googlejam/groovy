@@ -16,12 +16,15 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
 import org.codehaus.groovy.control.MultipleCompilationErrorsException
+import org.junit.jupiter.api.Test
 
-class Groovy4121Bug extends GroovyTestCase {
+import static org.junit.jupiter.api.Assertions.fail
+
+class Groovy4121Bug {
+    @Test
     void testAssignmentToAFieldMadeFinalByImmutable() {
         try {
             new GroovyShell().parse """
@@ -29,13 +32,13 @@ class Groovy4121Bug extends GroovyTestCase {
                 class Account4121 {
                     BigDecimal balance
                     String customer
-                    
+
                     Account4121 deposit(amount) {
                         balance = balance + amount
                         this
                     }
                 }
-                
+
                 def acc = new Account4121(0.0, "Test")
                 acc.deposit(3.1)
                 assert 3.1 == acc.balance

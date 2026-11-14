@@ -16,11 +16,15 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy7958Bug extends GroovyTestCase {
+import static groovy.test.GroovyAssert.assertScript
+
+
+class Groovy7958Bug {
+    @Test
     void testCommaSepVariableDeclarationAfterIf() {
         assertScript """
             int xNext = 0, yNext = 0

@@ -18,6 +18,8 @@
  */
 package groovy.json;
 
+import groovy.transform.NamedParam;
+import org.apache.groovy.json.internal.BaseJsonParser;
 import org.apache.groovy.json.internal.JsonFastParser;
 import org.apache.groovy.json.internal.JsonParserCharArray;
 import org.apache.groovy.json.internal.JsonParserLax;
@@ -29,9 +31,12 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.Reader;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Date;
 import java.util.Map;
 
 /**
@@ -42,7 +47,7 @@ import java.util.Map;
  * JSON slurper parses text or reader content into a data structure of lists and maps.
  * <p>
  * Example usage:
- * <code><pre class="groovyTestCase">
+ * <code><pre class="language-groovy groovyTestCase">
  * def slurper = new groovy.json.JsonSlurper()
  * def result = slurper.parseText('{"person":{"name":"Guillaume","age":33,"pets":["dog","cat"]}}')
  *
@@ -83,6 +88,12 @@ import java.util.Map;
  * <code><pre>
  *             parser = new JsonSlurper().setType(JsonParserType.INDEX_OVERLAY);
  * </pre></code>
+ * <p>
+ * {@code JsonSlurper} reads the whole document into memory and does not bound total input size (only
+ * nesting depth, via {@link #setMaxNestingDepth(int)}). For very large documents, bound the input size
+ * before parsing, or use a streaming / Jackson-based parser instead; Groovy interoperates cleanly with
+ * Jackson (the {@code groovy-yaml}/{@code groovy-toml}/{@code groovy-csv} slurpers are already
+ * Jackson-backed).
  *
  * @see groovy.json.JsonParserType
  * @since 1.8.0
@@ -92,13 +103,27 @@ public class JsonSlurper {
     private int maxSizeForInMemory = 2000000;
     private boolean chop = false;
     private boolean lazyChop = true;
-    private boolean checkDates = true;
+    private JsonDateHandling dateHandling = JsonDateHandling.UTIL_DATE;
+    private boolean dateHandlingChosen;
+    private int maxNestingDepth = Integer.getInteger("groovy.json.maxNestingDepth", BaseJsonParser.DEFAULT_MAX_NESTING_DEPTH);
+    private int maxNumberLength = Integer.getInteger("groovy.json.maxNumberLength", BaseJsonParser.DEFAULT_MAX_NUMBER_LENGTH);
 
     private JsonParserType type = JsonParserType.CHAR_BUFFER;
 
     /**
-     * Max size before Slurper starts to use windowing buffer parser.
-     * @return size of file/buffer
+     * The threshold (in characters) that selects which parser strategy the {@code File}-based parse
+     * methods use: documents smaller than this are parsed in memory, larger ones use a windowing
+     * buffer parser.
+     * <p>
+     * <strong>This is a parser-strategy selector, not a size limit.</strong> It does not reject or
+     * cap input &mdash; an oversized document is still parsed in full (by the windowing parser).
+     * It is consulted <em>only</em> by the {@link File}-based parse methods; the
+     * {@link #parse(Reader)}, {@link #parse(InputStream)} and {@code parse(URL)} entry points ignore
+     * it and buffer their entire input into memory regardless of this value. To bound untrusted
+     * input, limit its size yourself before parsing (and cap nesting via
+     * {@link #setMaxNestingDepth(int)} or the {@code groovy.json.maxNestingDepth} system property).
+     *
+     * @return the in-memory vs windowing-parser selection threshold
      * @since 2.3
      */
     public int getMaxSizeForInMemory() {
@@ -106,9 +131,18 @@ public class JsonSlurper {
     }
 
     /**
-     * Max size before Slurper starts to use windowing buffer parser.
+     * Sets the threshold that selects which parser strategy the {@code File}-based parse methods use
+     * (see {@link #getMaxSizeForInMemory()}).
+     * <p>
+     * <strong>This selects a parser strategy; it does not limit or reject input.</strong> Setting it
+     * gives no DoS protection: it is not consulted by {@link #parse(Reader)},
+     * {@link #parse(InputStream)} or {@code parse(URL)}, and even the {@code File}-based methods still
+     * parse documents larger than the threshold. Bound untrusted input by its size before parsing,
+     * and cap nesting via {@link #setMaxNestingDepth(int)} or {@code groovy.json.maxNestingDepth}.
+     *
+     * @param maxSizeForInMemory the in-memory vs windowing-parser selection threshold
+     * @return this {@code JsonSlurper} instance
      * @since 2.3
-     * @return JsonSlurper
      */
     public JsonSlurper setMaxSizeForInMemory(int maxSizeForInMemory) {
         this.maxSizeForInMemory = maxSizeForInMemory;
@@ -173,21 +207,135 @@ public class JsonSlurper {
     }
 
     /**
-     * Determine if slurper will automatically parse strings it recognizes as dates. Index overlay only.
-     * @return on or off
+     * Whether a string in a full ISO-8601 or JSON-date form is returned as a
+     * {@link Date} rather than as a {@code String}. On by default.
+     * <p>
+     * This applies to {@link JsonParserType#INDEX_OVERLAY} and
+     * {@link JsonParserType#LAX}; the other two parser types return the string either
+     * way, so setting this has no effect on them. A date without a time, such as
+     * {@code "2026-09-04"}, is left as a {@code String} by all four.
+     *
+     * @return whether date-like strings are converted
      * @since 2.3
+     * @deprecated a boolean cannot say which type is wanted; use {@link #getDateHandling()}
      */
+    @Deprecated
     public boolean isCheckDates() {
-        return checkDates;
+        return dateHandling != JsonDateHandling.STRING;
     }
 
     /**
-     * Determine if slurper will automatically parse strings it recognizes as dates. Index overlay only.
-     * @return on or off
+     * Sets whether a string in a full ISO-8601 or JSON-date form is returned as a
+     * {@link Date} rather than as a {@code String}. On by default.
+     * <p>
+     * This applies to {@link JsonParserType#INDEX_OVERLAY} and
+     * {@link JsonParserType#LAX}; the other two parser types return the string either
+     * way, so setting this has no effect on them. Note that a {@code Date} is an
+     * instant, so an offset in the source is not preserved by the conversion.
+     *
+     * Has no effect once {@link #setDateHandling(JsonDateHandling)} has been called on this
+     * slurper, so that a choice made through the wider option is not undone by this one.
+     *
+     * @param checkDates whether date-like strings should be converted
+     * @return this slurper, for chaining
      * @since 2.3
+     * @deprecated a boolean cannot say which type is wanted; use
+     *             {@link #setDateHandling(JsonDateHandling)}
      */
+    @Deprecated
     public JsonSlurper setCheckDates(boolean checkDates) {
-        this.checkDates = checkDates;
+        if (!dateHandlingChosen) {
+            this.dateHandling = checkDates ? JsonDateHandling.UTIL_DATE : JsonDateHandling.STRING;
+        }
+        return this;
+    }
+
+    /**
+     * What a string in a full ISO-8601 or JSON-date form is turned into.
+     *
+     * @return the handling in effect
+     * @since 6.0.0
+     */
+    public JsonDateHandling getDateHandling() {
+        return dateHandling;
+    }
+
+    /**
+     * Sets what a string in a full ISO-8601 or JSON-date form is turned into. Defaults to
+     * {@link JsonDateHandling#UTIL_DATE}, which is what a slurper has always produced.
+     * <p>
+     * This applies to {@link JsonParserType#INDEX_OVERLAY} and {@link JsonParserType#LAX};
+     * the other two parser types return the string whatever is set here. A date carrying no
+     * time, such as {@code "2026-09-04"}, is left as a {@code String} by all four.
+     *
+     * Calling this also makes {@link #setCheckDates(boolean)} a no-op on this slurper,
+     * whichever order the two are called in.
+     *
+     * @param dateHandling what a date-like string should become
+     * @return this slurper, for chaining
+     * @since 6.0.0
+     */
+    public JsonSlurper setDateHandling(JsonDateHandling dateHandling) {
+        this.dateHandling = dateHandling == null ? JsonDateHandling.STRING : dateHandling;
+        this.dateHandlingChosen = true;
+        return this;
+    }
+
+    /**
+     * The maximum nesting depth of arrays/objects the parser will accept before throwing a
+     * {@link JsonException}. This guards the recursive-descent parsers against a small but
+     * deeply-nested document driving a {@link StackOverflowError}. A value of {@code 0} or less
+     * disables the check (restoring the previous, unbounded behaviour). Defaults to
+     * {@link BaseJsonParser#DEFAULT_MAX_NESTING_DEPTH}, and can
+     * be overridden globally with the {@code groovy.json.maxNestingDepth} system property.
+     *
+     * @return the maximum nesting depth
+     * @since 6.0.0
+     */
+    public int getMaxNestingDepth() {
+        return maxNestingDepth;
+    }
+
+    /**
+     * Sets the maximum nesting depth of arrays/objects the parser will accept before throwing a
+     * {@link JsonException}. A value of {@code 0} or less disables the check.
+     *
+     * @param maxNestingDepth maximum number of nested arrays/objects to allow
+     * @return this {@code JsonSlurper}
+     * @since 6.0.0
+     */
+    public JsonSlurper setMaxNestingDepth(int maxNestingDepth) {
+        this.maxNestingDepth = maxNestingDepth;
+        return this;
+    }
+
+    /**
+     * The maximum length, in characters, of a single number token the parser will accept before
+     * throwing a {@link JsonException}. Converting a digit run past the {@code long} range builds
+     * a {@link BigInteger} or {@link BigDecimal}, and decimal conversion is
+     * superlinear in the digit count, so an uncapped token lets a small document cost quadratic
+     * CPU. A value of {@code 0} or less disables the check (restoring the previous, unbounded
+     * behaviour). Defaults to
+     * {@link BaseJsonParser#DEFAULT_MAX_NUMBER_LENGTH}, and can
+     * be overridden globally with the {@code groovy.json.maxNumberLength} system property.
+     *
+     * @return the maximum number token length
+     * @since 6.0.0
+     */
+    public int getMaxNumberLength() {
+        return maxNumberLength;
+    }
+
+    /**
+     * Sets the maximum length, in characters, of a single number token the parser will accept
+     * before throwing a {@link JsonException}. A value of {@code 0} or less disables the check.
+     *
+     * @param maxNumberLength maximum number of characters in a number token
+     * @return this {@code JsonSlurper}
+     * @since 6.0.0
+     */
+    public JsonSlurper setMaxNumberLength(int maxNumberLength) {
+        this.maxNumberLength = maxNumberLength;
         return this;
     }
 
@@ -317,23 +465,16 @@ public class JsonSlurper {
     }
 
     private JsonParser createParser() {
-        switch (type) {
-            case LAX:
-                return new JsonParserLax(false, chop, lazyChop, checkDates);
-
-            case CHAR_BUFFER:
-                return new JsonParserCharArray();
-
-            case CHARACTER_SOURCE:
-                return new JsonParserUsingCharacterSource();
-
-
-            case INDEX_OVERLAY:
-                return new JsonFastParser(false, chop, lazyChop, checkDates);
-
-            default:
-                return new JsonParserCharArray();
-        }
+        BaseJsonParser parser = switch (type) {
+            case LAX -> new JsonParserLax(false, chop, lazyChop, dateHandling);
+            case CHAR_BUFFER -> new JsonParserCharArray();
+            case CHARACTER_SOURCE -> new JsonParserUsingCharacterSource();
+            case INDEX_OVERLAY -> new JsonFastParser(false, chop, lazyChop, dateHandling);
+            default -> new JsonParserCharArray();
+        };
+        parser.setMaxNestingDepth(maxNestingDepth);
+        parser.setMaxNumberLength(maxNumberLength);
+        return parser;
     }
 
     /**
@@ -384,7 +525,10 @@ public class JsonSlurper {
         if (file.length() < maxSizeForInMemory) {
             return createParser().parse(file, charset);
         } else {
-            return new JsonParserUsingCharacterSource().parse(file, charset);
+            JsonParserUsingCharacterSource parser = new JsonParserUsingCharacterSource();
+            parser.setMaxNestingDepth(maxNestingDepth);
+            parser.setMaxNumberLength(maxNumberLength);
+            return parser.parse(file, charset);
         }
     }
 
@@ -407,6 +551,7 @@ public class JsonSlurper {
      * @return a data structure of lists and maps
      * @since 2.2.0
      */
+    @SuppressWarnings({"rawtypes", "unchecked"})
     public Object parse(URL url, Map params) {
         return parseURL(url, params);
     }
@@ -419,11 +564,27 @@ public class JsonSlurper {
      * @return a data structure of lists and maps
      * @since 2.2.0
      */
-    public Object parse(Map params, URL url) {
+    public Object parse(
+            @NamedParam(value = "connectTimeout", type = Integer.class)
+            @NamedParam(value = "readTimeout", type = Integer.class)
+            @NamedParam(value = "useCaches", type = Boolean.class)
+            @NamedParam(value = "allowUserInteraction", type = Boolean.class)
+            @NamedParam(value = "requestProperties", type = Map.class)
+            Map<String, ?> params,
+            URL url
+    ) {
         return parseURL(url, params);
     }
 
-    private Object parseURL(URL url, Map params) {
+    private Object parseURL(
+            URL url,
+            @NamedParam(value = "connectTimeout", type = Integer.class)
+            @NamedParam(value = "readTimeout", type = Integer.class)
+            @NamedParam(value = "useCaches", type = Boolean.class)
+            @NamedParam(value = "allowUserInteraction", type = Boolean.class)
+            @NamedParam(value = "requestProperties", type = Map.class)
+            Map<String, ?> params
+    ) {
         Reader reader = null;
         try {
             if (params == null || params.isEmpty()) {
@@ -462,6 +623,7 @@ public class JsonSlurper {
      * @return a data structure of lists and maps
      * @since 2.2.0
      */
+    @SuppressWarnings({"rawtypes", "unchecked"})
     public Object parse(URL url, Map params, String charset) {
         return parseURL(url, params, charset);
     }
@@ -475,10 +637,12 @@ public class JsonSlurper {
      * @return a data structure of lists and maps
      * @since 2.2.0
      */
+    @SuppressWarnings({"rawtypes", "unchecked"})
     public Object parse(Map params, URL url, String charset) {
         return parseURL(url, params, charset);
     }
 
+    @SuppressWarnings({"rawtypes", "unchecked"})
     private Object parseURL(URL url, Map params, String charset) {
         Reader reader = null;
         try {

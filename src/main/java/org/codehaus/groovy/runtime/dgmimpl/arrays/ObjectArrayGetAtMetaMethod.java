@@ -18,15 +18,12 @@
  */
 package org.codehaus.groovy.runtime.dgmimpl.arrays;
 
-import groovy.lang.MetaClassImpl;
-import groovy.lang.MetaMethod;
 import org.codehaus.groovy.reflection.CachedClass;
-import org.codehaus.groovy.reflection.ReflectionCache;
-import org.codehaus.groovy.runtime.callsite.CallSite;
-import org.codehaus.groovy.runtime.callsite.PojoMetaMethodSite;
 
+import static org.codehaus.groovy.reflection.ReflectionCache.OBJECT_ARRAY_CLASS;
+
+/** {@code getAt} for an {@code Object[]}. */
 public class ObjectArrayGetAtMetaMethod extends ArrayGetAtMetaMethod {
-    private static final CachedClass OBJECT_ARR_CLASS = ReflectionCache.OBJECT_ARRAY_CLASS;
 
     @Override
     public Class getReturnType() {
@@ -35,41 +32,12 @@ public class ObjectArrayGetAtMetaMethod extends ArrayGetAtMetaMethod {
 
     @Override
     public final CachedClass getDeclaringClass() {
-        return OBJECT_ARR_CLASS;
+        return OBJECT_ARRAY_CLASS;
     }
 
     @Override
     public Object invoke(Object object, Object[] arguments) {
         final Object[] objects = (Object[]) object;
         return objects[normaliseIndex((Integer) arguments[0], objects.length)];
-    }
-
-    @Override
-    public CallSite createPojoCallSite(CallSite site, MetaClassImpl metaClass, MetaMethod metaMethod, Class[] params, Object receiver, Object[] args) {
-        if (!(args[0] instanceof Integer))
-            return PojoMetaMethodSite.createNonAwareCallSite(site, metaClass, metaMethod, params, args);
-        else
-            return new MyPojoMetaMethodSite(site, metaClass, metaMethod, params);
-    }
-
-    private static class MyPojoMetaMethodSite extends PojoMetaMethodSite {
-        public MyPojoMetaMethodSite(CallSite site, MetaClassImpl metaClass, MetaMethod metaMethod, Class[] params) {
-            super(site, metaClass, metaMethod, params);
-        }
-
-        @Override
-        public Object call(Object receiver, Object arg) throws Throwable {
-            if (checkPojoMetaClass()) {
-                try {
-                    final Object[] objects = (Object[]) receiver;
-                    return objects[normaliseIndex((Integer) arg, objects.length)];
-                }
-                catch (ClassCastException e) {
-                    if ((receiver instanceof Object[]) && (arg instanceof Integer))
-                        throw e;
-                }
-            }
-            return super.call(receiver, arg);
-        }
     }
 }

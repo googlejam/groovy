@@ -25,9 +25,7 @@ import org.apache.groovy.ginq.dsl.GinqAstVisitor
 import org.apache.groovy.ginq.dsl.expression.AbstractGinqExpression
 import org.apache.groovy.ginq.dsl.expression.GinqExpression
 import org.apache.groovy.ginq.provider.collection.GinqAstWalker
-import org.apache.groovy.lang.annotation.Incubating
 import org.codehaus.groovy.ast.ASTNode
-import org.codehaus.groovy.ast.ClassHelper
 import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.expr.Expression
 import org.codehaus.groovy.ast.expr.MapEntryExpression
@@ -39,13 +37,12 @@ import org.codehaus.groovy.macro.runtime.Macro
 import org.codehaus.groovy.macro.runtime.MacroContext
 import org.codehaus.groovy.syntax.SyntaxException
 
-import static org.codehaus.groovy.ast.tools.GeneralUtils.asX
+import static org.codehaus.groovy.ast.tools.GeneralUtils.callX
 /**
  * Declare GINQ macro methods
  *
  * @since 4.0.0
  */
-@Incubating
 @CompileStatic
 class GinqGroovyMethods {
     /**
@@ -62,7 +59,7 @@ class GinqGroovyMethods {
     }
 
     /**
-     * Represents the abbreviation of {@code GQ {...} as List}, which is very useful when used as list comprehension
+     * Represents the abbreviation of {@code GQ {...}.toList()}, which is very useful when used as list comprehension
      *
      * @param ctx the macro context
      * @param ginqClosureExpression hold the GINQ code
@@ -71,7 +68,7 @@ class GinqGroovyMethods {
      */
     @Macro
     static Expression GQL(final MacroContext ctx, final ClosureExpression ginqClosureExpression) {
-        asX(ClassHelper.LIST_TYPE, GQ(ctx, ginqClosureExpression))
+        GQL(ctx, null, ginqClosureExpression)
     }
 
     /**
@@ -85,14 +82,34 @@ class GinqGroovyMethods {
      */
     @Macro
     static Expression GQ(final MacroContext ctx, final MapExpression ginqConfigurationMapExpression, final ClosureExpression ginqClosureExpression) {
-        return transformGinqCode(ctx.sourceUnit, ginqConfigurationMapExpression, ginqClosureExpression.code)
+        transformGinqCode(ctx.sourceUnit, ginqConfigurationMapExpression, ginqClosureExpression.code)
     }
 
+    /**
+     * Represents the abbreviation of {@code GQ {...}.toList()}, which is very useful when used as list comprehension
+     *
+     * @param ctx the macro context
+     * @param ginqConfigurationMapExpression specify the configuration for GINQ, e.g. {@code astWalker}, {@code optimize}, {@code parallel}
+     * @param ginqClosureExpression hold the GINQ code
+     * @return target method invocation
+     * @since 4.0.0
+     */
+    @Macro
+    static Expression GQL(final MacroContext ctx, final MapExpression ginqConfigurationMapExpression, final ClosureExpression ginqClosureExpression) {
+        callX(GQ(ctx, ginqConfigurationMapExpression, ginqClosureExpression), 'toList')
+    }
+
+    /**
+     * Transforms parsed GINQ code into the corresponding queryable method calls.
+     *
+     * @param sourceUnit the source unit owning the code
+     * @param ginqConfigurationMapExpression the optional GINQ configuration
+     * @param code the GINQ code block
+     * @return the transformed expression
+     */
     static Expression transformGinqCode(SourceUnit sourceUnit, MapExpression ginqConfigurationMapExpression, Statement code) {
         GinqAstBuilder ginqAstBuilder = new GinqAstBuilder(sourceUnit)
-
         AbstractGinqExpression ginqExpression = ginqAstBuilder.buildAST(code)
-
         Map<String, String> configuration = createConfiguration(sourceUnit, ginqConfigurationMapExpression)
 
         if (ginqExpression instanceof GinqExpression && TRUE_STR == configuration.get(CONF_OPTIMIZE, TRUE_STR)) {
@@ -133,10 +150,14 @@ class GinqGroovyMethods {
 
     private GinqGroovyMethods() {}
 
+    /** Supported GINQ configuration keys. */
+    public static final List<String> CONF_LIST = [CONF_PARALLEL, CONF_AST_WALKER, CONF_OPTIMIZE]
+    /** Configuration key enabling parallel execution. */
     public static final String CONF_PARALLEL = 'parallel'
+    // The 'astWalker' key selects a custom GinqAstVisitor provider; that SPI is still
+    // incubating (see GinqAstVisitor / @GQ.astWalker) and may change in a future release.
     private static final String CONF_AST_WALKER = 'astWalker'
     private static final String CONF_OPTIMIZE = 'optimize'
-    private static final List<String> CONF_LIST = [CONF_PARALLEL, CONF_AST_WALKER, CONF_OPTIMIZE]
     private static final String DEFAULT_AST_WALKER_CLASS_NAME = GinqAstWalker.class.name
     private static final String TRUE_STR = 'true'
 }

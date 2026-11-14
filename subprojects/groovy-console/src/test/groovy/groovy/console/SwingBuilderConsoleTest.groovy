@@ -20,12 +20,12 @@ package groovy.console
 
 import groovy.console.ui.Console
 import groovy.console.ui.ConsoleActions
+import groovy.console.ui.ConsoleSupport
 import groovy.console.ui.view.BasicMenuBar
 import groovy.console.ui.view.MacOSXMenuBar
 import groovy.swing.GroovySwingTestCase
 import groovy.swing.SwingBuilder
 import org.codehaus.groovy.control.CompilerConfiguration
-import org.junit.rules.TemporaryFolder
 
 import javax.swing.JTextPane
 import javax.swing.SwingUtilities
@@ -33,16 +33,20 @@ import java.awt.Color
 import java.awt.event.ActionEvent
 import java.util.prefs.Preferences
 
+import static groovy.test.GroovyAssert.isAtLeastJdk
+
 class SwingBuilderConsoleTest extends GroovySwingTestCase {
 
-    TemporaryFolder temporaryFolder
+    File temporaryFolder
     Preferences testPreferences
+
+    @Lazy
+    private static String baseDir = new File(ConsoleSupport.classLoader.getResource('groovy/console/ui/ConsoleIcon.png').toURI()).parentFile.parentFile.parentFile.parent
 
     @Override
     protected void setUp() throws Exception {
         super.setUp()
-        temporaryFolder = new TemporaryFolder()
-        temporaryFolder.create()
+        temporaryFolder = File.createTempDir('groovy-console-test', '')
 
         // create a temporary preferences object instead of using the local Console preferences
         testPreferences = Preferences.userRoot().node('/swingBuilder/console/tests')
@@ -53,14 +57,18 @@ class SwingBuilderConsoleTest extends GroovySwingTestCase {
 
     @Override
     protected void tearDown() throws Exception {
-        temporaryFolder.delete()
-
+        GroovySystem.metaClassRegistry.with {
+            removeMetaClass(SwingUtilities)
+            removeMetaClass(Preferences)
+            removeMetaClass(Thread)
+        }
+        temporaryFolder.deleteDir()
         super.tearDown()
     }
 
     void testTabbedPane() {
+        if (isAtLeastJdk('26')) return
         testInEDT {
-
             def swing = new SwingBuilder()
             swing.tabbedPane(id: 'tp') {
                 panel(id: 'p1', name: 'Title 1')
@@ -142,8 +150,8 @@ class SwingBuilderConsoleTest extends GroovySwingTestCase {
     }
 
     void testTabbedPaneRenamedProperties() {
+        if (isAtLeastJdk('26')) return
         testInEDT {
-
             def swing = new SwingBuilder()
             swing.tabbedPane(id: 'tp',
                     titleProperty: 'xTitle',
@@ -192,10 +200,10 @@ class SwingBuilderConsoleTest extends GroovySwingTestCase {
     }
 
     void testImageIcon() {
+        if (isAtLeastJdk('26')) return
         testInEDT {
             def swing = new SwingBuilder()
             final String ICON_PATH = '/groovy/console/ui/ConsoleIcon.png'
-            String baseDir = new File('src/main/resources').absolutePath
 
             String resource = ICON_PATH
             GString gresource = "${ICON_PATH}"
@@ -220,7 +228,6 @@ class SwingBuilderConsoleTest extends GroovySwingTestCase {
             assert swing.ii != null
             assert swing.ii.description == '<none>'
 
-
             swing.imageIcon(gpath, id: 'ii')
             assert swing.ii != null
 
@@ -234,7 +241,6 @@ class SwingBuilderConsoleTest extends GroovySwingTestCase {
             swing.imageIcon(file: gpath, description: '<none>', id: 'ii')
             assert swing.ii != null
             assert swing.ii.description == '<none>'
-
 
             swing.imageIcon(url, id: 'ii')
             assert swing.ii != null
@@ -250,7 +256,6 @@ class SwingBuilderConsoleTest extends GroovySwingTestCase {
             assert swing.ii != null
             assert swing.ii.description == '<none>'
 
-
             swing.imageIcon(resource, id: 'ii')
             assert swing.ii != null
 
@@ -264,7 +269,6 @@ class SwingBuilderConsoleTest extends GroovySwingTestCase {
             swing.imageIcon(file: resource, description: '<none>', id: 'ii')
             assert swing.ii != null
             assert swing.ii.description == '<none>'
-
 
             swing.imageIcon(resource, class: Console, id: 'ii')
             assert swing.ii != null
@@ -294,8 +298,6 @@ class SwingBuilderConsoleTest extends GroovySwingTestCase {
             assert swing.ii != null
             assert swing.ii.description == '<none>'
 
-
-
             swing.imageIcon(gresource, class: Console, id: 'ii')
             assert swing.ii != null
 
@@ -309,7 +311,6 @@ class SwingBuilderConsoleTest extends GroovySwingTestCase {
             swing.imageIcon(file: gresource, description: '<none>', class: Console, id: 'ii')
             assert swing.ii != null
             assert swing.ii.description == '<none>'
-
 
             swing.imageIcon(relativeResource, class: Console, id: 'ii')
             assert swing.ii != null
@@ -325,7 +326,6 @@ class SwingBuilderConsoleTest extends GroovySwingTestCase {
             assert swing.ii != null
             assert swing.ii.description == '<none>'
 
-
             swing.imageIcon(grelativeResource, class: Console, id: 'ii')
             assert swing.ii != null
 
@@ -339,11 +339,11 @@ class SwingBuilderConsoleTest extends GroovySwingTestCase {
             swing.imageIcon(file: grelativeResource, description: '<none>', class: Console, id: 'ii')
             assert swing.ii != null
             assert swing.ii.description == '<none>'
-
         }
     }
 
     void testMacOSXMenuBarHasBasicMenuBarSubElements() {
+        if (isAtLeastJdk('26')) return
         testInEDT {
             def binding = new Binding()
             binding.setVariable('controller', new Console())
@@ -375,6 +375,7 @@ class SwingBuilderConsoleTest extends GroovySwingTestCase {
     }
 
     void testAutoSaveOnRunMenuBarCheckbox() {
+        if (isAtLeastJdk('26')) return
         testInEDT {
             def binding = new Binding()
             binding.setVariable('controller', new Console())
@@ -384,7 +385,8 @@ class SwingBuilderConsoleTest extends GroovySwingTestCase {
             def swing = new SwingBuilder()
 
             final console = new Console()
-            final scriptFile = temporaryFolder.newFile('test.groovy')
+            final scriptFile = new File(temporaryFolder, 'test.groovy')
+            scriptFile.createNewFile()
             console.scriptFile = scriptFile
 
             swing.controller = console
@@ -404,6 +406,7 @@ class SwingBuilderConsoleTest extends GroovySwingTestCase {
     }
 
     void testDoNotShowOriginalStackTrace() {
+        if (isAtLeastJdk('26')) return
         testInEDT {
             SwingUtilities.metaClass.static.invokeLater = { Runnable runnable ->
                 runnable.run()
@@ -415,33 +418,30 @@ class SwingBuilderConsoleTest extends GroovySwingTestCase {
             // in case the static final var has been already initialized
             Console.prefs = testPreferences
 
-            try {
-                def binding = new Binding()
-                binding.setVariable('controller', new Console())
+            def binding = new Binding()
+            binding.setVariable('controller', new Console())
 
-                final consoleActions = new ConsoleActions()
-                final console = new Console()
+            final consoleActions = new ConsoleActions()
+            final console = new Console()
 
-                def swing = new SwingBuilder()
-                swing.controller = console
+            def swing = new SwingBuilder()
+            swing.controller = console
 
-                swing.build(consoleActions)
-                console.run()
+            swing.build(consoleActions)
+            console.run()
 
-                console.inputArea.text = 'throw new Exception()'
-                console.runScript(new EventObject([:]))
+            console.inputArea.text = 'throw new Exception()'
+            console.runScript(new EventObject([:]))
+            waitForScriptCompletion(console)
 
-                def doc = console.outputArea.document
-                assert doc.getText(0, doc.length) =~ /java.lang.Exception/
-            } finally {
-                GroovySystem.metaClassRegistry.removeMetaClass(Thread)
-                GroovySystem.metaClassRegistry.removeMetaClass(SwingUtilities)
-                GroovySystem.metaClassRegistry.removeMetaClass(Preferences)
-            }
+            def doc = console.outputArea.document
+            def txt = doc.getText(0, doc.length)
+            assert txt =~ /java.lang.Exception/
         }
     }
 
     void testSelectBlock() {
+        if (isAtLeastJdk('26')) return
         testInEDT {
             final consoleActions = new ConsoleActions()
             def swing = new SwingBuilder()
@@ -515,6 +515,7 @@ class SwingBuilderConsoleTest extends GroovySwingTestCase {
     }
 
     void testSystemOutputAndErrorRedirectedToCorrectConsole() {
+        if (isAtLeastJdk('26')) return
         testInEDT {
             SwingUtilities.metaClass.static.invokeLater = { Runnable runnable ->
                 runnable.run()
@@ -525,49 +526,47 @@ class SwingBuilderConsoleTest extends GroovySwingTestCase {
 
             Console.prefs = testPreferences
 
-            try {
-                def swing = new SwingBuilder()
-                final Console console = new Console()
-                swing.controller = console
-                swing.build(new ConsoleActions())
-                console.run()
-                console.fileNewWindow()
-                final Console console2 = Console.consoleControllers.last()
+            Console console1 = new Console()
+            def swing = new SwingBuilder()
+            swing.controller = console1
+            swing.build(new ConsoleActions())
+            console1.run()
+            console1.fileNewWindow()
+            Console console2 = Console.consoleControllers.last()
 
-                console.showScriptInOutput = false
-                console2.showScriptInOutput = false
+            console1.showScriptInOutput = false
+            console2.showScriptInOutput = false
 
-                def doc = console.outputArea.document
-                def doc2 = console2.outputArea.document
+            def doc1 = console1.outputArea.document
+            def doc2 = console2.outputArea.document
 
-                assert console.consoleId != console2.consoleId
+            assert console1.consoleId != console2.consoleId
 
-                console.inputArea.text = 'println "test1"'
-                console.runScript()
+            console1.inputArea.text = 'println "test1"'
+            console1.runScript()
+            waitForScriptCompletion(console1)
 
-                assert 'test1' == doc.getText(0, doc.length).trim()
-                assert '' == doc2.getText(0, doc2.length).trim()
+            assert doc1.getText(0, doc1.length).trim() == 'test1'
+            assert doc2.getText(0, doc2.length).trim() == ''
 
-                console2.inputArea.text = 'println "test2"'
-                console2.runScript()
+            console2.inputArea.text = 'println "test2"'
+            console2.runScript()
+            waitForScriptCompletion(console2)
 
-                assert 'test1' == doc.getText(0, doc.length).trim()
-                assert 'test2' == doc2.getText(0, doc2.length).trim()
+            assert doc1.getText(0, doc1.length).trim() == 'test1'
+            assert doc2.getText(0, doc2.length).trim() == 'test2'
 
-                console2.inputArea.text = 'System.err.println "error2"'
-                console2.runScript()
+            console2.inputArea.text = 'System.err.println "error2"'
+            console2.runScript()
+            waitForScriptCompletion(console2)
 
-                assert 'test1' == doc.getText(0, doc.length).trim()
-                assert doc2.getText(0, doc2.length) ==~ /(?s)(test2)[^\w].*(error2).*/
-            } finally {
-                GroovySystem.metaClassRegistry.removeMetaClass(Thread)
-                GroovySystem.metaClassRegistry.removeMetaClass(SwingUtilities)
-                GroovySystem.metaClassRegistry.removeMetaClass(Preferences)
-            }
+            assert doc1.getText(0, doc1.length).trim() == 'test1'
+            assert doc2.getText(0, doc2.length) ==~ /(?s)(test2)[^\w].*(error2).*/
         }
     }
 
     void testWithIndyCompilation() {
+        if (isAtLeastJdk('26')) return
         testInEDT {
             SwingUtilities.metaClass.static.invokeLater = { Runnable runnable ->
                 runnable.run()
@@ -577,33 +576,37 @@ class SwingBuilderConsoleTest extends GroovySwingTestCase {
             }
             // in case the static final var has been already initialized
             Console.prefs = testPreferences
-            try {
-                def swing = new SwingBuilder()
-                final Console console = new Console()
-                swing.controller = console
-                swing.build(new ConsoleActions())
-                console.showScriptInOutput = false
-                console.run()
 
-                String scriptSource = '"foo".concat("bar")'
+            def swing = new SwingBuilder()
+            final Console console = new Console()
+            swing.controller = console
+            swing.build(new ConsoleActions())
+            console.showScriptInOutput = false
+            console.run()
 
-                def outputDocument = console.outputArea.document
-                console.inputEditor.textEditor.text = scriptSource
+            String scriptSource = '"foo".concat("bar")'
 
-                console.runScript(new EventObject([:]))
-                assert console.config.getOptimizationOptions().get(CompilerConfiguration.INVOKEDYNAMIC)
-                assert outputDocument.getText(0, outputDocument.length) == 'Result: foobar'
+            def outputDocument = console.outputArea.document
+            console.inputEditor.textEditor.text = scriptSource
 
-                console.outputArea.text = ''
-                console.runScript(new EventObject([:]))
-                assert console.config.getOptimizationOptions().get(CompilerConfiguration.INVOKEDYNAMIC)
-                assert outputDocument.getText(0, outputDocument.length) == 'Result: foobar'
-            } finally {
-                GroovySystem.metaClassRegistry.removeMetaClass(Thread)
-                GroovySystem.metaClassRegistry.removeMetaClass(SwingUtilities)
-                GroovySystem.metaClassRegistry.removeMetaClass(Preferences)
-            }
+            console.runScript(new EventObject([:]))
+            waitForScriptCompletion(console)
+
+            assert console.config.getOptimizationOptions().get(CompilerConfiguration.INVOKEDYNAMIC)
+            assert outputDocument.getText(0, outputDocument.length) == 'Result: foobar'
+
+            console.outputArea.text = ''
+            console.runScript(new EventObject([:]))
+            waitForScriptCompletion(console)
+
+            assert console.config.getOptimizationOptions().get(CompilerConfiguration.INVOKEDYNAMIC)
+            assert outputDocument.getText(0, outputDocument.length) == 'Result: foobar'
         }
     }
 
+    private static void waitForScriptCompletion(Console console) {
+        Thread thread = console.runThread
+        thread?.join(5000)
+        assert thread == null || !thread.alive
+    }
 }

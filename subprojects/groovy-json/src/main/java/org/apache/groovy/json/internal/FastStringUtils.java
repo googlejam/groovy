@@ -30,6 +30,9 @@ import java.util.ServiceLoader;
 public class FastStringUtils {
 
     private static class ServiceHolder {
+        /**
+         * Loaded fast-string service implementation.
+         */
         static final FastStringService INSTANCE = loadService();
 
         private static FastStringService loadService() {
@@ -47,7 +50,7 @@ public class FastStringUtils {
                     }
                 }
             }
-            return found;
+            return found != null ? found : new DefaultFastStringService();
         }
     }
 

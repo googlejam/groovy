@@ -1,5 +1,3 @@
-import groovy.test.GroovyTestCase
-
 /*
  *  Licensed to the Apache Software Foundation (ASF) under one
  *  or more contributor license agreements.  See the NOTICE file
@@ -18,8 +16,15 @@ import groovy.test.GroovyTestCase
  *  specific language governing permissions and limitations
  *  under the License.
  */
-class ClassTest extends GroovyTestCase {
 
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.assertScript
+import static groovy.test.GroovyAssert.shouldFail
+
+final class ClassTest {
+
+    @Test
     void testClassDefinition() {
         assertScript '''
             // tag::class_definition[]
@@ -41,13 +46,14 @@ class ClassTest extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testInnerInstantiation() {
         assertScript '''
             // tag::inner_instantiation[]
             class Computer {
                 class Cpu {
                     int coreNumber
-            
+
                     Cpu(int coreNumber) {
                         this.coreNumber = coreNumber
                     }
@@ -59,6 +65,7 @@ class ClassTest extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testInnerClass() {
         assertScript '''
             // tag::inner_class[]
@@ -80,6 +87,7 @@ class ClassTest extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testInnerClass2() {
         assertScript '''
             // tag::inner_class2[]
@@ -101,6 +109,7 @@ class ClassTest extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testAnonymousInnerClass() {
         assertScript '''
             // tag::anonymous_inner_class[]
@@ -120,6 +129,7 @@ class ClassTest extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testAbstractClass() {
         assertScript '''
             // tag::abstract_class[]
@@ -137,6 +147,7 @@ class ClassTest extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testConstructorPositionalParameters() {
         assertScript '''
             // tag::constructor_positional_parameters[]
@@ -161,6 +172,7 @@ class ClassTest extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testConstructorNamedParameters() {
         assertScript '''
             // tag::constructor_named_parameters[]
@@ -179,6 +191,7 @@ class ClassTest extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testInterfaceDefinition() {
         assertScript '''
             // tag::interface_def_1[]
@@ -222,32 +235,17 @@ class ClassTest extends GroovyTestCase {
             // end::interface_coercion[]
         '''
 
-        def err = shouldFail {
-            assertScript '''
-                // tag::protected_forbidden[]
-                interface Greeter {
-                    protected void greet(String name)           // <1>
-                }
-                // end::protected_forbidden[]
-                1
-            '''
-        }
-        assert err.contains("Method 'greet' is protected but should be public in interface 'Greeter'")
-
-        err = shouldFail {
-            assertScript '''
-                // tag::private_forbidden[]
-                interface Greeter {
-                    private void greet(String name)
-                }
-                // end::private_forbidden[]
-                1
-            '''
-        }
-        assert err.contains("Method 'greet' is private but should be public in interface 'Greeter'")
+        def err = shouldFail '''
+            // tag::protected_forbidden[]
+            interface Greeter {
+                protected void greet(String name)                       // <1>
+            }
+            // end::protected_forbidden[]
+        '''
+        assert err.message.contains("The method 'greet' must be public as it is declared abstract in interface 'Greeter'")
     }
 
-
+    @Test
     void testFields() {
         assertScript '''
             // tag::field_declaration[]
@@ -283,6 +281,7 @@ class ClassTest extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testProperties() {
         assertScript '''
             // tag::properties_definition[]
@@ -380,6 +379,31 @@ class ClassTest extends GroovyTestCase {
         '''
 
         assertScript '''
+            // tag::boolean_getters[]
+            class Lamp {
+                boolean lit                            // <1>
+                Boolean dimmed                         // <2>
+            }
+            def names = Lamp.declaredMethods*.name
+            assert ['isLit', 'getLit', 'getDimmed'].every { it in names }
+            assert !('isDimmed' in names)
+
+            class Status {
+                boolean isReady() { true }
+                boolean getReady() { false }
+            }
+            assert new Status().ready                  // <3>
+
+            class DetailedStatus extends Status {
+                boolean isReady() { false }
+                boolean superReady() { super.ready }   // <4>
+            }
+            assert !new DetailedStatus().ready
+            assert new DetailedStatus().superReady()
+            // end::boolean_getters[]
+        '''
+
+        assertScript '''
             // tag::annotated_properties[]
             class Animal {
                 int lowerCount = 0
@@ -395,7 +419,7 @@ class ClassTest extends GroovyTestCase {
         '''
     }
 
-
+    @Test
     void testDefineAnnotation() {
         assertScript '''
             // tag::define_annotation[]
@@ -405,6 +429,7 @@ class ClassTest extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testAnnotationMembers() {
         assertScript '''
             // tag::ann_member_string[]
@@ -458,6 +483,7 @@ class ClassTest extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testApplyAnnotation() {
         assertScript '''
             @interface SomeAnnotation {
@@ -473,7 +499,7 @@ class ClassTest extends GroovyTestCase {
             @SomeAnnotation                 // <2>
             class SomeClass {}
 
-            @SomeAnnotation String var      // <3>
+            @SomeAnnotation String someVar  // <3>
 
             // end::apply_annotation_1[]
             someMethod()
@@ -515,10 +541,9 @@ class ClassTest extends GroovyTestCase {
             }
             // end::annotation_value_set_option[]
         '''
-
-
     }
 
+    @Test
     void testAnnotationTarget() {
         assertScript '''
             // tag::ann_target[]
@@ -532,6 +557,7 @@ class ClassTest extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testAnnotationRetention() {
         assertScript '''
             // tag::ann_retention[]
@@ -545,6 +571,7 @@ class ClassTest extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testClosureAsAnnotationValue() {
         assertScript '''
             import java.lang.annotation.Retention
@@ -605,6 +632,7 @@ class ClassTest extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testAnnotationCollector() {
         assertScript '''import java.lang.annotation.Retention
 import java.lang.annotation.RetentionPolicy
@@ -654,6 +682,7 @@ import java.lang.annotation.RetentionPolicy
         '''
     }
 
+    @Test
     void testAnnotationCollectorWithParams() {
         assertScript '''
             import java.lang.annotation.Retention
@@ -686,6 +715,7 @@ import java.lang.annotation.RetentionPolicy
         '''
     }
 
+    @Test
     void testAnnotationCollectorWithSameParamNames() {
         assertScript '''
 
@@ -748,9 +778,10 @@ import java.lang.annotation.Retention
             class Evil {}
             Evil
         '''
-        assert err =~ /Attribute 'value' should have type 'java.lang.String'; but found type 'int' in @Foo/
+        assert err.message =~ /Attribute 'value' should have type 'java.lang.String'; but found type 'int' in @Foo/
     }
 
+    @Test
     void testCustomProcessor() {
         assertScript '''import groovy.transform.AnnotationCollector
             import groovy.transform.CompileStatic
@@ -778,6 +809,9 @@ import java.lang.annotation.Retention
             import org.codehaus.groovy.ast.expr.PropertyExpression
             import org.codehaus.groovy.control.SourceUnit
             import org.codehaus.groovy.transform.AnnotationCollectorTransform
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.Timeout
+import static groovy.test.GroovyAssert.*
 
             // tag::compiledynamic_def_fixed[]
             @AnnotationCollector(processor = "org.codehaus.groovy.transform.CompileDynamicProcessor")

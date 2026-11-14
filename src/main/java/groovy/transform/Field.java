@@ -20,6 +20,7 @@ package groovy.transform;
 
 import org.codehaus.groovy.transform.GroovyASTTransformationClass;
 
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -31,7 +32,7 @@ import java.lang.annotation.Target;
  * <p>
  * The annotated variable will become a private field of the script class.
  * The type of the field will be the same as the type of the variable. Example usage:
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * import groovy.transform.Field
  * {@code @Field} List awe = [1, 2, 3]
  * def awesum() { awe.sum() }
@@ -46,9 +47,9 @@ import java.lang.annotation.Target;
  *
  * @since 1.8.0
  */
-@java.lang.annotation.Documented
+@Documented
 @Retention(RetentionPolicy.SOURCE)
-@Target({ElementType.LOCAL_VARIABLE})
+@Target(ElementType.LOCAL_VARIABLE)
 @GroovyASTTransformationClass("org.codehaus.groovy.transform.FieldASTTransformation")
 public @interface Field {
 }

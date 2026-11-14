@@ -18,7 +18,9 @@
  */
 package org.codehaus.groovy.classgen;
 
+import groovy.lang.GroovyClassLoader;
 import groovy.lang.GroovyRuntimeException;
+import org.apache.groovy.ast.pattern.PatternLowering;
 import org.apache.groovy.ast.tools.ExpressionUtils;
 import org.apache.groovy.io.StringBuilderWriter;
 import org.codehaus.groovy.GroovyBugError;
@@ -27,15 +29,21 @@ import org.codehaus.groovy.ast.AnnotatedNode;
 import org.codehaus.groovy.ast.AnnotationNode;
 import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
+import org.codehaus.groovy.ast.CompileUnit;
 import org.codehaus.groovy.ast.ConstructorNode;
+import org.codehaus.groovy.ast.DynamicVariable;
 import org.codehaus.groovy.ast.FieldNode;
+import org.codehaus.groovy.ast.GenericsType;
 import org.codehaus.groovy.ast.InnerClassNode;
 import org.codehaus.groovy.ast.InterfaceHelperClassNode;
+import org.codehaus.groovy.ast.IntersectionTypeClassNode;
 import org.codehaus.groovy.ast.MethodNode;
 import org.codehaus.groovy.ast.ModuleNode;
 import org.codehaus.groovy.ast.PackageNode;
 import org.codehaus.groovy.ast.Parameter;
 import org.codehaus.groovy.ast.PropertyNode;
+import org.codehaus.groovy.ast.RecordComponentNode;
+import org.codehaus.groovy.ast.decompiled.DecompiledClassNode;
 import org.codehaus.groovy.ast.expr.AnnotationConstantExpression;
 import org.codehaus.groovy.ast.expr.ArgumentListExpression;
 import org.codehaus.groovy.ast.expr.ArrayExpression;
@@ -62,6 +70,7 @@ import org.codehaus.groovy.ast.expr.MethodCallExpression;
 import org.codehaus.groovy.ast.expr.MethodPointerExpression;
 import org.codehaus.groovy.ast.expr.MethodReferenceExpression;
 import org.codehaus.groovy.ast.expr.NotExpression;
+import org.codehaus.groovy.ast.expr.PatternExpression;
 import org.codehaus.groovy.ast.expr.PostfixExpression;
 import org.codehaus.groovy.ast.expr.PrefixExpression;
 import org.codehaus.groovy.ast.expr.PropertyExpression;
@@ -69,6 +78,7 @@ import org.codehaus.groovy.ast.expr.RangeExpression;
 import org.codehaus.groovy.ast.expr.SpreadExpression;
 import org.codehaus.groovy.ast.expr.SpreadMapExpression;
 import org.codehaus.groovy.ast.expr.StaticMethodCallExpression;
+import org.codehaus.groovy.ast.expr.SwitchExpression;
 import org.codehaus.groovy.ast.expr.TernaryExpression;
 import org.codehaus.groovy.ast.expr.TupleExpression;
 import org.codehaus.groovy.ast.expr.UnaryMinusExpression;
@@ -91,50 +101,76 @@ import org.codehaus.groovy.ast.stmt.SynchronizedStatement;
 import org.codehaus.groovy.ast.stmt.ThrowStatement;
 import org.codehaus.groovy.ast.stmt.TryCatchStatement;
 import org.codehaus.groovy.ast.stmt.WhileStatement;
-import org.codehaus.groovy.ast.tools.WideningCategories;
+import org.codehaus.groovy.ast.stmt.YieldStatement;
 import org.codehaus.groovy.classgen.asm.BytecodeHelper;
 import org.codehaus.groovy.classgen.asm.BytecodeVariable;
+import org.codehaus.groovy.classgen.asm.CallSiteWriter;
+import org.codehaus.groovy.classgen.asm.CompileStack;
 import org.codehaus.groovy.classgen.asm.MethodCaller;
 import org.codehaus.groovy.classgen.asm.MethodCallerMultiAdapter;
 import org.codehaus.groovy.classgen.asm.MopWriter;
 import org.codehaus.groovy.classgen.asm.OperandStack;
 import org.codehaus.groovy.classgen.asm.OptimizingStatementWriter;
+import org.codehaus.groovy.classgen.asm.PeepholeOptimizingMethodVisitor;
 import org.codehaus.groovy.classgen.asm.WriterController;
 import org.codehaus.groovy.classgen.asm.WriterControllerFactory;
+import org.codehaus.groovy.classgen.asm.sc.RuntimePackageCheck;
 import org.codehaus.groovy.control.SourceUnit;
+import org.codehaus.groovy.runtime.IntersectionCastSupport;
 import org.codehaus.groovy.runtime.ScriptBytecodeAdapter;
 import org.codehaus.groovy.syntax.RuntimeParserException;
 import org.objectweb.asm.AnnotationVisitor;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.FieldVisitor;
 import org.objectweb.asm.Label;
+import org.objectweb.asm.LimitExceededException;
 import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.RecordComponentVisitor;
 import org.objectweb.asm.Type;
-import org.objectweb.asm.util.TraceMethodVisitor;
+import org.objectweb.asm.TypePath;
+import org.objectweb.asm.TypeReference;
 
 import java.io.PrintWriter;
 import java.io.Writer;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
+import java.util.Collections;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
+import java.util.function.Consumer;
 
 import static org.apache.groovy.ast.tools.ClassNodeUtils.getField;
-import static org.apache.groovy.ast.tools.ExpressionUtils.isThisOrSuper;
-import static org.codehaus.groovy.ast.tools.GeneralUtils.attrX;
+import static org.apache.groovy.ast.tools.ClassNodeUtils.getNestHost;
+import static org.apache.groovy.ast.tools.ExpressionUtils.isNullConstant;
+import static org.apache.groovy.ast.tools.ExpressionUtils.isSuperExpression;
+import static org.codehaus.groovy.ast.ClassHelper.isClassType;
+import static org.codehaus.groovy.ast.ClassHelper.isObjectType;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveBoolean;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveByte;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveChar;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveDouble;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveFloat;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveInt;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveLong;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveShort;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveType;
+import static org.codehaus.groovy.ast.ClassHelper.isStringType;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.callX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.classX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.fieldX;
-import static org.codehaus.groovy.ast.tools.GeneralUtils.getGetterName;
-import static org.codehaus.groovy.ast.tools.GeneralUtils.getSetterName;
-import static org.codehaus.groovy.ast.tools.GeneralUtils.propX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.inSamePackage;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.maybeFallsThrough;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.thisPropX;
-import static org.codehaus.groovy.transform.sc.StaticCompilationMetadataKeys.PROPERTY_OWNER;
+import static org.codehaus.groovy.ast.tools.ParameterUtils.isVargs;
+import static org.codehaus.groovy.ast.tools.WideningCategories.implementsInterfaceOrSubclassOf;
+import static org.codehaus.groovy.transform.SealedASTTransformation.sealedNative;
+import static org.codehaus.groovy.transform.SealedASTTransformation.sealedSkipAnnotation;
+import static org.objectweb.asm.Opcodes.AALOAD;
 import static org.objectweb.asm.Opcodes.AASTORE;
 import static org.objectweb.asm.Opcodes.ACC_ENUM;
 import static org.objectweb.asm.Opcodes.ACC_FINAL;
@@ -149,6 +185,7 @@ import static org.objectweb.asm.Opcodes.ACONST_NULL;
 import static org.objectweb.asm.Opcodes.ALOAD;
 import static org.objectweb.asm.Opcodes.ANEWARRAY;
 import static org.objectweb.asm.Opcodes.ARETURN;
+import static org.objectweb.asm.Opcodes.ARRAYLENGTH;
 import static org.objectweb.asm.Opcodes.ASTORE;
 import static org.objectweb.asm.Opcodes.ATHROW;
 import static org.objectweb.asm.Opcodes.BASTORE;
@@ -164,6 +201,7 @@ import static org.objectweb.asm.Opcodes.GOTO;
 import static org.objectweb.asm.Opcodes.IASTORE;
 import static org.objectweb.asm.Opcodes.ICONST_0;
 import static org.objectweb.asm.Opcodes.ICONST_1;
+import static org.objectweb.asm.Opcodes.IFNE;
 import static org.objectweb.asm.Opcodes.IFNONNULL;
 import static org.objectweb.asm.Opcodes.ILOAD;
 import static org.objectweb.asm.Opcodes.INVOKESPECIAL;
@@ -187,6 +225,19 @@ import static org.objectweb.asm.Opcodes.T_INT;
 import static org.objectweb.asm.Opcodes.T_LONG;
 import static org.objectweb.asm.Opcodes.T_SHORT;
 import static org.objectweb.asm.Opcodes.V_PREVIEW;
+import static org.objectweb.asm.TypeReference.CLASS_TYPE_PARAMETER;
+import static org.objectweb.asm.TypeReference.CLASS_TYPE_PARAMETER_BOUND;
+import static org.objectweb.asm.TypeReference.FIELD;
+import static org.objectweb.asm.TypeReference.METHOD_RECEIVER;
+import static org.objectweb.asm.TypeReference.METHOD_RETURN;
+import static org.objectweb.asm.TypeReference.METHOD_TYPE_PARAMETER;
+import static org.objectweb.asm.TypeReference.METHOD_TYPE_PARAMETER_BOUND;
+import static org.objectweb.asm.TypeReference.newExceptionReference;
+import static org.objectweb.asm.TypeReference.newFormalParameterReference;
+import static org.objectweb.asm.TypeReference.newSuperTypeReference;
+import static org.objectweb.asm.TypeReference.newTypeParameterBoundReference;
+import static org.objectweb.asm.TypeReference.newTypeParameterReference;
+import static org.objectweb.asm.TypeReference.newTypeReference;
 
 /**
  * Generates Java class versions of Groovy classes using ASM.
@@ -194,18 +245,33 @@ import static org.objectweb.asm.Opcodes.V_PREVIEW;
 public class AsmClassGenerator extends ClassGenerator {
 
     // fields
+    /**
+     * Runtime helper used for dynamic field writes.
+     */
     public  static final MethodCallerMultiAdapter setField = MethodCallerMultiAdapter.newStatic(ScriptBytecodeAdapter.class, "setField", false, false);
+    /**
+     * Runtime helper used for dynamic field reads.
+     */
     public  static final MethodCallerMultiAdapter getField = MethodCallerMultiAdapter.newStatic(ScriptBytecodeAdapter.class, "getField", false, false);
     private static final MethodCallerMultiAdapter setFieldOnSuper = MethodCallerMultiAdapter.newStatic(ScriptBytecodeAdapter.class, "setFieldOnSuper", false, false);
     private static final MethodCallerMultiAdapter getFieldOnSuper = MethodCallerMultiAdapter.newStatic(ScriptBytecodeAdapter.class, "getFieldOnSuper", false, false);
+    /**
+     * Runtime helper used for dynamic field writes against {@code GroovyObject} receivers.
+     */
     public  static final MethodCallerMultiAdapter setGroovyObjectField = MethodCallerMultiAdapter.newStatic(ScriptBytecodeAdapter.class, "setGroovyObjectField", false, false);
+    /**
+     * Runtime helper used for dynamic field reads against {@code GroovyObject} receivers.
+     */
     public  static final MethodCallerMultiAdapter getGroovyObjectField = MethodCallerMultiAdapter.newStatic(ScriptBytecodeAdapter.class, "getGroovyObjectField", false, false);
 
     // properties
+    /**
+     * Runtime helper used for dynamic property writes.
+     */
     public  static final MethodCallerMultiAdapter setProperty = MethodCallerMultiAdapter.newStatic(ScriptBytecodeAdapter.class, "setProperty", false, false);
     private static final MethodCallerMultiAdapter getProperty = MethodCallerMultiAdapter.newStatic(ScriptBytecodeAdapter.class, "getProperty", false, false);
-  //private static final MethodCallerMultiAdapter setPropertyOnSuper = MethodCallerMultiAdapter.newStatic(ScriptBytecodeAdapter.class, "setPropertyOnSuper", false, false);
-  //private static final MethodCallerMultiAdapter getPropertyOnSuper = MethodCallerMultiAdapter.newStatic(ScriptBytecodeAdapter.class, "getPropertyOnSuper", false, false);
+    private static final MethodCallerMultiAdapter setPropertyOnSuper = MethodCallerMultiAdapter.newStatic(ScriptBytecodeAdapter.class, "setPropertyOnSuper", false, false);
+    private static final MethodCallerMultiAdapter getPropertyOnSuper = MethodCallerMultiAdapter.newStatic(ScriptBytecodeAdapter.class, "getPropertyOnSuper", false, false);
     private static final MethodCallerMultiAdapter setGroovyObjectProperty = MethodCallerMultiAdapter.newStatic(ScriptBytecodeAdapter.class, "setGroovyObjectProperty", false, false);
     private static final MethodCallerMultiAdapter getGroovyObjectProperty = MethodCallerMultiAdapter.newStatic(ScriptBytecodeAdapter.class, "getGroovyObjectProperty", false, false);
 
@@ -222,13 +288,31 @@ public class AsmClassGenerator extends ClassGenerator {
     private static final MethodCaller createPojoWrapperMethod = MethodCaller.newStatic(ScriptBytecodeAdapter.class, "createPojoWrapper");
     private static final MethodCaller createGroovyObjectWrapperMethod = MethodCaller.newStatic(ScriptBytecodeAdapter.class, "createGroovyObjectWrapper");
 
-    private final Map<String,ClassNode> referencedClasses = new HashMap<>();
-    private boolean passingParams;
+    // insertion-ordered: iterated to generate the synthetic class-literal fields and their
+    // accessors, so hash order would place them in an arbitrary order in the class file
+    // rather than the order the class literals were encountered
+    private final Map<String, ClassNode> referencedClasses = new LinkedHashMap<>();
 
+    /**
+     * Add marker in the bytecode to show source-bytecode relationship.
+     */
+    public static final boolean ASM_DEBUG = false;
+    /**
+     * Enables emission of local-variable and source debug metadata.
+     */
     public static final boolean CREATE_DEBUG_INFO = true;
+    /**
+     * Enables emission of line number tables.
+     */
     public static final boolean CREATE_LINE_NUMBER_INFO = true;
-    public static final boolean ASM_DEBUG = false; // add marker in the bytecode to show source-bytecode relationship
-    public static final String MINIMUM_BYTECODE_VERSION = "_MINIMUM_BYTECODE_VERSION";
+    /**
+     * Metadata key used to mark expressions whose value should be discarded.
+     */
+    public static final String  ELIDE_EXPRESSION_VALUE = "_EXPR_VALUE_UNUSED";
+    /**
+     * Metadata key used to request a minimum emitted bytecode level.
+     */
+    public static final String  MINIMUM_BYTECODE_VERSION = "_MINIMUM_BYTECODE_VERSION";
 
     private WriterController controller;
     private ASTNode currentASTNode;
@@ -238,6 +322,14 @@ public class AsmClassGenerator extends ClassGenerator {
     private ClassVisitor classVisitor;
     private final String sourceFile;
 
+    /**
+     * Creates a bytecode generator for a single class.
+     *
+     * @param source the source unit being compiled
+     * @param context shared generation state for the enclosing compile unit
+     * @param classVisitor the ASM visitor receiving the emitted class
+     * @param sourceFile the source file name recorded in the generated class
+     */
     public AsmClassGenerator(final SourceUnit source, final GeneratorContext context, final ClassVisitor classVisitor, final String sourceFile) {
         this.source = source;
         this.context = context;
@@ -245,11 +337,19 @@ public class AsmClassGenerator extends ClassGenerator {
         this.sourceFile = sourceFile;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public SourceUnit getSourceUnit() {
         return source;
     }
 
+    /**
+     * Returns the writer controller coordinating bytecode emission.
+     *
+     * @return the active writer controller
+     */
     public WriterController getController() {
         return controller;
     }
@@ -257,8 +357,12 @@ public class AsmClassGenerator extends ClassGenerator {
     // GroovyClassVisitor interface
     //--------------------------------------------------------------------------
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitClass(final ClassNode classNode) {
+        if (classNode.isEnum()) EnumConstantInit.substitute(classNode); // before any visitor reads the static initializer
         referencedClasses.clear();
 
         WriterControllerFactory factory = classNode.getNodeMetaData(WriterControllerFactory.class);
@@ -290,14 +394,16 @@ public class AsmClassGenerator extends ClassGenerator {
                     BytecodeHelper.getClassInternalNames(classNode.getInterfaces())
             );
             classVisitor.visitSource(sourceFile, null);
-            if (classNode instanceof InnerClassNode) {
-                makeInnerClassEntry(classNode.getOuterClass()); // GROOVY-9842
+            if (classNode instanceof InnerClassNode && !(classNode instanceof InterfaceHelperClassNode)) {
                 makeInnerClassEntry(classNode); // GROOVY-4649, et al.
+
+                ClassNode nestHost = getNestHost(classNode); // GROOVY-10687
+                classVisitor.visitNestHost(BytecodeHelper.getClassInternalName(nestHost));
 
                 MethodNode enclosingMethod = classNode.getEnclosingMethod();
                 if (enclosingMethod != null) {
                     classVisitor.visitOuterClass(
-                            BytecodeHelper.getClassInternalName(classNode.getOuterClass().getName()),
+                            BytecodeHelper.getClassInternalName(enclosingMethod.getDeclaringClass()),
                             enclosingMethod.getName(), BytecodeHelper.getMethodDescriptor(enclosingMethod));
                 }
             }
@@ -309,12 +415,19 @@ public class AsmClassGenerator extends ClassGenerator {
                 }
             } else {
                 visitAnnotations(classNode, classVisitor);
+                visitTypeParameters(classNode, classVisitor);
+                visitType(classNode.getUnresolvedSuperClass(), classVisitor, newSuperTypeReference(-1), "", true);
+                ClassNode[] interfaces = classNode.getInterfaces();
+                for (int i = 0; i < interfaces.length; i++) {
+                    visitType(interfaces[i], classVisitor, newSuperTypeReference(i), "", true);
+                }
                 if (classNode.isInterface()) {
                     String outerClassName = classNode.getName();
                     String name = outerClassName + "$" + context.getNextInnerClassIdx();
+                    ClassNode outerClass = classNode.getOuterClass();
                     controller.setInterfaceClassLoadingClass(
                             new InterfaceHelperClassNode(
-                                    Optional.ofNullable(classNode.getOuterClass()).orElse(classNode),
+                                    outerClass != null ? outerClass : classNode,
                                     name, ACC_SUPER | ACC_STATIC | ACC_SYNTHETIC, ClassHelper.OBJECT_TYPE,
                                     controller.getCallSiteWriter().getCallSites()
                             )
@@ -330,15 +443,27 @@ public class AsmClassGenerator extends ClassGenerator {
                     MopWriter mopWriter = mopWriterFactory.create(controller);
                     mopWriter.createMopMethods();
                     controller.getCallSiteWriter().generateCallSiteArray();
+                    // GROOVY-12151: after every method (including hoisted bodies added during the
+                    // visit) has claimed its id, render the class's packed-closure dispatch table
+                    controller.getClosureWriter().writePackedDispatcher();
                     createSyntheticStaticFields();
                 }
             }
-
+            // GROOVY-10687: NestMembers of a nest host is completed by CompilationUnit
+            // once all of the host's classes -- including closure and anonymous inner
+            // classes materialized during bytecode generation -- have been generated
             // GROOVY-4649, GROOVY-6750, GROOVY-6808
             for (Iterator<InnerClassNode> it = classNode.getInnerClasses(); it.hasNext(); ) {
                 makeInnerClassEntry(it.next());
             }
-
+            if (sealedNative(classNode)) {
+                for (ClassNode sub : classNode.getPermittedSubclasses()) {
+                    classVisitor.visitPermittedSubclass(BytecodeHelper.getClassInternalName(sub));
+                }
+            }
+            if (classNode.isRecord()) {
+                visitRecordComponents(classNode);
+            }
             classVisitor.visitEnd();
         } catch (GroovyRuntimeException e) {
             e.setModule(classNode.getModule());
@@ -351,24 +476,59 @@ public class AsmClassGenerator extends ClassGenerator {
         }
     }
 
-    private void makeInnerClassEntry(final ClassNode cn) {
-        if (!(cn instanceof InnerClassNode)) return;
-        InnerClassNode innerClass = (InnerClassNode) cn;
+    private void visitRecordComponents(final ClassNode classNode) {
+        for (RecordComponentNode recordComponent : classNode.getRecordComponents()) {
+            ClassNode type = recordComponent.getType();
+            RecordComponentVisitor visitor = classVisitor.visitRecordComponent(
+                    recordComponent.getName(),
+                    BytecodeHelper.getTypeDescription(type),
+                    BytecodeHelper.getTypeGenericsSignature(type));
+
+            visitAnnotations(recordComponent, visitor);
+
+            TypeReference typeRef = newTypeReference(FIELD);
+            visitTypeAnnotations(type, visitor, typeRef, "", true);
+
+            visitor.visitEnd();
+        }
+    }
+
+    private void maybeInnerClassEntry(final ClassNode classNode) {
+        if (classNode.getOuterClass() != null) {
+            makeInnerClassEntry(classNode);
+        } else if (classNode.redirect() instanceof DecompiledClassNode decompiled) { // GROOVY-12544
+            decompiled.visitInnerClassEntries(classVisitor);
+        } else if (!classNode.isPrimaryClassNode() && !classNode.isArray() && classNode.isResolved()) {
+            makeInnerClassEntry(classNode.getTypeClass());
+        }
+    }
+
+    private void makeInnerClassEntry(final Class<?> innerClass) {
+        Class<?> outerClass = innerClass.getDeclaringClass();
+        if (outerClass == null) return; // top-level, local or anonymous
+        makeInnerClassEntry(outerClass);
+        classVisitor.visitInnerClass(BytecodeHelper.getClassInternalName(innerClass),
+                BytecodeHelper.getClassInternalName(outerClass), innerClass.getSimpleName(), innerClass.getModifiers());
+    }
+
+    private void makeInnerClassEntry(final ClassNode innerClass) {
         String innerClassName = innerClass.getName();
         String innerClassInternalName = BytecodeHelper.getClassInternalName(innerClassName);
         {
             int index = innerClassName.lastIndexOf('$');
             if (index >= 0) innerClassName = innerClassName.substring(index + 1);
         }
-        String outerClassName = BytecodeHelper.getClassInternalName(innerClass.getOuterClass().getName());
-        MethodNode enclosingMethod = innerClass.getEnclosingMethod();
-        if (enclosingMethod != null) {
-            // local inner classes do not specify the outer class name
-            outerClassName = null;
-            if (innerClass.isAnonymous()) innerClassName = null;
+        String outerClassInternalName;
+        if (innerClass.getEnclosingMethod() == null) {
+            maybeInnerClassEntry(innerClass.getOuterClass()); // GROOVY-9842
+            outerClassInternalName = BytecodeHelper.getClassInternalName(innerClass.getOuterClass().getName());
+        } else {
+            outerClassInternalName = null; // local inner classes don't specify the outer class name
+            if (innerClass instanceof InnerClassNode && ((InnerClassNode) innerClass).isAnonymous()) innerClassName = null;
         }
-        int modifiers = adjustedClassModifiersForInnerClassTable(cn);
-        classVisitor.visitInnerClass(innerClassInternalName, outerClassName, innerClassName, modifiers);
+
+        int modifiers = adjustedClassModifiersForInnerClassTable(innerClass);
+        classVisitor.visitInnerClass(innerClassInternalName, outerClassInternalName, innerClassName, modifiers);
     }
 
     /*
@@ -377,10 +537,7 @@ public class AsmClassGenerator extends ClassGenerator {
      * or the class itself
      */
     private static int adjustedClassModifiersForInnerClassTable(final ClassNode classNode) {
-        int modifiers = classNode.getModifiers();
-        modifiers = modifiers & ~ACC_SUPER;
-        modifiers = fixInterfaceModifiers(classNode, modifiers);
-        return modifiers;
+        return fixInterfaceModifiers(classNode, classNode.getModifiers()) & ~ACC_SUPER;
     }
 
     private static int fixInterfaceModifiers(final ClassNode classNode, int modifiers) {
@@ -424,27 +581,56 @@ public class AsmClassGenerator extends ClassGenerator {
         return modifiers;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void visitConstructorOrMethod(final MethodNode node, final boolean isConstructor) {
         Parameter[] parameters = node.getParameters();
+        Parameter   receiver = null; // JSR 308 "this" parameter
+        if (parameters.length > 0 && parameters[0].isReceiver()) {
+            receiver = parameters[0]; // non-static method or inner class ctor
+            parameters = Arrays.copyOfRange(parameters, 1, parameters.length);
+        }
+
         MethodVisitor mv = classVisitor.visitMethod(
-                node.getModifiers() | (isVargs(parameters) ? ACC_VARARGS : 0), node.getName(),
+                node.getModifiers() | (isVargs(parameters) ? ACC_VARARGS : 0),
+                node.getName(),
                 BytecodeHelper.getMethodDescriptor(node.getReturnType(), parameters),
                 BytecodeHelper.getGenericsMethodSignature(node),
                 buildExceptions(node.getExceptions()));
+
         controller.setMethodVisitor(mv);
         controller.resetLineNumber();
 
         visitAnnotations(node, mv);
-        for (int i = 0, n = parameters.length; i < n; i += 1) {
-            visitParameterAnnotations(parameters[i], i, mv);
+        visitTypeParameters(node, mv);
+        if (!node.isConstructor() || node.getReturnType().isAnnotated()) {
+            visitType(node.getReturnType(), mv, newTypeReference(METHOD_RETURN), "", true);
         }
-
+        if (receiver != null) {
+            visitTypeAnnotations(receiver.getType(), mv, newTypeReference(METHOD_RECEIVER), "", true);
+        }
         // add parameter names to the MethodVisitor (JDK8+)
-        if (Optional.ofNullable(controller.getClassNode().getCompileUnit())
-                .orElseGet(context::getCompileUnit).getConfig().getParameters()) {
+        CompileUnit compileUnit = controller.getClassNode().getCompileUnit();
+        if ((compileUnit != null ? compileUnit : context.getCompileUnit()).getConfig().getParameters()) {
             for (Parameter parameter : parameters) {
                 mv.visitParameter(parameter.getName(), parameter.getModifiers());
+            }
+        }
+        for (int i = 0, j = 0, n = parameters.length; i < n; i += 1) {
+            if (parameters[i].isImplicit()) continue;
+            visitParameterAnnotations(parameters[i], i, mv);
+            ClassNode paramType = parameters[i].getType();
+            if (paramType.isGenericsPlaceHolder()) {
+                visitTypeAnnotations(paramType, mv, newFormalParameterReference(j++), "", true);
+            } else {
+                visitType(paramType, mv, newFormalParameterReference(j++), "", true);
+            }
+        }
+        if (node.getExceptions() != null) {
+            for (int i = 0, n = node.getExceptions().length; i < n; i += 1) {
+                visitType(node.getExceptions()[i], mv, newExceptionReference(i), "", true);
             }
         }
 
@@ -463,24 +649,31 @@ public class AsmClassGenerator extends ClassGenerator {
 
             try {
                 mv.visitMaxs(0, 0);
-            } catch (Exception e) {
+            } catch (Throwable t) {
                 Writer writer = null;
-                if (mv instanceof TraceMethodVisitor) {
-                    writer = new StringBuilderWriter();
-                    PrintWriter p = new PrintWriter(writer);
-                    ((TraceMethodVisitor) mv).p.print(p);
-                    p.flush();
+                // Method visitors are wrapped by PeepholeOptimizingClassVisitor; unwrap to
+                // reach a TraceMethodVisitor when classgen logging is enabled.
+                StringBuilderWriter buffer = new StringBuilderWriter();
+                PrintWriter printer = new PrintWriter(buffer);
+                if (PeepholeOptimizingMethodVisitor.printTraceBytecode(mv, printer)) {
+                    printer.flush();
+                    writer = buffer;
                 }
                 StringBuilder message = new StringBuilder(64);
                 message.append("ASM reporting processing error for ");
                 message.append(controller.getClassNode().toString(false)).append('#').append(node.getName());
                 message.append(" with signature ").append(node.getTypeDescriptor());
                 message.append(" in ").append(sourceFile).append(':').append(node.getLineNumber());
+                if (t instanceof LimitExceededException) {
+                    message.append("\nThe method exceeded the configured frame computation limits (").append(t.getMessage());
+                    message.append("); they can be raised with the groovy.frame.computation.max.bytes");
+                    message.append(" and groovy.frame.computation.max.operations compiler configuration properties");
+                }
                 if (writer != null) {
                     message.append("\nLast known generated bytecode in last generated method or constructor:\n");
                     message.append(writer);
                 }
-                throw new GroovyRuntimeException(message.toString(), e);
+                throw new GroovyRuntimeException(message.toString(), t);
             }
         }
         mv.visitEnd();
@@ -490,24 +683,36 @@ public class AsmClassGenerator extends ClassGenerator {
         controller.getCompileStack().init(node.getVariableScope(), parameters);
         controller.getCallSiteWriter().makeSiteEntry();
 
+        ClassNode cn = controller.getClassNode();
         MethodVisitor mv = controller.getMethodVisitor();
         if (isConstructor && (code == null || !((ConstructorNode) node).firstStatementIsSpecialConstructorCall())) {
             boolean hasCallToSuper = false;
-            if (code != null && isInnerClass()) {
+            if (code != null && cn.getOuterClass() != null) {
                 // GROOVY-4471: if the class is an inner class node, there are chances that
                 // the call to super is already added so we must ensure not to add it twice
-                if (code instanceof BlockStatement) {
-                    hasCallToSuper = ((BlockStatement) code).getStatements().stream()
-                        .map(statement -> statement instanceof ExpressionStatement ? ((ExpressionStatement) statement).getExpression() : null)
-                        .anyMatch(expression -> expression instanceof ConstructorCallExpression && ((ConstructorCallExpression) expression).isSuperCall());
+                if (code instanceof BlockStatement block) {
+                    hasCallToSuper = block.getStatements().stream()
+                        .map(statement -> statement instanceof ExpressionStatement es ? es.getExpression() : null)
+                        .anyMatch(expression -> expression instanceof ConstructorCallExpression cce && cce.isSuperCall());
                 }
             }
             if (!hasCallToSuper) {
                 if (code != null) { // GROOVY-9373
                     controller.visitLineNumber(code.getLineNumber());
                 }
+                if (cn.getSuperClass().getDeclaredConstructor(Parameter.EMPTY_ARRAY) == null) { ASTNode where = node; // GROOVY-9857
+                    String error = "Implicit super constructor " + cn.getSuperClass().getNameWithoutPackage() + "() is undefined";
+                    if (node.getLineNumber() > 0) error += ". Must explicitly invoke another constructor.";
+                    else {
+                        error += " for generated constructor. Must define an explicit constructor.";
+                        where = cn;
+                    }
+                    addError(error, where);
+                }
                 // add call to "super()"
                 mv.visitVarInsn(ALOAD, 0);
+                ConstructorNode superCtor = controller.getClassNode().getSuperClass().getDeclaredConstructor(Parameter.EMPTY_ARRAY);
+                if (superCtor != null) RuntimePackageCheck.checkConstructor(controller, superCtor, true, node.getLineNumber() > 0 ? node : cn);
                 mv.visitMethodInsn(INVOKESPECIAL, controller.getInternalBaseClassName(), "<init>", "()V", false);
             }
         }
@@ -516,20 +721,25 @@ public class AsmClassGenerator extends ClassGenerator {
             code.visit(this);
         }
 
-        if (!isLastStatementReturnOrThrow(code)) {
-            if (code != null) { // GROOVY-7647, GROOVY-9373
-                controller.visitLineNumber(code.getLastLineNumber());
+        if (code == null || maybeFallsThrough(code)) {
+            if (code != null) {
+                int line = code.getLastLineNumber(); // GROOVY-7647, GROOVY-9373
+                if (line < 1 && code instanceof BlockStatement block && !block.isEmpty()) { // GROOVY-12752
+                    line = block.getStatements().get(block.getStatements().size() - 1).getLastLineNumber();
+                }
+                controller.visitLineNumber(line);
             }
             if (node.isVoidMethod()) {
                 mv.visitInsn(RETURN);
             } else {
                 ClassNode type = node.getReturnType();
-                if (ClassHelper.isPrimitiveType(type)) {
-                    mv.visitLdcInsn(Integer.valueOf(0));
-                    controller.getOperandStack().push(ClassHelper.int_TYPE);
-                    controller.getOperandStack().doGroovyCast(type);
+                if (isPrimitiveType(type)) {
+                    mv.visitLdcInsn(0);
+                    OperandStack operandStack = controller.getOperandStack();
+                    operandStack.push(ClassHelper.int_TYPE);
+                    operandStack.doGroovyCast(type);
                     BytecodeHelper.doReturn(mv, type);
-                    controller.getOperandStack().remove(1);
+                    operandStack.remove(1);
                 } else {
                     mv.visitInsn(ACONST_NULL);
                     BytecodeHelper.doReturn(mv, type);
@@ -540,21 +750,6 @@ public class AsmClassGenerator extends ClassGenerator {
         controller.getCompileStack().clear();
     }
 
-    private boolean isLastStatementReturnOrThrow(final Statement code) {
-        if (code instanceof BlockStatement) {
-            BlockStatement blockStatement = (BlockStatement) code;
-            List<Statement> statementList = blockStatement.getStatements();
-            int nStatements = statementList.size();
-            if (nStatements > 0) {
-                Statement lastStatement = statementList.get(nStatements - 1);
-                if (lastStatement instanceof ReturnStatement || lastStatement instanceof ThrowStatement) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
     private void visitAnnotationDefaultExpression(final AnnotationVisitor av, final ClassNode type, final Expression exp) {
         if (exp instanceof ClosureExpression) {
             ClassNode closureClass = controller.getClosureWriter().getOrAddClosureClass((ClosureExpression) exp, ACC_PUBLIC);
@@ -563,18 +758,17 @@ public class AsmClassGenerator extends ClassGenerator {
         } else if (type.isArray()) {
             AnnotationVisitor avl = av.visitArray(null);
             ClassNode componentType = type.getComponentType();
-            if (exp instanceof ListExpression) {
-                ListExpression list = (ListExpression) exp;
+            if (exp instanceof ListExpression list) {
                 for (Expression lExp : list.getExpressions()) {
                     visitAnnotationDefaultExpression(avl, componentType, lExp);
                 }
             } else {
                 visitAnnotationDefaultExpression(avl, componentType, exp);
             }
-        } else if (ClassHelper.isPrimitiveType(type) || type.equals(ClassHelper.STRING_TYPE)) {
+        } else if (isPrimitiveType(type) || isStringType(type)) {
             ConstantExpression constExp = (ConstantExpression) exp;
             av.visit(null, constExp.getValue());
-        } else if (ClassHelper.CLASS_Type.equals(type)) {
+        } else if (isClassType(type)) {
             ClassNode clazz = exp.getType();
             Type t = Type.getType(BytecodeHelper.getTypeDescription(clazz));
             av.visit(null, t);
@@ -602,18 +796,27 @@ public class AsmClassGenerator extends ClassGenerator {
         visitAnnotationDefaultExpression(av,node.getReturnType(),exp);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitConstructor(final ConstructorNode node) {
         controller.setConstructorNode(node);
         super.visitConstructor(node);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitMethod(final MethodNode node) {
         controller.setMethodNode(node);
         super.visitMethod(node);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitField(final FieldNode fieldNode) {
         onLineNumber(fieldNode, "visitField: " + fieldNode.getName());
@@ -630,9 +833,9 @@ public class AsmClassGenerator extends ClassGenerator {
                 ? cexp.getValue() : null; // GROOVY-5150
         if (value != null) {
             // byte, char and short require an extra cast
-            if (ClassHelper.byte_TYPE.equals(t) || ClassHelper.short_TYPE.equals(t)) {
+            if (isPrimitiveByte(t) || isPrimitiveShort(t)) {
                 value = ((Number) value).intValue();
-            } else if (ClassHelper.char_TYPE.equals(t)) {
+            } else if (isPrimitiveChar(t)) {
                 value = Integer.valueOf((Character)value);
             }
         }
@@ -643,9 +846,13 @@ public class AsmClassGenerator extends ClassGenerator {
                 signature,
                 value);
         visitAnnotations(fieldNode, fv);
+        visitType(fieldNode.getType(), fv, newTypeReference(FIELD), "", true);
         fv.visitEnd();
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitProperty(final PropertyNode statement) {
         // the verifier created the field and the setter/getter methods, so here is
@@ -660,85 +867,137 @@ public class AsmClassGenerator extends ClassGenerator {
     // Statements
     //--------------------------------------------------------------------------
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void visitStatement(final Statement statement) {
         throw new GroovyBugError("visitStatement should not be visited here.");
     }
 
-    @Override
-    public void visitCatchStatement(final CatchStatement statement) {
-        statement.getCode().visit(this);
-    }
-
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitBlockStatement(final BlockStatement statement) {
         controller.getStatementWriter().writeBlockStatement(statement);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitForLoop(final ForStatement statement) {
         controller.getStatementWriter().writeForStatement(statement);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitWhileLoop(final WhileStatement statement) {
         controller.getStatementWriter().writeWhileLoop(statement);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitDoWhileLoop(final DoWhileStatement statement) {
         controller.getStatementWriter().writeDoWhileLoop(statement);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitIfElse(final IfStatement statement) {
         controller.getStatementWriter().writeIfElse(statement);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitAssertStatement(final AssertStatement statement) {
         controller.getStatementWriter().writeAssert(statement);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitTryCatchFinally(final TryCatchStatement statement) {
         controller.getStatementWriter().writeTryCatchFinally(statement);
     }
 
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void visitCatchStatement(final CatchStatement statement) {
+        maybeInnerClassEntry(statement.getExceptionType());
+        statement.getCode().visit(this);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitSwitch(final SwitchStatement statement) {
         controller.getStatementWriter().writeSwitch(statement);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitCaseStatement(final CaseStatement statement) {
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitBreakStatement(final BreakStatement statement) {
         controller.getStatementWriter().writeBreak(statement);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitContinueStatement(final ContinueStatement statement) {
         controller.getStatementWriter().writeContinue(statement);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitSynchronizedStatement(final SynchronizedStatement statement) {
         controller.getStatementWriter().writeSynchronized(statement);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitThrowStatement(final ThrowStatement statement) {
         controller.getStatementWriter().writeThrow(statement);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitReturnStatement(final ReturnStatement statement) {
         controller.getStatementWriter().writeReturn(statement);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitExpressionStatement(final ExpressionStatement statement) {
         controller.getStatementWriter().writeExpressionStatement(statement);
@@ -747,169 +1006,304 @@ public class AsmClassGenerator extends ClassGenerator {
     // Expressions
     //--------------------------------------------------------------------------
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitTernaryExpression(final TernaryExpression expression) {
         onLineNumber(expression, "visitTernaryExpression");
         controller.getBinaryExpressionHelper().evaluateTernary(expression);
+        doPostVisit(expression); // GROOVY-7473
     }
 
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void visitSwitchExpression(final SwitchExpression expression) {
+        controller.getSwitchExpressionWriter().writeSwitchExpression(expression);
+        doPostVisit(expression);
+    }
+
+    /**
+     * Generates bytecode for a pattern match (GEP-19) from the code that
+     * {@link PatternLowering} derived for it.
+     */
+    @Override
+    public void visitPatternExpression(final PatternExpression expression) {
+        if (expression.getLowered() == null) {
+            throw new GroovyBugError("The pattern `" + expression.getText() + "` was not lowered before class generation;"
+                    + " a transform that creates a pattern from instruction selection on lowers it with PatternLowering.lower(ClassNode, SourceUnit)");
+        }
+        expression.getLowered().visit(this);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void visitYieldStatement(final YieldStatement statement) {
+        controller.getSwitchExpressionWriter().writeYield(statement);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitDeclarationExpression(final DeclarationExpression expression) {
-        onLineNumber(expression, "visitDeclarationExpression: \"" + expression.getText() + "\"");
-        controller.getBinaryExpressionHelper().evaluateEqual(expression,true);
+        onLineNumber(expression, "visitDeclarationExpression: " + expression.getText());
+        controller.getBinaryExpressionHelper().evaluateEqual(expression, true);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitBinaryExpression(final BinaryExpression expression) {
-        onLineNumber(expression, "visitBinaryExpression: \"" + expression.getOperation().getText() + "\" ");
+        onLineNumber(expression, "visitBinaryExpression: " + expression.getOperation().getText());
         controller.getBinaryExpressionHelper().eval(expression);
-        controller.getAssertionWriter().record(expression.getOperation());
+        if (!isValueElided(expression)) controller.getAssertionWriter().record(expression.getOperation());
+        doPostVisit(expression); // GROOVY-5746
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitPostfixExpression(final PostfixExpression expression) {
         controller.getBinaryExpressionHelper().evaluatePostfixMethod(expression);
         controller.getAssertionWriter().record(expression);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitPrefixExpression(final PrefixExpression expression) {
         controller.getBinaryExpressionHelper().evaluatePrefixMethod(expression);
         controller.getAssertionWriter().record(expression);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitClosureExpression(final ClosureExpression expression) {
         controller.getClosureWriter().writeClosure(expression);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitLambdaExpression(final LambdaExpression expression) {
         controller.getLambdaWriter().writeLambda(expression);
     }
 
     /**
-     * Loads either this object or if we're inside a closure then load the top level owner
-     */
-    protected void loadThisOrOwner() {
-        if (isInnerClass()) {
-            fieldX(controller.getClassNode().getDeclaredField("owner")).visit(this);
-        } else {
-            loadThis(VariableExpression.THIS_EXPRESSION);
-        }
-    }
-
-    /**
      * Generates byte code for constants.
      *
-     * @see <a href="http://java.sun.com/docs/books/vmspec/2nd-edition/html/ClassFile.doc.html#14152">Class field types</a>
+     * @see <a href="https://docs.oracle.com/javase/specs/jvms/se17/html/jvms-4.html#jvms-4.4">The Constant Pool</a>
      */
     @Override
     public void visitConstantExpression(final ConstantExpression expression) {
         final String constantName = expression.getConstantName();
+        OperandStack operandStack = controller.getOperandStack();
         if (controller.isStaticConstructor() || constantName == null) {
-            controller.getOperandStack().pushConstant(expression);
+            operandStack.pushConstant(expression);
         } else {
             controller.getMethodVisitor().visitFieldInsn(GETSTATIC, controller.getInternalClassName(),constantName, BytecodeHelper.getTypeDescription(expression.getType()));
-            controller.getOperandStack().push(expression.getType());
+            operandStack.push(expression.getType());
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitSpreadExpression(final SpreadExpression expression) {
         throw new GroovyBugError("SpreadExpression should not be visited here");
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitSpreadMapExpression(final SpreadMapExpression expression) {
-        Expression subExpression = expression.getExpression();
-        // to not record the underlying MapExpression twice,
-        // we disable the assertion tracker
-        // see https://issues.apache.org/jira/browse/GROOVY-3421
-        controller.getAssertionWriter().disableTracker();
-        subExpression.visit(this);
-        controller.getOperandStack().box();
-        spreadMap.call(controller.getMethodVisitor());
-        controller.getAssertionWriter().reenableTracker();
+        // GROOVY-3421: SpreadMapExpression is key expression and contains value
+        callX(ClassHelper.make(Collections.class), "emptyMap").visit(this);
+        spreadMap.call(controller.getMethodVisitor()); // dummy SpreadMap
         controller.getOperandStack().replace(ClassHelper.OBJECT_TYPE);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitMethodPointerExpression(final MethodPointerExpression expression) {
         controller.getMethodPointerExpressionWriter().writeMethodPointerExpression(expression);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitMethodReferenceExpression(final MethodReferenceExpression expression) {
         controller.getMethodReferenceExpressionWriter().writeMethodReferenceExpression(expression);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitUnaryMinusExpression(final UnaryMinusExpression expression) {
         controller.getUnaryExpressionHelper().writeUnaryMinus(expression);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitUnaryPlusExpression(final UnaryPlusExpression expression) {
         controller.getUnaryExpressionHelper().writeUnaryPlus(expression);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitBitwiseNegationExpression(final BitwiseNegationExpression expression) {
         controller.getUnaryExpressionHelper().writeBitwiseNegate(expression);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitCastExpression(final CastExpression castExpression) {
+        Expression expression = castExpression.getExpression();
         ClassNode type = castExpression.getType();
-        Expression subExpression = castExpression.getExpression();
-        subExpression.visit(this);
-        if (ClassHelper.OBJECT_TYPE.equals(type)) return;
+
+        // GROOVY-11998: lambda / method-reference factory invocations already
+        // emit an object that implements every component of an intersection
+        // target via altMetafactory FLAG_MARKERS, so the outer cast is a no-op.
+        if (type instanceof IntersectionTypeClassNode
+                && (expression instanceof LambdaExpression
+                    || expression instanceof MethodReferenceExpression)) {
+            expression.visit(this);
+            return;
+        }
+        // GROOVY-11998: non-functional intersection casts route through the
+        // runtime helper IntersectionCastSupport, which strict-casts for `()`
+        // and may build a multi-interface proxy via ProxyGenerator for `as`.
+        if (type instanceof IntersectionTypeClassNode) {
+            emitIntersectionCastCall((IntersectionTypeClassNode) type, expression, castExpression.isCoerce());
+            return;
+        }
+
+        expression.visit(this);
+
+        if (isObjectType(type)) return;
+        maybeInnerClassEntry(type);
+
+        OperandStack operandStack = controller.getOperandStack();
         if (castExpression.isCoerce()) {
-            controller.getOperandStack().doAsType(type);
+            operandStack.doAsType(type);
+        } else if (isNullConstant(expression) && !isPrimitiveType(type)) {
+            operandStack.replace(type);
+        } else if (castExpression.isStrict() || (!isPrimitiveType(type) && implementsInterfaceOrSubclassOf(typeOf(expression), type))) {
+            BytecodeHelper.doCast(controller.getMethodVisitor(), type); // checkcast or unbox
+            operandStack.replace(type);
         } else {
-            if (ExpressionUtils.isNullConstant(subExpression) && !ClassHelper.isPrimitiveType(type)) {
-                controller.getOperandStack().replace(type);
-            } else {
-                ClassNode subExprType = controller.getTypeChooser().resolveType(subExpression, controller.getClassNode());
-                if (castExpression.isStrict() ||
-                        (!ClassHelper.isPrimitiveType(type) && WideningCategories.implementsInterfaceOrSubclassOf(subExprType, type))) {
-                    BytecodeHelper.doCast(controller.getMethodVisitor(), type);
-                    controller.getOperandStack().replace(type);
-                } else {
-                    controller.getOperandStack().doGroovyCast(type);
-                }
-            }
+            operandStack.doGroovyCast(type);
         }
     }
 
+    /**
+     * Emits a call to {@link IntersectionCastSupport}
+     * for an intersection-target cast or coercion on a non-functional source.
+     *
+     * Bytecode layout:
+     * <pre>
+     *   visit(source)             // pushes source on the JVM stack
+     *   bipush/iconst N           // component count
+     *   anewarray Class           // create Class[N]
+     *   for each component i:
+     *     dup; bipush i; ldc Type; aastore
+     *   invokestatic IntersectionCastSupport.{castTo|asType}(Object, Class[]) Object
+     * </pre>
+     */
+    private void emitIntersectionCastCall(final IntersectionTypeClassNode it, final Expression source, final boolean coerce) {
+        source.visit(this); // leaves source on the operand / JVM stack as Object-ish
+        controller.getOperandStack().box();   // ensure boxed reference (handles primitive sources)
+
+        MethodVisitor mv = controller.getMethodVisitor();
+        ClassNode[] components = it.getComponents();
+
+        BytecodeHelper.pushConstant(mv, components.length);
+        mv.visitTypeInsn(ANEWARRAY, "java/lang/Class");
+        for (int i = 0; i < components.length; i += 1) {
+            mv.visitInsn(DUP);
+            BytecodeHelper.pushConstant(mv, i);
+            BytecodeHelper.visitClassLiteral(mv, components[i]);
+            mv.visitInsn(AASTORE);
+        }
+
+        mv.visitMethodInsn(
+            INVOKESTATIC,
+            "org/codehaus/groovy/runtime/IntersectionCastSupport",
+            coerce ? "asType" : "castTo",
+            "(Ljava/lang/Object;[Ljava/lang/Class;)Ljava/lang/Object;",
+            false
+        );
+
+        controller.getOperandStack().replace(ClassHelper.OBJECT_TYPE);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitNotExpression(final NotExpression expression) {
         controller.getUnaryExpressionHelper().writeNotExpression(expression);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitBooleanExpression(final BooleanExpression expression) {
-        int mark = controller.getOperandStack().getStackLength();
+        OperandStack operandStack = controller.getOperandStack();
+        int mark = operandStack.getStackLength();
 
         expression.getExpression().visit(this);
-        controller.getOperandStack().castToBool(mark, true);
+        operandStack.castToBool(mark, true);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitMethodCallExpression(final MethodCallExpression call) {
         onLineNumber(call, "visitMethodCallExpression: \"" + call.getMethod() + "\":");
         controller.getInvocationWriter().writeInvokeMethod(call);
-        controller.getAssertionWriter().record(call.getMethod());
+        if (!isValueElided(call)) controller.getAssertionWriter().record(call.getMethod());
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitStaticMethodCallExpression(final StaticMethodCallExpression call) {
         onLineNumber(call, "visitStaticMethodCallExpression: \"" + call.getMethod() + "\":");
         controller.getInvocationWriter().writeInvokeStaticMethod(call);
-        controller.getAssertionWriter().record(call);
+        if (!isValueElided(call)) controller.getAssertionWriter().record(call);
+        maybeInnerClassEntry(call.getOwnerType());
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitConstructorCallExpression(final ConstructorCallExpression call) {
         onLineNumber(call, "visitConstructorCallExpression: \"" + call.getType().getName() + "\":");
@@ -919,6 +1313,7 @@ public class AsmClassGenerator extends ClassGenerator {
         }
         controller.getInvocationWriter().writeInvokeConstructor(call);
         controller.getAssertionWriter().record(call);
+        maybeInnerClassEntry(call.getType());
     }
 
     private static String makeFieldClassName(final ClassNode type) {
@@ -949,32 +1344,85 @@ public class AsmClassGenerator extends ClassGenerator {
     }
 
     /**
-     * Determines if the given class can directly access the given field (via
-     * {@code GETFIELD}, {@code GETSTATIC}, etc. bytecode instructions).
+     * Determines if the given field can be directly accessed by the given class
+     * (via {@code GETFIELD}, {@code GETSTATIC}, etc. bytecode instructions).
      */
-    public static boolean isFieldDirectlyAccessible(final FieldNode field, final ClassNode clazz) {
-        if (field == null) return false;
+    public static boolean isFieldDirectlyAccessible(final FieldNode field, final ClassNode accessingClass) {
+        return field != null && isMemberDirectlyAccessible(field.getModifiers(), field.getDeclaringClass(), accessingClass);
+    }
 
-        // a public field is accessible from anywhere
-        if (field.isPublic()) return true;
+    /**
+     * Determines if the bytecode of the accessing class can rely on being in
+     * the run-time package of the declaring class, which is the package name
+     * and the class loader. The JVM allows access to a protected or
+     * package-private member only within the same run-time package, apart from
+     * the subclass rule for a protected member.
+     * <p>
+     * A GroovyClassLoader defines the classes of each compilation, like a
+     * {@code GroovyShell} script, in memory with a class loader of their own,
+     * so a class compiled before, by another compilation, is in another
+     * run-time package although its package name is the same. Classes that
+     * are compiled to class files are expected to be loaded by one class
+     * loader with the classes they use from the same package, as javac
+     * expects.
+     * <p>
+     * {@code isPrimaryClassNode()} is used here as "defined by the class
+     * loader of the accessing class", since the classes of one compilation are
+     * defined together; it does not stand for "compiled from source".
+     *
+     * @param declaringClass the class declaring the member
+     * @param accessingClass the class attempting access
+     * @return {@code true} if both classes have the same package name and are
+     *         not known to be defined by different class loaders
+     */
+    public static boolean isInSameRuntimePackage(final ClassNode declaringClass, final ClassNode accessingClass) {
+        if (!Objects.equals(declaringClass.getPackageName(), accessingClass.getPackageName())) return false;
+        if (declaringClass.isPrimaryClassNode()) return true; // compiled and defined with the accessing class
+        CompileUnit unit = null;
+        for (ClassNode cn = accessingClass; unit == null && cn != null; cn = cn.getOuterClass()) {
+            unit = cn.getCompileUnit();
+        }
+        // see GroovyClassLoader: the classes of this compilation are defined by an InnerLoader of their own
+        return unit == null || !Boolean.TRUE.equals(unit.getNodeMetaData(GroovyClassLoader.InnerLoader.class));
+    }
 
-        ClassNode declaringClass = field.getDeclaringClass();
+    /**
+     * Determines whether a member with the supplied modifiers is directly accessible to a class.
+     *
+     * @param modifiers the member modifiers
+     * @param declaringClass the class declaring the member
+     * @param accessingClass the class attempting access
+     * @return {@code true} if direct bytecode access is legal
+     */
+    public static boolean isMemberDirectlyAccessible(final int modifiers, final ClassNode declaringClass, final ClassNode accessingClass) {
+        // a public member is accessible from anywhere
+        if (Modifier.isPublic(modifiers)) return true;
 
-        // any field is accessible from the declaring class
-        if (clazz.equals(declaringClass)) return true;
+        // any member is accessible from the declaring class
+        if (accessingClass.equals(declaringClass)) return true;
 
-        // a private field isn't accessible beyond the declaring class
-        if (field.isPrivate()) return false;
+        // a private member is accessible from any nestmates
+        if (Modifier.isPrivate(modifiers))
+            return getNestHost(accessingClass).equals(getNestHost(declaringClass));
 
-        // a protected field is accessible from any subclass of the declaring class
-        if (field.isProtected() && clazz.isDerivedFrom(declaringClass)) return true;
+        // a protected member is accessible from any subclass of the declaring class
+        if (Modifier.isProtected(modifiers) && accessingClass.isDerivedFrom(declaringClass)) return true;
 
-        // a protected or package-private field is accessible from the declaring package
-        if (Objects.equals(clazz.getPackageName(), declaringClass.getPackageName())) return true;
+        // a protected or package-private member is accessible from the declaring package
+        if (Objects.equals(accessingClass.getPackageName(), declaringClass.getPackageName())) return true;
 
         return false;
     }
 
+    /**
+     * Resolves a field declared on the current class or an accessible superclass.
+     *
+     * @param accessingNode the class performing the access
+     * @param current the class whose hierarchy is being searched
+     * @param fieldName the field name to resolve
+     * @param skipCurrent whether to skip the current class and start with its superclass
+     * @return the resolved field, or {@code null} if none is directly accessible
+     */
     public static FieldNode getDeclaredFieldOfCurrentClassOrAccessibleFieldOfSuper(final ClassNode accessingNode, final ClassNode current, final String fieldName, final boolean skipCurrent) {
         return getField(current, fieldName, fieldNode ->
             (!skipCurrent || !current.equals(fieldNode.getDeclaringClass())) && isFieldDirectlyAccessible(fieldNode, accessingNode)
@@ -986,11 +1434,12 @@ public class AsmClassGenerator extends ClassGenerator {
         String propertyName = pexp.getPropertyAsString();
         Expression objectExpression = pexp.getObjectExpression();
 
-        if (objectExpression instanceof ClassExpression && "this".equals(propertyName)) {
-            // we have something like A.B.this, and need to make it
-            // into this.this$0.this$0, where this.this$0 returns
-            // A.B and this.this$0.this$0 return A.
-            ClassNode type = objectExpression.getType();
+        ClassNode type = objectExpression.getType();
+        if (objectExpression instanceof ClassExpression
+                && ("this".equals(propertyName) || ("super".equals(propertyName) && !type.isInterface()))) {
+            // we have something like A.B.this and need to make it
+            // into this.this$0.this$0, where this.this$0 produces
+            // A.B and this.this$0.this$0 produces A.
             if (controller.getCompileStack().isInSpecialConstructorCall() && type.equals(classNode.getOuterClass())) {
                 // Outer.this in a special constructor call
                 ConstructorNode ctor = controller.getConstructorNode();
@@ -1002,28 +1451,28 @@ public class AsmClassGenerator extends ClassGenerator {
 
             MethodVisitor mv = controller.getMethodVisitor();
             mv.visitVarInsn(ALOAD, 0);
-            ClassNode iterType = classNode;
-            while (!iterType.equals(type)) {
-                String ownerName = BytecodeHelper.getClassInternalName(iterType);
-                if (iterType.getOuterClass() == null) break;
-                FieldNode thisField = iterType.getField("this$0");
-                iterType = iterType.getOuterClass();
+            ClassNode thisType = classNode;
+            while (!thisType.equals(type)) {
+                if (thisType.getOuterClass() == null) break;
+                String ownerName = BytecodeHelper.getClassInternalName(thisType);
+                FieldNode thisField = thisType.getField("this$0");
+                thisType = thisType.getOuterClass();
                 if (thisField == null) {
                     // closure within inner class
-                    while (ClassHelper.isGeneratedFunction(iterType)) {
+                    while (ClassHelper.isGeneratedFunction(thisType)) {
                         // GROOVY-8881: cater for closures within closures - getThisObject is already outer class of all closures
-                        iterType = iterType.getOuterClass();
+                        thisType = thisType.getOuterClass();
                     }
                     mv.visitMethodInsn(INVOKEVIRTUAL, BytecodeHelper.getClassInternalName(ClassHelper.CLOSURE_TYPE), "getThisObject", "()Ljava/lang/Object;", false);
-                    mv.visitTypeInsn(CHECKCAST, BytecodeHelper.getClassInternalName(iterType));
+                    mv.visitTypeInsn(CHECKCAST, BytecodeHelper.getClassInternalName(thisType));
                 } else {
                     ClassNode thisFieldType = thisField.getType();
                     if (ClassHelper.CLOSURE_TYPE.equals(thisFieldType)) {
                         mv.visitFieldInsn(GETFIELD, ownerName, "this$0", BytecodeHelper.getTypeDescription(ClassHelper.CLOSURE_TYPE));
                         mv.visitMethodInsn(INVOKEVIRTUAL, BytecodeHelper.getClassInternalName(ClassHelper.CLOSURE_TYPE), "getThisObject", "()Ljava/lang/Object;", false);
-                        mv.visitTypeInsn(CHECKCAST, BytecodeHelper.getClassInternalName(iterType));
+                        mv.visitTypeInsn(CHECKCAST, BytecodeHelper.getClassInternalName(thisType));
                     } else {
-                        String typeName = BytecodeHelper.getTypeDescription(iterType);
+                        String typeName = BytecodeHelper.getTypeDescription(thisType);
                         mv.visitFieldInsn(GETFIELD, ownerName, "this$0", typeName);
                     }
                 }
@@ -1032,107 +1481,50 @@ public class AsmClassGenerator extends ClassGenerator {
             return;
         }
 
-        if (propertyName != null) {
-            // TODO: spread safe should be handled inside
-            if (adapter == getProperty && !pexp.isSpreadSafe()) {
-                controller.getCallSiteWriter().makeGetPropertySite(objectExpression, propertyName, pexp.isSafe(), pexp.isImplicitThis());
-            } else if (adapter == getGroovyObjectProperty && !pexp.isSpreadSafe()) {
-                controller.getCallSiteWriter().makeGroovyObjectGetPropertySite(objectExpression, propertyName, pexp.isSafe(), pexp.isImplicitThis());
-            } else {
-                controller.getCallSiteWriter().fallbackAttributeOrPropertySite(pexp, objectExpression, propertyName, adapter);
-            }
+        CallSiteWriter callSiteWriter = controller.getCallSiteWriterFor(pexp); // GROOVY-11817
+
+        if (adapter == getGroovyObjectProperty && propertyName != null && !pexp.isSpreadSafe()) { // TODO: propagate spread safe
+            callSiteWriter.makeGroovyObjectGetPropertySite(objectExpression, propertyName, pexp.isSafe(), pexp.isImplicitThis());
+        } else if (adapter == getProperty && propertyName != null && !pexp.isSpreadSafe()) {
+            callSiteWriter.makeGetPropertySite(objectExpression, propertyName, pexp.isSafe(), pexp.isImplicitThis());
+        } else if ((adapter == setProperty || adapter == setGroovyObjectProperty) && propertyName != null && !pexp.isSpreadSafe()) {
+            callSiteWriter.makeSetPropertySite(pexp, objectExpression, propertyName, adapter, adapter == setGroovyObjectProperty); // GROOVY-12138
         } else {
-            controller.getCallSiteWriter().fallbackAttributeOrPropertySite(pexp, objectExpression, null, adapter);
+            callSiteWriter.fallbackAttributeOrPropertySite(pexp, objectExpression, propertyName, adapter);
         }
     }
 
-    private boolean tryPropertyOfSuperClass(final PropertyExpression pexp, final String propertyName) {
-        ClassNode classNode = controller.getClassNode();
-
-        if (!controller.getCompileStack().isLHS()) {
-            String methodName = getGetterName(propertyName); // TODO: "is"
-            callX(pexp.getObjectExpression(), methodName).visit(this);
-            return true;
-        }
-
-        FieldNode fieldNode = classNode.getSuperClass().getField(propertyName);
-
-        if (fieldNode == null) {
-            throw new RuntimeParserException("Failed to find field[" + propertyName + "] of " + classNode.getName() + "'s super class", pexp);
-        }
-        if (fieldNode.isFinal()) {
-            throw new RuntimeParserException("Cannot modify final field[" + propertyName + "] of " + classNode.getName() + "'s super class", pexp);
-        }
-
-        MethodNode setter = classNode.getSuperClass().getSetterMethod(getSetterName(propertyName));
-        MethodNode getter = classNode.getSuperClass().getGetterMethod(getGetterName(propertyName));
-
-        if (fieldNode.isPrivate() && (setter == null || getter == null || !setter.getDeclaringClass().equals(getter.getDeclaringClass()))) {
-            throw new RuntimeParserException("Cannot access private field[" + propertyName + "] of " + classNode.getName() + "'s super class", pexp);
-        }
-
-        OperandStack operandStack = controller.getOperandStack();
-        operandStack.doAsType(fieldNode.getType());
-
-        MethodVisitor mv = controller.getMethodVisitor();
-        mv.visitVarInsn(ALOAD, 0);
-        operandStack.push(classNode);
-
-        operandStack.swap();
-
-        String owner = BytecodeHelper.getClassInternalName(classNode.getSuperClass().getName());
-        String desc = BytecodeHelper.getTypeDescription(fieldNode.getType());
-        if (fieldNode.isPublic() || fieldNode.isProtected()) {
-            mv.visitFieldInsn(PUTFIELD, owner, propertyName, desc);
-        } else {
-            mv.visitMethodInsn(INVOKESPECIAL, owner, setter.getName(), BytecodeHelper.getMethodDescriptor(setter), false);
-        }
-        return true;
-    }
-
-    private boolean checkStaticOuterField(final PropertyExpression pexp, final String propertyName) {
-        for (final ClassNode outer : controller.getClassNode().getOuterClasses()) {
-            FieldNode field = outer.getDeclaredField(propertyName);
-            if (field != null) {
-                if (!field.isStatic()) break;
-
-                Expression outerClass = classX(outer);
-                outerClass.setNodeMetaData(PROPERTY_OWNER, outer);
-                outerClass.setSourcePosition(pexp.getObjectExpression());
-
-                Expression outerField = attrX(outerClass, pexp.getProperty());
-                outerField.setSourcePosition(pexp);
-                outerField.visit(this);
-                return true;
-            } else {
-                field = outer.getField(propertyName); // checks supers
-                if (field != null && !field.isPrivate() && (field.isPublic() || field.isProtected()
-                        || Objects.equals(field.getDeclaringClass().getPackageName(), outer.getPackageName()))) {
-                    if (!field.isStatic()) break;
-
-                    Expression upperClass = classX(field.getDeclaringClass());
-                    upperClass.setNodeMetaData(PROPERTY_OWNER, field.getDeclaringClass());
-                    upperClass.setSourcePosition(pexp.getObjectExpression());
-
-                    Expression upperField = propX(upperClass, pexp.getProperty());
-                    upperField.setSourcePosition(pexp);
-                    upperField.visit(this);
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    private boolean isGroovyObject(final Expression objectExpression) {
-        if (ExpressionUtils.isThisExpression(objectExpression)) return true;
+    private boolean isGroovyObject(final PropertyExpression expression) {
+        Expression objectExpression = expression.getObjectExpression();
         if (objectExpression instanceof ClassExpression) return false;
 
-        ClassNode objectExpressionType = controller.getTypeChooser().resolveType(objectExpression, controller.getClassNode());
-        if (objectExpressionType.equals(ClassHelper.OBJECT_TYPE)) objectExpressionType = objectExpression.getType();
+        if (ExpressionUtils.isThisExpression(objectExpression)
+                && !(expression.isImplicitThis() && controller.isInGeneratedFunction())) {
+            return !controller.isStaticContext(); // TODO: not @POJO
+        }
+
+        ClassNode objectExpressionType = typeOf(objectExpression);
+        if (isObjectType(objectExpressionType)) objectExpressionType = objectExpression.getType();
         return objectExpressionType.isDerivedFromGroovyObject();
     }
 
+    private boolean isThisExpression(final Expression expression) {
+        return ExpressionUtils.isThisExpression(expression)
+            // GROOVY-10695: "Type.name" within body of Type should get explicit-this treatment
+            || (expression instanceof ClassExpression && expression.getType().equals(controller.getClassNode()));
+    }
+
+    private boolean isThisOrSuper(final Expression expression) {
+        return isThisExpression(expression) || isSuperExpression(expression);
+    }
+
+    private boolean isStatic(final Expression expression) { // Type, this or super
+        return expression instanceof ClassExpression || controller.isStaticContext();
+    }
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitPropertyExpression(final PropertyExpression expression) {
         Expression objectExpression = expression.getObjectExpression();
@@ -1146,24 +1538,27 @@ public class AsmClassGenerator extends ClassGenerator {
                 FieldNode fieldNode = null;
                 ClassNode classNode = controller.getClassNode();
 
-                if (ExpressionUtils.isThisExpression(objectExpression)) {
-                    if (controller.isInGeneratedFunction()) { // params are stored as fields
+                if (isThisExpression(objectExpression)) {
+                    if (controller.isInGeneratedFunction()) { // params/variables are stored as fields
                         if (expression.isImplicitThis()) fieldNode = classNode.getDeclaredField(name);
-                    } else {
+                    } else if (!expression.isSpreadSafe()) {
                         fieldNode = classNode.getDeclaredField(name);
-
-                        if (fieldNode == null && !isFieldDirectlyAccessible(getField(classNode, name), classNode)) {
-                            // GROOVY-9501, GROOVY-9569, GROOVY-9650, GROOVY-9655, GROOVY-9665, GROOVY-9683, GROOVY-9695
-                            if (checkStaticOuterField(expression, name)) return;
+                        // GROOVY-8448: "this.name" from anon. inner class
+                        if (fieldNode != null && !expression.isImplicitThis()
+                                && (fieldNode.getModifiers() & ACC_SYNTHETIC) != 0
+                                && fieldNode.getType().equals(ClassHelper.REFERENCE_TYPE)) {
+                            fieldNode = null;
+                        }
+                        // GROOVY-10695: "this.name" or "Type.name" where "name" is non-static
+                        if (fieldNode != null && !fieldNode.isStatic() && isStatic(objectExpression)) {
+                            fieldNode = null;
                         }
                     }
                 } else {
                     fieldNode = classNode.getSuperClass().getDeclaredField(name);
-                    // GROOVY-4497: do not visit super class field if it is private
-                    if (fieldNode != null && fieldNode.isPrivate()) fieldNode = null;
-
-                    if (fieldNode == null) {
-                        visited = tryPropertyOfSuperClass(expression, name);
+                    // GROOVY-4497, GROOVY-11764: do not visit super class field if it is private or package-private
+                    if (fieldNode != null && (fieldNode.isPrivate() || !(fieldNode.isPublic() || fieldNode.isProtected() || inSamePackage(classNode, classNode.getSuperClass())))) {
+                        fieldNode = null;
                     }
                 }
 
@@ -1175,14 +1570,11 @@ public class AsmClassGenerator extends ClassGenerator {
         }
 
         if (!visited) {
-            boolean useMetaObjectProtocol = isGroovyObject(objectExpression)
-                    && (!isThisOrSuper(objectExpression) || !controller.isStaticContext() || controller.isInGeneratedFunction());
-
             MethodCallerMultiAdapter adapter;
             if (controller.getCompileStack().isLHS()) {
-                adapter = useMetaObjectProtocol ? setGroovyObjectProperty : setProperty;
+                adapter = isSuperExpression(objectExpression) ? setPropertyOnSuper : isGroovyObject(expression) ? setGroovyObjectProperty : setProperty;
             } else {
-                adapter = useMetaObjectProtocol ? getGroovyObjectProperty : getProperty;
+                adapter = isSuperExpression(objectExpression) ? getPropertyOnSuper : isGroovyObject(expression) ? getGroovyObjectProperty : getProperty;
             }
             visitAttributeOrProperty(expression, adapter);
         }
@@ -1194,6 +1586,9 @@ public class AsmClassGenerator extends ClassGenerator {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitAttributeExpression(final AttributeExpression expression) {
         Expression objectExpression = expression.getObjectExpression();
@@ -1205,10 +1600,26 @@ public class AsmClassGenerator extends ClassGenerator {
             String name = expression.getPropertyAsString();
             if (name != null) {
                 ClassNode classNode = controller.getClassNode();
-                FieldNode fieldNode = getDeclaredFieldOfCurrentClassOrAccessibleFieldOfSuper(classNode, classNode, name, ExpressionUtils.isSuperExpression(objectExpression));
-                if (fieldNode != null) {
-                    fieldX(fieldNode).visit(this);
-                    visited = true;
+                // GROOVY-12533: inside a closure or lambda, this/super is the enclosing
+                // instance. Search that class, but judge accessibility from the closure
+                // (the class that emits the bytecode).
+                boolean generated = controller.isInGeneratedFunction();
+                ClassNode current = generated ? controller.getThisType() : classNode;
+                FieldNode fieldNode = getDeclaredFieldOfCurrentClassOrAccessibleFieldOfSuper(classNode, current, name, isSuperExpression(objectExpression));
+                if (fieldNode != null && (fieldNode.isStatic() || !isStatic(objectExpression))) {
+                    // A private field of a superclass is dropped from the subclass meta-class
+                    // index, so the closure's runtime attribute lookup cannot see it. Direct
+                    // access is legal for a nestmate (a nested subclass). Other fields stay on
+                    // the meta-class path.
+                    boolean privateSuperField = generated && fieldNode.isPrivate() && !fieldNode.getDeclaringClass().equals(current);
+                    if (!generated || privateSuperField) {
+                        if (privateSuperField && !fieldNode.isStatic()) {
+                            visitPrivateEnclosingInstanceField(fieldNode);
+                        } else {
+                            fieldX(fieldNode).visit(this);
+                        }
+                        visited = true;
+                    }
                 }
             }
         }
@@ -1216,9 +1627,9 @@ public class AsmClassGenerator extends ClassGenerator {
         if (!visited) {
             MethodCallerMultiAdapter adapter;
             if (controller.getCompileStack().isLHS()) {
-                adapter = ExpressionUtils.isSuperExpression(objectExpression) ? setFieldOnSuper : isGroovyObject(objectExpression) ? setGroovyObjectField : setField;
+                adapter = isSuperExpression(objectExpression) ? setFieldOnSuper : isGroovyObject(expression) ? setGroovyObjectField : setField;
             } else {
-                adapter = ExpressionUtils.isSuperExpression(objectExpression) ? getFieldOnSuper : isGroovyObject(objectExpression) ? getGroovyObjectField : getField;
+                adapter = isSuperExpression(objectExpression) ? getFieldOnSuper : isGroovyObject(expression) ? getGroovyObjectField : getField;
             }
             visitAttributeOrProperty(expression, adapter);
         }
@@ -1230,8 +1641,45 @@ public class AsmClassGenerator extends ClassGenerator {
         }
     }
 
+    /**
+     * Reads or writes a private instance field of the enclosing class from a
+     * closure or lambda. The receiver is the enclosing instance
+     * ({@code getThisObject()}), not the closure.
+     */
+    private void visitPrivateEnclosingInstanceField(final FieldNode field) {
+        MethodVisitor mv = controller.getMethodVisitor();
+        OperandStack operandStack = controller.getOperandStack();
+        ClassNode owner = field.getOwner();
+        String ownerName = getFieldOwnerName(field);
+        String descriptor = BytecodeHelper.getTypeDescription(field.getType());
+        if (controller.getCompileStack().isLHS()) {
+            operandStack.doGroovyCast(field.getOriginType());
+            loadThisObject();
+            BytecodeHelper.doCast(mv, owner);
+            operandStack.push(owner);
+            operandStack.swap();
+            mv.visitFieldInsn(PUTFIELD, ownerName, field.getName(), descriptor);
+            operandStack.remove(2);
+        } else {
+            loadThisObject();
+            BytecodeHelper.doCast(mv, owner);
+            mv.visitFieldInsn(GETFIELD, ownerName, field.getName(), descriptor);
+            operandStack.push(field.getType());
+        }
+    }
+
+    private void loadThisObject() {
+        MethodVisitor mv = controller.getMethodVisitor();
+        mv.visitVarInsn(ALOAD, 0);
+        mv.visitMethodInsn(INVOKEVIRTUAL, "groovy/lang/Closure", "getThisObject", "()Ljava/lang/Object;", false);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitFieldExpression(final FieldExpression expression) {
+        RuntimePackageCheck.checkField(controller, expression.getField(), null, expression);
         if (expression.getField().isStatic()) {
             if (controller.getCompileStack().isLHS()) {
                 storeStaticField(expression);
@@ -1247,18 +1695,25 @@ public class AsmClassGenerator extends ClassGenerator {
         }
     }
 
+    /**
+     * Loads a static field value onto the operand stack.
+     *
+     * @param expression the field expression to load
+     */
     public void loadStaticField(final FieldExpression expression) {
         MethodVisitor mv = controller.getMethodVisitor();
         FieldNode field = expression.getField();
         ClassNode type = field.getType();
 
+        OperandStack operandStack = controller.getOperandStack();
         if (field.isHolder() && !controller.isInGeneratedFunctionConstructor()) {
             mv.visitFieldInsn(GETSTATIC, getFieldOwnerName(field), field.getName(), BytecodeHelper.getTypeDescription(type));
             mv.visitMethodInsn(INVOKEVIRTUAL, "groovy/lang/Reference", "get", "()Ljava/lang/Object;", false);
-            controller.getOperandStack().push(ClassHelper.OBJECT_TYPE);
+            operandStack.push(ClassHelper.OBJECT_TYPE); // erased return type
+            operandStack.doGroovyCast(field.getOriginType()); // GROOVY-11068
         } else {
             mv.visitFieldInsn(GETSTATIC, getFieldOwnerName(field), field.getName(), BytecodeHelper.getTypeDescription(type));
-            controller.getOperandStack().push(type);
+            operandStack.push(type);
         }
     }
 
@@ -1273,11 +1728,13 @@ public class AsmClassGenerator extends ClassGenerator {
         mv.visitVarInsn(ALOAD, 0);
         mv.visitFieldInsn(GETFIELD, getFieldOwnerName(field), field.getName(), BytecodeHelper.getTypeDescription(type));
 
+        OperandStack operandStack = controller.getOperandStack();
         if (field.isHolder() && !controller.isInGeneratedFunctionConstructor()) {
             mv.visitMethodInsn(INVOKEVIRTUAL, "groovy/lang/Reference", "get", "()Ljava/lang/Object;", false);
-            controller.getOperandStack().push(ClassHelper.OBJECT_TYPE);
+            operandStack.push(ClassHelper.OBJECT_TYPE); // erased return type
+            operandStack.doGroovyCast(field.getOriginType()); // GROOVY-11068
         } else {
-            controller.getOperandStack().push(type);
+            operandStack.push(type);
         }
     }
 
@@ -1298,8 +1755,9 @@ public class AsmClassGenerator extends ClassGenerator {
             operandStack.doGroovyCast(field.getOriginType());
             operandStack.box();
             mv.visitVarInsn(ALOAD, 0);
+            operandStack.push(controller.getClassNode());
             mv.visitFieldInsn(GETFIELD, getFieldOwnerName(field), field.getName(), BytecodeHelper.getTypeDescription(type));
-            mv.visitInsn(SWAP);
+            operandStack.swap();
             mv.visitMethodInsn(INVOKEVIRTUAL, "groovy/lang/Reference", "set", "(Ljava/lang/Object;)V", false);
         } else {
             // rhs is normal value, set normal value
@@ -1309,25 +1767,26 @@ public class AsmClassGenerator extends ClassGenerator {
             operandStack.swap();
             mv.visitFieldInsn(PUTFIELD, getFieldOwnerName(field), field.getName(), BytecodeHelper.getTypeDescription(type));
         }
+        operandStack.remove(2);
     }
 
     private void storeStaticField(final FieldExpression expression) {
         MethodVisitor mv = controller.getMethodVisitor();
         FieldNode field = expression.getField();
-        ClassNode type = field.getType();
 
-        controller.getOperandStack().doGroovyCast(field);
+        OperandStack operandStack = controller.getOperandStack();
+        operandStack.doGroovyCast(field);
 
         if (field.isHolder() && !controller.isInGeneratedFunctionConstructor()) {
-            controller.getOperandStack().box();
-            mv.visitFieldInsn(GETSTATIC, getFieldOwnerName(field), field.getName(), BytecodeHelper.getTypeDescription(type));
+            operandStack.box();
+            mv.visitFieldInsn(GETSTATIC, getFieldOwnerName(field), field.getName(), BytecodeHelper.getTypeDescription(field.getType()));
             mv.visitInsn(SWAP);
             mv.visitMethodInsn(INVOKEVIRTUAL, "groovy/lang/Reference", "set", "(Ljava/lang/Object;)V", false);
         } else {
-            mv.visitFieldInsn(PUTSTATIC, getFieldOwnerName(field), field.getName(), BytecodeHelper.getTypeDescription(type));
+            mv.visitFieldInsn(PUTSTATIC, getFieldOwnerName(field), field.getName(), BytecodeHelper.getTypeDescription(field.getType()));
         }
 
-        controller.getOperandStack().remove(1);
+        operandStack.remove(1);
     }
 
     private String getFieldOwnerName(final FieldNode field) {
@@ -1337,14 +1796,17 @@ public class AsmClassGenerator extends ClassGenerator {
         return BytecodeHelper.getClassInternalName(field.getOwner());
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitVariableExpression(final VariableExpression expression) {
-        final String variableName = expression.getName();
+        CompileStack compileStack = controller.getCompileStack();
 
         if (expression.isThisExpression()) {
             // "this" in static context is Class instance
-            if (controller.isStaticMethod() || controller.getCompileStack().isInSpecialConstructorCall()
-                    || (!controller.getCompileStack().isImplicitThis() && controller.isStaticContext())) {
+            if (controller.isStaticMethod() || compileStack.isInSpecialConstructorCall()
+                    || (!compileStack.isImplicitThis() && controller.isStaticContext())) {
                 classX(controller.getThisType()).visit(this);
             } else {
                 loadThis(expression);
@@ -1363,61 +1825,45 @@ public class AsmClassGenerator extends ClassGenerator {
             return;
         }
 
-        BytecodeVariable variable = controller.getCompileStack().getVariable(variableName, false);
-        if (variable != null) {
-            controller.getOperandStack().loadOrStoreVariable(variable, expression.isUseReferenceDirectly());
-        } else if (passingParams && controller.isInScriptBody()) {
-            MethodVisitor mv = controller.getMethodVisitor();
-            mv.visitTypeInsn(NEW, "org/codehaus/groovy/runtime/ScriptReference");
-            mv.visitInsn(DUP);
-            loadThisOrOwner();
-            mv.visitLdcInsn(variableName);
-            mv.visitMethodInsn(INVOKESPECIAL, "org/codehaus/groovy/runtime/ScriptReference", "<init>", "(Lgroovy/lang/Script;Ljava/lang/String;)V", false);
-        } else {
-            PropertyExpression pexp = thisPropX(true, variableName);
-            pexp.getObjectExpression().setSourcePosition(expression);
+        // GROOVY-12242: VariableScopeVisitor marks out-of-scope pattern references
+        // as DynamicVariable. Name-based CompileStack lookup must not bypass that:
+        // pattern slots are allocated during condition evaluation and can still be
+        // present on the stack for short-circuit RHS of || (where the pattern is
+        // not definitely bound) or briefly on a non-live arm before hide. Treat
+        // DynamicVariable as property access even when a same-named slot exists.
+        if (expression.getAccessedVariable() instanceof DynamicVariable) {
+            PropertyExpression pexp = thisPropX(/*implicit-this*/true, expression.getName());
             pexp.getProperty().setSourcePosition(expression);
             pexp.copyNodeMetaData(expression);
             pexp.visit(this);
+        } else {
+            BytecodeVariable variable = compileStack.getVariable(expression.getName(), /*throwIfMissing*/false);
+            if (variable != null) {
+                controller.getOperandStack().loadOrStoreVariable(variable, expression.isUseReferenceDirectly());
+            } else {
+                PropertyExpression pexp = thisPropX(/*implicit-this*/true, expression.getName());
+                pexp.getProperty().setSourcePosition(expression);
+                pexp.copyNodeMetaData(expression);
+                pexp.visit(this);
+            }
         }
 
-        if (!controller.getCompileStack().isLHS()) {
+        if (!compileStack.isLHS()) {
             controller.getAssertionWriter().record(expression);
         }
     }
 
-    private void loadThis(final VariableExpression thisOrSuper) {
-        MethodVisitor mv = controller.getMethodVisitor();
-        mv.visitVarInsn(ALOAD, 0);
-        if (controller.isInGeneratedFunction() && !controller.getCompileStack().isImplicitThis()) {
-            mv.visitMethodInsn(INVOKEVIRTUAL, "groovy/lang/Closure", "getThisObject", "()Ljava/lang/Object;", false);
-            ClassNode expectedType = controller.getTypeChooser().resolveType(thisOrSuper, controller.getOutermostClass());
-            if (!ClassHelper.OBJECT_TYPE.equals(expectedType) && !ClassHelper.isPrimitiveType(expectedType)) {
-                BytecodeHelper.doCast(mv, expectedType);
-                controller.getOperandStack().push(expectedType);
-            } else {
-                controller.getOperandStack().push(ClassHelper.OBJECT_TYPE);
-            }
-        } else {
-            controller.getOperandStack().push(controller.getClassNode());
-        }
-    }
-
+    /**
+     * Creates helper class literal fields for interface bytecode generation.
+     */
     protected void createInterfaceSyntheticStaticFields() {
-        ClassNode icl =  controller.getInterfaceClassLoadingClass();
-
-        if (referencedClasses.isEmpty()) {
-            Iterator<InnerClassNode> it = icl.getOuterClass().getInnerClasses();
-            while(it.hasNext()) {
-                InnerClassNode inner = it.next();
-                if (inner==icl) {
-                    it.remove();
-                    return;
-                }
-            }
-            return;
-        }
-
+        // GROOVY-11982: also materialise the helper when a call-site array
+        // prologue was emitted (every default/static method body under
+        // indy=false, even one that registers no call sites -- GROOVY-12235),
+        // otherwise CallSiteWriter routes INVOKESTATIC at a class never emitted
+        boolean hasCallSitePrologue = controller.getCallSiteWriter().isPrologueEmitted();
+        if (referencedClasses.isEmpty() && !hasCallSitePrologue) return;
+        var icl = controller.getInterfaceClassLoadingClass();
         addInnerClass(icl);
         for (Map.Entry<String, ClassNode> entry : referencedClasses.entrySet()) {
             // generate a field node
@@ -1427,6 +1873,9 @@ public class AsmClassGenerator extends ClassGenerator {
         }
     }
 
+    /**
+     * Creates synthetic class-literal helper fields and accessors on the current class.
+     */
     protected void createSyntheticStaticFields() {
         if (referencedClasses.isEmpty()) {
             return;
@@ -1438,7 +1887,7 @@ public class AsmClassGenerator extends ClassGenerator {
             // generate a field node
             FieldNode fn = controller.getClassNode().getDeclaredField(staticFieldName);
             if (fn != null) {
-                boolean type = fn.getType().equals(ClassHelper.CLASS_Type);
+                boolean type = isClassType(fn.getType());
                 boolean modifiers = fn.getModifiers() == ACC_STATIC + ACC_SYNTHETIC;
                 if (!type || !modifiers) {
                     String text = "";
@@ -1465,7 +1914,7 @@ public class AsmClassGenerator extends ClassGenerator {
             mv.visitFieldInsn(PUTSTATIC,controller.getInternalClassName(),staticFieldName,"Ljava/lang/Class;");
             mv.visitLabel(l0);
             mv.visitInsn(ARETURN);
-            mv.visitMaxs(0,0);
+            mv.visitMaxs(0, 0);
             mv.visitEnd();
         }
 
@@ -1487,24 +1936,30 @@ public class AsmClassGenerator extends ClassGenerator {
         mv.visitMethodInsn(INVOKESPECIAL, "java/lang/NoClassDefFoundError", "<init>", "(Ljava/lang/String;)V", false);
         mv.visitInsn(ATHROW);
         mv.visitTryCatchBlock(l0, l2, l2, "java/lang/ClassNotFoundException"); // br using l2 as the 2nd param seems create the right table entry
-        mv.visitMaxs(3, 2);
+        mv.visitMaxs(0, 0);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitClassExpression(final ClassExpression expression) {
         ClassNode type = expression.getType();
         MethodVisitor mv = controller.getMethodVisitor();
+        OperandStack operandStack = controller.getOperandStack();
         if (BytecodeHelper.isClassLiteralPossible(type) || BytecodeHelper.isSameCompilationUnit(controller.getClassNode(), type)) {
             if (controller.getClassNode().isInterface()) {
-                InterfaceHelperClassNode interfaceClassLoadingClass = controller.getInterfaceClassLoadingClass();
+                var interfaceClassLoadingClass = controller.getInterfaceClassLoadingClass();
                 if (BytecodeHelper.isClassLiteralPossible(interfaceClassLoadingClass)) {
                     BytecodeHelper.visitClassLiteral(mv, interfaceClassLoadingClass);
-                    controller.getOperandStack().push(ClassHelper.CLASS_Type);
+                    operandStack.push(ClassHelper.CLASS_Type);
+                    maybeInnerClassEntry(type);
                     return;
                 }
             } else {
                 BytecodeHelper.visitClassLiteral(mv, type);
-                controller.getOperandStack().push(ClassHelper.CLASS_Type);
+                operandStack.push(ClassHelper.CLASS_Type);
+                maybeInnerClassEntry(type);
                 return;
             }
         }
@@ -1518,9 +1973,12 @@ public class AsmClassGenerator extends ClassGenerator {
         } else {
             mv.visitMethodInsn(INVOKESTATIC, internalClassName, "$get$" + staticFieldName, "()Ljava/lang/Class;", false);
         }
-        controller.getOperandStack().push(ClassHelper.CLASS_Type);
+        operandStack.push(ClassHelper.CLASS_Type);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitRangeExpression(final RangeExpression expression) {
         OperandStack operandStack = controller.getOperandStack();
@@ -1535,11 +1993,17 @@ public class AsmClassGenerator extends ClassGenerator {
         operandStack.replace(ClassHelper.RANGE_TYPE, 4);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitMapEntryExpression(final MapEntryExpression expression) {
         throw new GroovyBugError("MapEntryExpression should not be visited here");
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitMapExpression(final MapExpression expression) {
         MethodVisitor mv = controller.getMethodVisitor();
@@ -1551,27 +2015,29 @@ public class AsmClassGenerator extends ClassGenerator {
         mv.visitTypeInsn(ANEWARRAY, "java/lang/Object");
 
         int i = 0;
-        for (Object object : entries) {
-            MapEntryExpression entry = (MapEntryExpression) object;
-
+        OperandStack operandStack = controller.getOperandStack();
+        for (MapEntryExpression entry : entries) {
             mv.visitInsn(DUP);
             BytecodeHelper.pushConstant(mv, i++);
             entry.getKeyExpression().visit(this);
-            controller.getOperandStack().box();
+            operandStack.box();
             mv.visitInsn(AASTORE);
 
             mv.visitInsn(DUP);
             BytecodeHelper.pushConstant(mv, i++);
             entry.getValueExpression().visit(this);
-            controller.getOperandStack().box();
+            operandStack.box();
             mv.visitInsn(AASTORE);
 
-            controller.getOperandStack().remove(2);
+            operandStack.remove(2);
         }
         createMapMethod.call(mv);
-        controller.getOperandStack().push(ClassHelper.MAP_TYPE);
+        operandStack.push(ClassHelper.MAP_TYPE);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitArgumentlistExpression(final ArgumentListExpression ale) {
         if (containsSpreadExpression(ale)) {
@@ -1581,36 +2047,20 @@ public class AsmClassGenerator extends ClassGenerator {
         }
     }
 
-    public void despreadList(final List<Expression> expressions, final boolean wrap) {
-        List<Expression> spreadIndexes = new ArrayList<>();
-        List<Expression> spreadExpressions = new ArrayList<>();
-        List<Expression> normalArguments = new ArrayList<>();
-        for (int i = 0, n = expressions.size(); i < n; i += 1) {
-            Expression expr = expressions.get(i);
-            if (!(expr instanceof SpreadExpression)) {
-                normalArguments.add(expr);
-            } else {
-                spreadIndexes.add(new ConstantExpression(i - spreadExpressions.size(), true));
-                spreadExpressions.add(((SpreadExpression) expr).getExpression());
-            }
-        }
-
-        // load normal arguments as array
-        visitTupleExpression(new ArgumentListExpression(normalArguments), wrap);
-        // load spread expressions as array
-        new TupleExpression(spreadExpressions).visit(this);
-        // load insertion index
-        new ArrayExpression(ClassHelper.int_TYPE, spreadIndexes, null).visit(this);
-
-        controller.getOperandStack().remove(1);
-        despreadList.call(controller.getMethodVisitor());
-    }
-
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitTupleExpression(final TupleExpression expression) {
         visitTupleExpression(expression, false);
     }
 
+    /**
+     * Visits a tuple expression and stores its values in a new object array.
+     *
+     * @param expression the tuple expression to visit
+     * @param useWrapper {@code true} to wrap special constructor-call arguments when needed
+     */
     void visitTupleExpression(final TupleExpression expression, final boolean useWrapper) {
         MethodVisitor mv = controller.getMethodVisitor();
         int size = expression.getExpressions().size();
@@ -1618,108 +2068,159 @@ public class AsmClassGenerator extends ClassGenerator {
         BytecodeHelper.pushConstant(mv, size);
         mv.visitTypeInsn(ANEWARRAY, "java/lang/Object");
 
+        OperandStack operandStack = controller.getOperandStack();
         for (int i = 0; i < size; i += 1) {
             mv.visitInsn(DUP);
             BytecodeHelper.pushConstant(mv, i);
             Expression argument = expression.getExpression(i);
             argument.visit(this);
-            controller.getOperandStack().box();
-            if (useWrapper && argument instanceof CastExpression) loadWrapper(argument);
-
+            operandStack.box();
+            if (useWrapper && (argument instanceof CastExpression || (isParameterReference(argument)
+                    && controller.getCompileStack().isInSpecialConstructorCall()))) { // GROOVY-6285
+                loadWrapper(argument);
+            }
             mv.visitInsn(AASTORE);
-            controller.getOperandStack().remove(1);
+            operandStack.remove(1);
         }
     }
 
-    public void loadWrapper(final Expression argument) {
-        MethodVisitor mv = controller.getMethodVisitor();
-        ClassNode goalClass = argument.getType();
-        visitClassExpression(new ClassExpression(goalClass));
-        if (goalClass.isDerivedFromGroovyObject()) {
-            createGroovyObjectWrapperMethod.call(mv);
-        } else {
-            createPojoWrapperMethod.call(mv);
-        }
-        controller.getOperandStack().remove(1);
-    }
-
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitArrayExpression(final ArrayExpression expression) {
         MethodVisitor mv = controller.getMethodVisitor();
-
-        int size = 0;
-        int dimensions = 0;
-        if (expression.hasInitializer()) {
-            size = expression.getExpressions().size();
-            BytecodeHelper.pushConstant(mv, size);
-        } else {
-            for (Expression element : expression.getSizeExpression()) {
-                if (element == ConstantExpression.EMPTY_EXPRESSION) break;
-                dimensions += 1;
-                // convert to an int
-                element.visit(this);
-                controller.getOperandStack().doGroovyCast(ClassHelper.int_TYPE);
-            }
-            controller.getOperandStack().remove(dimensions);
-        }
+        CompileStack  compileStack = controller.getCompileStack();
+        OperandStack  operandStack = controller.getOperandStack();
 
         ClassNode arrayType = expression.getType();
         ClassNode elementType = arrayType.getComponentType();
 
+        int size = 0, dimensions = 0;
+        if (expression.hasInitializer()) {
+            if (containsSpreadExpression(expression)) {
+                despreadList(expression.getExpressions(), false);
+                if (elementType.equals(ClassHelper.OBJECT_TYPE)){
+                    operandStack.push(arrayType);
+                    return;
+                }
+                mv.visitInsn(DUP); // Object[] from despreadList
+                mv.visitInsn(ARRAYLENGTH);
+                mv.visitInsn(DUP); // store value count
+                operandStack.push(ClassHelper.int_TYPE);
+                size = -compileStack.defineTemporaryVariable("value$count", ClassHelper.int_TYPE, true);
+            } else {
+                size = expression.getExpressions().size();
+                BytecodeHelper.pushConstant(mv, size);
+            }
+            // stack: ..., size
+        } else {
+            for (final Expression sizeExpr : expression.getSizeExpression()) {
+                if (sizeExpr == ConstantExpression.EMPTY_EXPRESSION) break;
+                dimensions += 1;
+                sizeExpr.visit(this);
+                operandStack.doGroovyCast(ClassHelper.int_TYPE);
+            }
+            operandStack.remove(dimensions);
+            // stack: ..., size (one per dimension)
+        }
+
         int storeIns = AASTORE;
         if (!elementType.isArray() || expression.hasInitializer()) {
-            if (ClassHelper.isPrimitiveType(elementType)) {
+            if (isPrimitiveType(elementType)) {
                 int primType = 0;
-                if (elementType == ClassHelper.boolean_TYPE) {
+                if (isPrimitiveBoolean(elementType)) {
                     primType = T_BOOLEAN;
                     storeIns = BASTORE;
-                } else if (elementType == ClassHelper.char_TYPE) {
+                } else if (isPrimitiveChar(elementType)) {
                     primType = T_CHAR;
                     storeIns = CASTORE;
-                } else if (elementType == ClassHelper.float_TYPE) {
+                } else if (isPrimitiveFloat(elementType)) {
                     primType = T_FLOAT;
                     storeIns = FASTORE;
-                } else if (elementType == ClassHelper.double_TYPE) {
+                } else if (isPrimitiveDouble(elementType)) {
                     primType = T_DOUBLE;
                     storeIns = DASTORE;
-                } else if (elementType == ClassHelper.byte_TYPE) {
+                } else if (isPrimitiveByte(elementType)) {
                     primType = T_BYTE;
                     storeIns = BASTORE;
-                } else if (elementType == ClassHelper.short_TYPE) {
+                } else if (isPrimitiveShort(elementType)) {
                     primType = T_SHORT;
                     storeIns = SASTORE;
-                } else if (elementType == ClassHelper.int_TYPE) {
+                } else if (isPrimitiveInt(elementType)) {
                     primType = T_INT;
                     storeIns = IASTORE;
-                } else if (elementType == ClassHelper.long_TYPE) {
+                } else if (isPrimitiveLong(elementType)) {
                     primType = T_LONG;
                     storeIns = LASTORE;
                 }
                 mv.visitIntInsn(NEWARRAY, primType);
             } else {
                 mv.visitTypeInsn(ANEWARRAY, BytecodeHelper.getClassInternalName(elementType));
+                maybeInnerClassEntry(elementType);
             }
         } else {
             mv.visitMultiANewArrayInsn(BytecodeHelper.getTypeDescription(arrayType), dimensions);
         }
+        // stack: ..., array
 
-        for (int i = 0; i < size; i += 1) {
-            mv.visitInsn(DUP);
-            BytecodeHelper.pushConstant(mv, i);
-            Expression elementExpression = expression.getExpression(i);
-            if (elementExpression == null) {
-                ConstantExpression.NULL.visit(this);
-            } else {
-                elementExpression.visit(this);
-                controller.getOperandStack().doGroovyCast(elementType);
+        if (size >= 0) {
+            for (int i = 0; i < size; i += 1) {
+                mv.visitInsn(DUP); // array ref
+                BytecodeHelper.pushConstant(mv, i);
+                Expression element = expression.getExpression(i);
+                (element != null ? element : ConstantExpression.NULL).visit(this);
+                operandStack.doGroovyCast(elementType);
+                mv.visitInsn(storeIns);
+                operandStack.remove(1);
             }
-            mv.visitInsn(storeIns);
-            controller.getOperandStack().remove(1);
+        } else {
+            // stack: ..., source, target
+            Label top = new Label();
+            mv.visitLabel(top);
+
+            {
+                final int idx = -size;
+                mv.visitIincInsn(idx, -1);
+
+                mv.visitInsn(DUP2);
+                mv.visitInsn(SWAP);
+                // stack: ..., target, source
+                mv.visitVarInsn(ILOAD, idx);
+                // stack: ..., target, source, index
+                mv.visitInsn(AALOAD);
+                // stack: ..., target, value
+                operandStack.push(ClassHelper.OBJECT_TYPE);
+                operandStack.doGroovyCast(elementType);
+
+                mv.visitVarInsn(ILOAD, idx);
+                // stack: ..., target, value, index
+                operandStack.push(ClassHelper.int_TYPE);
+                operandStack.swap();
+                // stack: ..., target, index, value
+                mv.visitInsn(storeIns);
+                operandStack.remove(2);
+                // stack: ...
+
+                mv.visitVarInsn(ILOAD, idx);
+                mv.visitJumpInsn(IFNE, top);
+
+                compileStack.removeVar(idx);
+            }
+
+            // stack: ..., source, target
+            mv.visitInsn(SWAP);
+            // stack: ..., target, source
+            mv.visitInsn(POP);
+            // stack: ..., target
         }
 
-        controller.getOperandStack().push(arrayType);
+        operandStack.push(arrayType);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitClosureListExpression(final ClosureListExpression expression) {
         MethodVisitor mv = controller.getMethodVisitor();
@@ -1730,8 +2231,7 @@ public class AsmClassGenerator extends ClassGenerator {
         // init declarations
         for (int i = 0; i < size; i += 1) {
             Expression expr = expressions.get(i);
-            if (expr instanceof DeclarationExpression) {
-                DeclarationExpression de = (DeclarationExpression) expr;
+            if (expr instanceof DeclarationExpression de) {
                 BinaryExpression be = new BinaryExpression(
                         de.getLeftExpression(),
                         de.getOperation(),
@@ -1751,6 +2251,9 @@ public class AsmClassGenerator extends ClassGenerator {
         final Label tableEnd = new Label();
         final Label[] labels = new Label[size];
         instructions.add(new BytecodeInstruction() {
+            /**
+             * Emits the switch dispatch for the requested closure index.
+             */
             @Override
             public void visit(MethodVisitor mv) {
                 mv.visitVarInsn(ILOAD, 1);
@@ -1764,6 +2267,9 @@ public class AsmClassGenerator extends ClassGenerator {
             Expression expr = expressions.get(i);
             labels[i] = label;
             instructions.add(new BytecodeInstruction() {
+                /**
+                 * Marks the current case label and drops the placeholder stack value.
+                 */
                 @Override
                 public void visit(MethodVisitor mv) {
                     mv.visitLabel(label);
@@ -1773,6 +2279,9 @@ public class AsmClassGenerator extends ClassGenerator {
             });
             instructions.add(expr);
             instructions.add(new BytecodeInstruction() {
+                /**
+                 * Jumps to the shared return label after evaluating a case body.
+                 */
                 @Override
                 public void visit(MethodVisitor mv) {
                     mv.visitJumpInsn(GOTO, tableEnd);
@@ -1782,6 +2291,9 @@ public class AsmClassGenerator extends ClassGenerator {
 
         // default case
         instructions.add(new BytecodeInstruction() {
+            /**
+             * Marks the default branch of the closure-index switch.
+             */
             @Override
             public void visit(MethodVisitor mv) {
                 mv.visitLabel(dflt);
@@ -1794,6 +2306,9 @@ public class AsmClassGenerator extends ClassGenerator {
 
         // return
         instructions.add(new BytecodeInstruction() {
+            /**
+             * Emits the shared return path for the generated closure-index switch.
+             */
             @Override
             public void visit(MethodVisitor mv) {
                 mv.visitLabel(tableEnd);
@@ -1813,7 +2328,7 @@ public class AsmClassGenerator extends ClassGenerator {
         // in a temporary variable
         BytecodeHelper.pushConstant(mv, size);
         mv.visitTypeInsn(ANEWARRAY, "java/lang/Object");
-        int listArrayVar = controller.getCompileStack().defineTemporaryVariable("_listOfClosures", true);
+        int listArrayVar = controller.getCompileStack().defineTemporaryVariable("_listOfClosures", ClassHelper.OBJECT_TYPE.makeArray(), true);
 
         // add curried versions
         for (int i = 0; i < size; i += 1) {
@@ -1862,17 +2377,24 @@ public class AsmClassGenerator extends ClassGenerator {
         controller.getOperandStack().pop();
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitBytecodeExpression(final BytecodeExpression expression) {
         expression.visit(controller.getMethodVisitor());
         controller.getOperandStack().push(expression.getType());
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitBytecodeSequence(final BytecodeSequence bytecodeSequence) {
         MethodVisitor mv = controller.getMethodVisitor();
         List<?> sequence = bytecodeSequence.getInstructions();
-        int mark = controller.getOperandStack().getStackLength();
+        OperandStack operandStack = controller.getOperandStack();
+        int mark = operandStack.getStackLength();
 
         for (Object element : sequence) {
             if (element instanceof EmptyExpression) {
@@ -1887,9 +2409,12 @@ public class AsmClassGenerator extends ClassGenerator {
             }
         }
 
-        controller.getOperandStack().remove(mark - controller.getOperandStack().getStackLength());
+        operandStack.remove(mark - operandStack.getStackLength());
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitListExpression(final ListExpression expression) {
         onLineNumber(expression, "ListExpression");
@@ -1902,8 +2427,8 @@ public class AsmClassGenerator extends ClassGenerator {
             MethodVisitor mv = controller.getMethodVisitor();
             BytecodeHelper.pushConstant(mv, size);
             mv.visitTypeInsn(ANEWARRAY, "java/lang/Object");
-            int maxInit = 1000;
-            if (size<maxInit || !containsOnlyConstants) {
+            final int maxInit = 1000; // top end for unroll
+            if (size < maxInit || !containsOnlyConstants) {
                 for (int i = 0; i < size; i += 1) {
                     mv.visitInsn(DUP);
                     BytecodeHelper.pushConstant(mv, i);
@@ -1911,7 +2436,7 @@ public class AsmClassGenerator extends ClassGenerator {
                     operandStack.box();
                     mv.visitInsn(AASTORE);
                 }
-                controller.getOperandStack().remove(size);
+                operandStack.remove(size);
             } else {
                 List<Expression> expressions = expression.getExpressions();
                 List<String> methods = new ArrayList<>();
@@ -1938,7 +2463,7 @@ public class AsmClassGenerator extends ClassGenerator {
                     }
                     operandStack.remove(methodBlockSize);
                     mv.visitInsn(RETURN);
-                    mv.visitMaxs(0,0);
+                    mv.visitMaxs(0, 0);
                     mv.visitEnd();
                 }
                 mv = oldMv;
@@ -1955,6 +2480,9 @@ public class AsmClassGenerator extends ClassGenerator {
         operandStack.push(ClassHelper.LIST_TYPE);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitGStringExpression(final GStringExpression expression) {
         MethodVisitor mv = controller.getMethodVisitor();
@@ -1966,14 +2494,15 @@ public class AsmClassGenerator extends ClassGenerator {
         BytecodeHelper.pushConstant(mv, size);
         mv.visitTypeInsn(ANEWARRAY, "java/lang/Object");
 
+        OperandStack operandStack = controller.getOperandStack();
         for (int i = 0; i < size; i += 1) {
             mv.visitInsn(DUP);
             BytecodeHelper.pushConstant(mv, i);
             expression.getValue(i).visit(this);
-            controller.getOperandStack().box();
+            operandStack.box();
             mv.visitInsn(AASTORE);
         }
-        controller.getOperandStack().remove(size);
+        operandStack.remove(size);
 
         List<ConstantExpression> strings = expression.getStrings();
         size = strings.size();
@@ -1983,16 +2512,19 @@ public class AsmClassGenerator extends ClassGenerator {
         for (int i = 0; i < size; i += 1) {
             mv.visitInsn(DUP);
             BytecodeHelper.pushConstant(mv, i);
-            controller.getOperandStack().pushConstant(strings.get(i));
-            controller.getOperandStack().box();
+            operandStack.pushConstant(strings.get(i));
+            operandStack.box();
             mv.visitInsn(AASTORE);
         }
-        controller.getOperandStack().remove(size);
+        operandStack.remove(size);
 
         mv.visitMethodInsn(INVOKESPECIAL, "org/codehaus/groovy/runtime/GStringImpl", "<init>", "([Ljava/lang/Object;[Ljava/lang/String;)V", false);
-        controller.getOperandStack().push(ClassHelper.GSTRING_TYPE);
+        operandStack.push(ClassHelper.GSTRING_TYPE);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitAnnotations(final AnnotatedNode node) {
         // ignore it; annotation generation needs the current visitor
@@ -2004,9 +2536,10 @@ public class AsmClassGenerator extends ClassGenerator {
 
     private void visitAnnotations(final AnnotatedNode targetNode, final AnnotatedNode sourceNode, final Object visitor) {
         for (AnnotationNode an : sourceNode.getAnnotations()) {
-            // skip built-in properties
-            if (an.isBuiltIn()) continue;
             if (an.hasSourceRetention()) continue;
+            if (an.getClassNode().equals(ClassHelper.SEALED_TYPE) && sealedNative(sourceNode) && sealedSkipAnnotation(sourceNode)) continue;
+
+            maybeInnerClassEntry(an.getClassNode());
 
             AnnotationVisitor av = getAnnotationVisitor(targetNode, an, visitor);
             visitAnnotationAttributes(an, av);
@@ -2014,10 +2547,102 @@ public class AsmClassGenerator extends ClassGenerator {
         }
     }
 
+    private void visitTypeAnnotations(final ClassNode sourceNode, final Object visitor, final TypeReference typeRef, final String typePathStr, boolean typeUse) {
+        for (AnnotationNode an : sourceNode.getTypeAnnotations()) {
+            if (an.hasSourceRetention()) continue;
+            if (typeUse && !an.isTargetAllowed(AnnotationNode.TYPE_USE_TARGET)) continue;
+
+            AnnotationVisitor av = null;
+            final TypePath typePath;
+            try {
+                typePath = TypePath.fromString(typePathStr);
+            } catch (IllegalArgumentException ex) {
+                throw new GroovyBugError("Illegal type path for " + sourceNode.getText() + ", typeRef = " + typeRef + ", typePath = " + typePathStr);
+            }
+            final int typeRefInt = typeRef.getValue();
+            final String annotationDescriptor = BytecodeHelper.getTypeDescription(an.getClassNode());
+            if (visitor instanceof ClassVisitor) {
+                av = ((ClassVisitor) visitor).visitTypeAnnotation(typeRefInt, typePath, annotationDescriptor, an.hasRuntimeRetention());
+            } else if (visitor instanceof MethodVisitor) {
+                av = ((MethodVisitor) visitor).visitTypeAnnotation(typeRefInt, typePath, annotationDescriptor, an.hasRuntimeRetention());
+            } else if (visitor instanceof FieldVisitor) {
+                av = ((FieldVisitor) visitor).visitTypeAnnotation(typeRefInt, typePath, annotationDescriptor, an.hasRuntimeRetention());
+            } else if (visitor instanceof RecordComponentVisitor) {
+                av = ((RecordComponentVisitor) visitor).visitTypeAnnotation(typeRefInt, typePath, annotationDescriptor, an.hasRuntimeRetention());
+            } else {
+                throwException("Cannot create an AnnotationVisitor. Please report Groovy bug");
+            }
+            visitAnnotationAttributes(an, av);
+            av.visitEnd();
+        }
+    }
+
+    private void visitGenericsTypeAnnotations(final ClassNode classNode, final Object visitor, final TypeReference typeRef,
+                                              final String typePath, final boolean typeUse) {
+        if (!classNode.isUsingGenerics() || classNode.getGenericsTypes() == null) {
+            return;
+        }
+        visitGenericsTypeAnnotations(classNode.getGenericsTypes(), visitor, typePath, typeRef, typeUse);
+    }
+
+    private void visitTypeParameters(final MethodNode methodNode, final Object visitor) {
+        if (methodNode.getGenericsTypes() == null) {
+            return;
+        }
+        visitGenericsTypeParameterAnnotations(methodNode.getGenericsTypes(), visitor, "", METHOD_TYPE_PARAMETER, METHOD_TYPE_PARAMETER_BOUND);
+    }
+
+    private void visitTypeParameters(final ClassNode classNode, final Object visitor) {
+        if (classNode.getGenericsTypes() == null) {
+            return;
+        }
+        visitGenericsTypeParameterAnnotations(classNode.getGenericsTypes(), visitor, "", CLASS_TYPE_PARAMETER, CLASS_TYPE_PARAMETER_BOUND);
+    }
+
+    private void visitGenericsTypeParameterAnnotations(final GenericsType[] genericsTypes, final Object visitor, final String typePath, final int sort, final int boundSort) {
+        for (int paramIdx = 0; paramIdx < genericsTypes.length; paramIdx++) {
+            GenericsType gt = genericsTypes[paramIdx];
+            visitType(gt.getType(), visitor, newTypeParameterReference(sort, paramIdx), typePath, false);
+            if (gt.getLowerBound() != null) {
+                visitType(gt.getLowerBound(), visitor, newTypeParameterBoundReference(boundSort, paramIdx, 0), typePath, false);
+            }
+            if (gt.getUpperBounds() != null) {
+                ClassNode[] upperBounds = gt.getUpperBounds();
+                for (int boundIdx = 0; boundIdx < upperBounds.length; boundIdx++) {
+                    visitType(upperBounds[boundIdx], visitor, newTypeParameterBoundReference(boundSort, paramIdx, boundIdx), typePath, false);
+                }
+            }
+        }
+    }
+
+    private void visitGenericsTypeAnnotations(final GenericsType[] genericsTypes, final Object visitor,
+                                              final String typePath, final TypeReference typeRef, final boolean typeUse) {
+        for (int paramIdx = 0; paramIdx < genericsTypes.length; paramIdx++) {
+            GenericsType gt = genericsTypes[paramIdx];
+            String prefix = typePath + paramIdx + ";";
+            visitType(gt.getType(), visitor, typeRef, prefix, typeUse);
+            if (!gt.isPlaceholder()) {
+                if (gt.getLowerBound() != null) {
+                    visitType(gt.getLowerBound(), visitor, typeRef, gt.isWildcard() ? prefix + "*" : prefix + "0;", typeUse);
+                }
+                if (gt.getUpperBounds() != null) {
+                    ClassNode[] upperBounds = gt.getUpperBounds();
+                    for (int boundIdx = 0; boundIdx < upperBounds.length; boundIdx++) {
+                        visitType(upperBounds[boundIdx], visitor, typeRef, gt.isWildcard() ? prefix + "*" : prefix + boundIdx + ";", typeUse);
+                    }
+                }
+            }
+        }
+    }
+
+    private void visitType(final ClassNode classNode, final Object visitor, final TypeReference typeRef, final String typePath, boolean typeUse) {
+        maybeInnerClassEntry(classNode); // GROOVY-8863
+        visitTypeAnnotations(classNode, visitor, typeRef, typePath, typeUse);
+        visitGenericsTypeAnnotations(classNode, visitor, typeRef, typePath, typeUse);
+    }
+
     private void visitParameterAnnotations(final Parameter parameter, final int paramNumber, final MethodVisitor mv) {
         for (AnnotationNode an : parameter.getAnnotations()) {
-            // skip built-in properties
-            if (an.isBuiltIn()) continue;
             if (an.hasSourceRetention()) continue;
 
             final String annotationDescriptor = BytecodeHelper.getTypeDescription(an.getClassNode());
@@ -2035,6 +2660,8 @@ public class AsmClassGenerator extends ClassGenerator {
             return ((FieldVisitor) visitor).visitAnnotation(annotationDescriptor, an.hasRuntimeRetention());
         } else if (targetNode instanceof ClassNode) {
             return ((ClassVisitor) visitor).visitAnnotation(annotationDescriptor, an.hasRuntimeRetention());
+        } else if (visitor instanceof RecordComponentVisitor) {
+            return ((RecordComponentVisitor) visitor).visitAnnotation(annotationDescriptor, true);
         }
         throwException("Cannot create an AnnotationVisitor. Please report Groovy bug");
         return null;
@@ -2046,78 +2673,54 @@ public class AsmClassGenerator extends ClassGenerator {
      * @param an the node with an annotation
      * @param av the visitor to use
      */
-    private void visitAnnotationAttributes(final AnnotationNode an, final AnnotationVisitor av) {
-        Map<String, Object> constantAttrs = new HashMap<>();
-        Map<String, PropertyExpression> enumAttrs = new HashMap<>();
-        Map<String, Object> atAttrs = new HashMap<>();
-        Map<String, ListExpression> arrayAttrs = new HashMap<>();
-
+    public void visitAnnotationAttributes(final AnnotationNode an, final AnnotationVisitor av) {
         for (Map.Entry<String, Expression> member : an.getMembers().entrySet()) {
             String name = member.getKey();
             Expression expr = member.getValue();
             if (expr instanceof AnnotationConstantExpression) {
-                atAttrs.put(name, ((AnnotationConstantExpression) expr).getValue());
+                AnnotationNode atNode = (AnnotationNode) ((AnnotationConstantExpression) expr).getValue();
+                visitAnnotationConstAttr(av, name, atNode);
             } else if (expr instanceof ConstantExpression) {
-                constantAttrs.put(name, ((ConstantExpression) expr).getValue());
+                visitConstantAttr(av, name, ((ConstantExpression) expr).getValue());
             } else if (expr instanceof ClassExpression) {
-                constantAttrs.put(name, Type.getType(BytecodeHelper.getTypeDescription((expr.getType()))));
+                visitConstantAttr(av, name, Type.getType(BytecodeHelper.getTypeDescription((expr.getType()))));
             } else if (expr instanceof PropertyExpression) {
-                enumAttrs.put(name, (PropertyExpression) expr);
+                visitEnumAttr(av, name, (PropertyExpression) expr);
             } else if (expr instanceof ListExpression) {
-                arrayAttrs.put(name, (ListExpression) expr);
+                visitArrayAttr(av, name, (ListExpression) expr);
             } else if (expr instanceof ClosureExpression) {
                 ClassNode closureClass = controller.getClosureWriter().getOrAddClosureClass((ClosureExpression) expr, ACC_PUBLIC);
-                constantAttrs.put(name, Type.getType(BytecodeHelper.getTypeDescription(closureClass)));
+                visitConstantAttr(av, name, Type.getType(BytecodeHelper.getTypeDescription(closureClass)));
             }
-        }
-
-        for (Map.Entry<String, Object> entry : constantAttrs.entrySet()) {
-            av.visit(entry.getKey(), entry.getValue());
-        }
-        for (Map.Entry<String, PropertyExpression> entry : enumAttrs.entrySet()) {
-            PropertyExpression propExp = entry.getValue();
-            av.visitEnum(entry.getKey(),
-                    BytecodeHelper.getTypeDescription(propExp.getObjectExpression().getType()),
-                    String.valueOf(((ConstantExpression) propExp.getProperty()).getValue()));
-        }
-        for (Map.Entry<String, Object> entry : atAttrs.entrySet()) {
-            AnnotationNode atNode = (AnnotationNode) entry.getValue();
-            AnnotationVisitor av2 = av.visitAnnotation(entry.getKey(),
-                    BytecodeHelper.getTypeDescription(atNode.getClassNode()));
-            visitAnnotationAttributes(atNode, av2);
-            av2.visitEnd();
-        }
-        visitArrayAttributes(an, arrayAttrs, av);
-    }
-
-    private void visitArrayAttributes(final AnnotationNode an, final Map<String, ListExpression> arrayAttr, final AnnotationVisitor av) {
-        if (arrayAttr.isEmpty()) return;
-        for (Map.Entry<String, ListExpression> entry : arrayAttr.entrySet()) {
-            AnnotationVisitor av2 = av.visitArray(entry.getKey());
-            List<Expression> values = entry.getValue().getExpressions();
-            if (!values.isEmpty()) {
-                int arrayElementType = determineCommonArrayType(values);
-                for (Expression exprChild : values) {
-                    visitAnnotationArrayElement(exprChild, arrayElementType, av2);
-                }
-            }
-            av2.visitEnd();
         }
     }
 
-    private static int determineCommonArrayType(final List<Expression> values) {
-        Expression expr = values.get(0);
-        int arrayElementType = -1;
-        if (expr instanceof AnnotationConstantExpression) {
-            arrayElementType = 1;
-        } else if (expr instanceof ConstantExpression) {
-            arrayElementType = 2;
-        } else if (expr instanceof ClassExpression || expr instanceof ClosureExpression) {
-            arrayElementType = 3;
-        } else if (expr instanceof PropertyExpression) {
-            arrayElementType = 4;
+    private void visitAnnotationConstAttr(AnnotationVisitor av, String key, AnnotationNode atNode) {
+        AnnotationVisitor av2 = av.visitAnnotation(key, BytecodeHelper.getTypeDescription(atNode.getClassNode()));
+        visitAnnotationAttributes(atNode, av2);
+        av2.visitEnd();
+    }
+
+    private static void visitEnumAttr(AnnotationVisitor av, String key, PropertyExpression propExp) {
+        av.visitEnum(key,
+            BytecodeHelper.getTypeDescription(propExp.getObjectExpression().getType()),
+            String.valueOf(((ConstantExpression) propExp.getProperty()).getValue()));
+    }
+
+    private static void visitConstantAttr(AnnotationVisitor av, String key, Object value) {
+        av.visit(key, value);
+    }
+
+    private void visitArrayAttr(AnnotationVisitor av, String key, ListExpression value) {
+        AnnotationVisitor av2 = av.visitArray(key);
+        List<Expression> values = value.getExpressions();
+        if (!values.isEmpty()) {
+            int arrayElementType = determineCommonArrayType(values);
+            for (Expression exprChild : values) {
+                visitAnnotationArrayElement(exprChild, arrayElementType, av2);
+            }
         }
-        return arrayElementType;
+        av2.visitEnd();
     }
 
     private void visitAnnotationArrayElement(final Expression expr, final int arrayElementType, final AnnotationVisitor av) {
@@ -2150,9 +2753,27 @@ public class AsmClassGenerator extends ClassGenerator {
     // Implementation methods
     //--------------------------------------------------------------------------
 
+    /**
+     * Registers a generated inner class with the enclosing module.
+     *
+     * @param innerClass the inner class to register
+     * @return {@code true} if the inner class was queued for later emission
+     */
+    public boolean addInnerClass(final ClassNode innerClass) {
+        ModuleNode mn = controller.getClassNode().getModule();
+        innerClass.setModule(mn);
+        mn.getUnit().addGeneratedInnerClass((InnerClassNode) innerClass);
+        return innerClasses.add(innerClass);
+    }
+
+    /**
+     * Calculates the argument count represented by an argument expression.
+     *
+     * @param arguments the argument expression to inspect
+     * @return the represented argument count
+     */
     public static int argumentSize(final Expression arguments) {
-        if (arguments instanceof TupleExpression) {
-            TupleExpression tupleExpression = (TupleExpression) arguments;
+        if (arguments instanceof TupleExpression tupleExpression) {
             int size = tupleExpression.getExpressions().size();
             return size;
         }
@@ -2172,64 +2793,155 @@ public class AsmClassGenerator extends ClassGenerator {
         return true;
     }
 
-    public static boolean containsSpreadExpression(final Expression arguments) {
-        List<Expression> args;
-        if (arguments instanceof TupleExpression) {
-            TupleExpression tupleExpression = (TupleExpression) arguments;
-            args = tupleExpression.getExpressions();
-        } else if (arguments instanceof ListExpression) {
-            ListExpression le = (ListExpression) arguments;
-            args = le.getExpressions();
+    /**
+     * Determines whether the supplied argument or collection expression contains a spread element.
+     *
+     * @param expression the expression to inspect
+     * @return {@code true} if any spread element is present
+     */
+    public static boolean containsSpreadExpression(final Expression expression) {
+        List<Expression> expressions;
+        if (expression instanceof TupleExpression) {
+            expressions = ((TupleExpression) expression).getExpressions();
+        } else if (expression instanceof ListExpression) {
+            expressions = ((ListExpression)  expression).getExpressions();
+        } else if (expression instanceof ArrayExpression) {
+            expressions = ((ArrayExpression) expression).getExpressions();
         } else {
-            return arguments instanceof SpreadExpression;
+            return expression instanceof SpreadExpression;
         }
-        for (Expression arg : args) {
-            if (arg instanceof SpreadExpression) return true;
+        for (Expression expr : expressions) {
+            if (expr instanceof SpreadExpression) return true;
         }
         return false;
     }
 
-    private boolean isInnerClass() {
-        return controller.getClassNode().getOuterClass() != null;
+    /**
+     * Expands spread arguments into the runtime list representation expected by call sites.
+     *
+     * @param expressions the argument expressions to expand
+     * @param wrap whether certain arguments should be wrapped for constructor dispatch
+     */
+    public void despreadList(final List<Expression> expressions, final boolean wrap) {
+        final int expressionCnt = expressions.size();
+        List<Expression> spreadIndexes = new ArrayList<>(expressionCnt);
+        List<Expression> spreadExpressions = new ArrayList<>(expressionCnt);
+        List<Expression> normalArguments = new ArrayList<>(expressionCnt);
+
+        for (int i = 0; i < expressionCnt; i += 1) {
+            Expression expr = expressions.get(i);
+            if (!(expr instanceof SpreadExpression)) {
+                normalArguments.add(expr);
+            } else {
+                spreadIndexes.add(new ConstantExpression(i - spreadExpressions.size(), true));
+                spreadExpressions.add(((SpreadExpression) expr).getExpression());
+            }
+        }
+
+        // load normal arguments as array
+        visitTupleExpression(new ArgumentListExpression(normalArguments), wrap);
+        // load spread expressions as array
+        new TupleExpression(spreadExpressions).visit(this);
+        // load insertion index
+        new ArrayExpression(ClassHelper.int_TYPE, spreadIndexes, null).visit(this);
+
+        controller.getOperandStack().remove(1);
+        despreadList.call(controller.getMethodVisitor());
     }
 
-    @Deprecated
-    public static boolean isThisExpression(final Expression expression) {
-        return ExpressionUtils.isThisExpression(expression);
+    private static int determineCommonArrayType(final List<Expression> values) {
+        Expression expr = values.get(0);
+        int arrayElementType = -1;
+        if (expr instanceof AnnotationConstantExpression) {
+            arrayElementType = 1;
+        } else if (expr instanceof ConstantExpression) {
+            arrayElementType = 2;
+        } else if (expr instanceof ClassExpression || expr instanceof ClosureExpression) {
+            arrayElementType = 3;
+        } else if (expr instanceof PropertyExpression) {
+            arrayElementType = 4;
+        }
+        return arrayElementType;
     }
 
-    @Deprecated
-    public static boolean isSuperExpression(final Expression expression) {
-        return ExpressionUtils.isSuperExpression(expression);
+    private void doPostVisit(final ASTNode node) {
+        Consumer<WriterController> callback = node.getNodeMetaData("classgen.callback");
+        if (callback != null) callback.accept(controller);
     }
 
-    @Deprecated
-    public static boolean isNullConstant(final Expression expression) {
-        return ExpressionUtils.isNullConstant(expression);
+    /**
+     * GROOVY-12453: an expression whose value was elided left nothing on the
+     * operand stack, so there is no value for a power assert to record.
+     */
+    private static boolean isValueElided(final Expression exp) {
+        return Boolean.TRUE.equals(exp.getNodeMetaData(ELIDE_EXPRESSION_VALUE));
     }
 
-    private static boolean isVargs(final Parameter[] parameters) {
-        return (parameters.length > 0 && parameters[parameters.length - 1].getType().isArray());
+    private static boolean isParameterReference(Expression exp) {
+        return (exp instanceof VariableExpression && ((VariableExpression) exp).getAccessedVariable() instanceof Parameter);
     }
 
-    public boolean addInnerClass(final ClassNode innerClass) {
-        ModuleNode mn = controller.getClassNode().getModule();
-        innerClass.setModule(mn);
-        mn.getUnit().addGeneratedInnerClass((InnerClassNode)innerClass);
-        return innerClasses.add(innerClass);
+    private void loadThis(final VariableExpression thisOrSuper) {
+        MethodVisitor mv = controller.getMethodVisitor();
+        mv.visitVarInsn(ALOAD, 0);
+        OperandStack operandStack = controller.getOperandStack();
+        if (controller.isInGeneratedFunction() && !controller.getCompileStack().isImplicitThis()) {
+            mv.visitMethodInsn(INVOKEVIRTUAL, "groovy/lang/Closure", "getThisObject", "()Ljava/lang/Object;", false);
+            ClassNode expectedType = controller.getTypeChooser().resolveType(thisOrSuper, controller.getThisType() );
+            if (!isObjectType(expectedType) && !isPrimitiveType(expectedType)) {
+                BytecodeHelper.doCast(mv, expectedType);
+                operandStack.push(expectedType);
+            } else {
+                operandStack.push(ClassHelper.OBJECT_TYPE);
+            }
+        } else {
+            operandStack.push(controller.getClassNode());
+        }
     }
 
-    public void onLineNumber(final ASTNode statement, final String message) {
-        if (statement == null || statement instanceof BlockStatement) return;
-
-        currentASTNode = statement;
-        int line = statement.getLineNumber();
-        if (!ASM_DEBUG && line == controller.getLineNumber()) return;
-
-        controller.visitLineNumber(line);
+    /**
+     * Wraps the top-of-stack value for reflective invocation helper paths.
+     *
+     * @param expression the expression whose runtime value should be wrapped
+     */
+    public void loadWrapper(final Expression expression) {
+        MethodVisitor mv = controller.getMethodVisitor();
+        ClassNode goalClass = expression.getType();
+        visitClassExpression(classX(goalClass));
+        if (goalClass.isDerivedFromGroovyObject()) {
+            createGroovyObjectWrapperMethod.call(mv);
+        } else {
+            createPojoWrapperMethod.call(mv);
+        }
+        controller.getOperandStack().remove(1);
     }
 
+    /**
+     * Emits line number information for the supplied node when appropriate.
+     *
+     * @param node the current source node
+     * @param message a debug message retained for compatibility with existing callers
+     */
+    public void onLineNumber(final ASTNode node, final String message) {
+        if (node != null && !(node instanceof BlockStatement)) {
+            currentASTNode = node;
+            int line = node.getLineNumber();
+            if (line != controller.getLineNumber() || ASM_DEBUG) {
+                controller.visitLineNumber(line);
+            }
+        }
+    }
+
+    /**
+     * Throws a parser exception associated with the current AST node.
+     *
+     * @param message the exception message
+     */
     public void throwException(final String message) {
         throw new RuntimeParserException(message, currentASTNode);
+    }
+
+    private ClassNode typeOf(final Expression expr) {
+        return controller.getTypeChooser().resolveType(expr, controller.getClassNode());
     }
 }

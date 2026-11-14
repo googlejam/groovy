@@ -18,40 +18,77 @@
  */
 package org.apache.groovy.json.internal;
 
+import groovy.json.JsonDateHandling;
+
 import java.util.ArrayList;
 import java.util.List;
 
+/**
+ * JSON parser variant that also accepts comments, single quotes, and unquoted strings.
+ */
 public class JsonParserLax extends JsonParserCharArray {
 
     private final boolean useValues;
     private final boolean chop;
     private final boolean lazyChop;
-    private final boolean defaultCheckDates;
+    private final JsonDateHandling defaultDateHandling;
 
+    /**
+     * Creates a lax parser with eager value containers and lazy chopping.
+     */
     public JsonParserLax() {
         this(true);
     }
 
+    /**
+     * Creates a lax parser with the supplied value-container mode.
+     *
+     * @param useValues whether to use eager {@link Value} containers
+     */
     public JsonParserLax(boolean useValues) {
         this(useValues, false);
     }
 
+    /**
+     * Creates a lax parser with explicit chopping behavior.
+     *
+     * @param useValues whether to use eager {@link Value} containers
+     * @param chop whether to eagerly copy overlay slices
+     */
     public JsonParserLax(boolean useValues, boolean chop) {
         this(useValues, chop, !chop);
     }
 
+    /**
+     * Creates a lax parser with explicit lazy chopping behavior.
+     *
+     * @param useValues whether to use eager {@link Value} containers
+     * @param chop whether to eagerly copy overlay slices
+     * @param lazyChop whether to defer chopping until values are accessed
+     */
     public JsonParserLax(boolean useValues, boolean chop, boolean lazyChop) {
-        this(useValues, chop, lazyChop, true);
+        this(useValues, chop, lazyChop, JsonDateHandling.UTIL_DATE);
     }
 
-    public JsonParserLax(boolean useValues, boolean chop, boolean lazyChop, boolean defaultCheckDates) {
+    /**
+     * Creates a lax parser with full overlay configuration.
+     *
+     * @param useValues whether to use eager {@link Value} containers
+     * @param chop whether to eagerly copy overlay slices
+     * @param lazyChop whether to defer chopping until values are accessed
+     * @param defaultDateHandling what a date-like string should become
+     */
+    public JsonParserLax(boolean useValues, boolean chop, boolean lazyChop, JsonDateHandling defaultDateHandling) {
         this.useValues = useValues;
         this.chop = chop;
         this.lazyChop = lazyChop;
-        this.defaultCheckDates = defaultCheckDates;
+        this.defaultDateHandling = defaultDateHandling;
     }
 
+    @SuppressWarnings("unchecked")
     private Value decodeJsonObjectLax() {
+        enterNesting();
+        try {
         if (__currentChar == '{')
             this.nextChar();
 
@@ -75,7 +112,7 @@ public class JsonParserLax extends JsonParserCharArray {
                         startIndexOfKey++;
                     }
 
-                    key = extractLaxString(startIndexOfKey, __index - 1, false, false);
+                    key = extractLaxString(startIndexOfKey, __index - 1, false, JsonDateHandling.STRING);
                     __index++; //skip :
 
                     item = decodeValueInternal();
@@ -168,9 +205,12 @@ public class JsonParserLax extends JsonParserCharArray {
         }
 
         return value;
+        } finally {
+            exitNesting();
+        }
     }
 
-    private Value extractLaxString(int startIndexOfKey, int end, boolean encoded, boolean checkDate) {
+    private Value extractLaxString(int startIndexOfKey, int end, boolean encoded, JsonDateHandling dateHandling) {
         char startChar;
         startIndexLookup:
         for (; startIndexOfKey < __index && startIndexOfKey < charArray.length; startIndexOfKey++) {
@@ -207,9 +247,14 @@ public class JsonParserLax extends JsonParserCharArray {
                     break endIndexLookup;
             }
         }
-        return new CharSequenceValue(chop, Type.STRING, startIndexOfKey, endIndex + 1, this.charArray, encoded, checkDate);
+        return new CharSequenceValue(chop, Type.STRING, startIndexOfKey, endIndex + 1, this.charArray, encoded, dateHandling);
     }
 
+    /**
+     * Decodes the next value using the parser's lax JSON rules.
+     *
+     * @return parsed Groovy JSON value or overlay value
+     */
     @Override
     protected final Object decodeValue() {
         return this.decodeValueInternal();
@@ -274,7 +319,8 @@ public class JsonParserLax extends JsonParserCharArray {
 
                 case 'n':
                     if (isNull()) {
-                        return decodeNull() == null ? ValueContainer.NULL : ValueContainer.NULL;
+                        decodeNull();
+                        return ValueContainer.NULL;
                     } else {
                         value = decodeStringLax();
                     }
@@ -432,6 +478,10 @@ public class JsonParserLax extends JsonParserCharArray {
 
         Type type = doubleFloat ? Type.DOUBLE : Type.INTEGER;
 
+        // Checked here rather than in NumberValue: the overlay defers conversion to first access,
+        // and a document over the limit should be rejected by the parse that read it.
+        checkNumberLength(__index - startIndex);
+
         return new NumberValue(chop, type, startIndex, __index, this.charArray);
     }
 
@@ -487,7 +537,7 @@ public class JsonParserLax extends JsonParserCharArray {
             else if (currentChar == '\\') break;
         }
 
-        Value value = this.extractLaxString(startIndex, index, encoded, defaultCheckDates);
+        Value value = this.extractLaxString(startIndex, index, encoded, defaultDateHandling);
 
         __index = index;
         return value;
@@ -526,7 +576,7 @@ public class JsonParserLax extends JsonParserCharArray {
             escape = false;
         }
 
-        Value value = new CharSequenceValue(chop, Type.STRING, startIndex, __index, this.charArray, encoded, defaultCheckDates);
+        Value value = new CharSequenceValue(chop, Type.STRING, startIndex, __index, this.charArray, encoded, defaultDateHandling);
 
         if (__index < charArray.length) {
             __index++;
@@ -577,9 +627,10 @@ public class JsonParserLax extends JsonParserCharArray {
             escape = false;
         }
 
-        boolean checkDates = defaultCheckDates && !encoded && minusCount >= 2 && colonCount >= 2;
+        JsonDateHandling dateHandling = (!encoded && minusCount >= 2 && colonCount >= 2)
+                ? defaultDateHandling : JsonDateHandling.STRING;
 
-        Value value = new CharSequenceValue(chop, Type.STRING, startIndex, __index, this.charArray, encoded, checkDates);
+        Value value = new CharSequenceValue(chop, Type.STRING, startIndex, __index, this.charArray, encoded, dateHandling);
 
         if (__index < charArray.length) {
             __index++;
@@ -589,6 +640,8 @@ public class JsonParserLax extends JsonParserCharArray {
     }
 
     private Value decodeJsonArrayLax() {
+        enterNesting();
+        try {
         if (__currentChar == '[') {
             __index++;
         }
@@ -597,7 +650,7 @@ public class JsonParserLax extends JsonParserCharArray {
 
         if (__currentChar == ']') {
             __index++;
-            return new ValueContainer(new ArrayList());
+            return new ValueContainer(new ArrayList<>());
         }
 
         List<Object> list;
@@ -655,8 +708,17 @@ public class JsonParserLax extends JsonParserCharArray {
         } while (this.hasMore());
 
         return value;
+        } finally {
+            exitNesting();
+        }
     }
 
+    /**
+     * Parses a character buffer and unwraps top-level container values.
+     *
+     * @param cs JSON content to parse
+     * @return parsed Groovy JSON value
+     */
     @Override
     protected final Object decodeFromChars(char[] cs) {
         Value value = ((Value) super.decodeFromChars(cs));

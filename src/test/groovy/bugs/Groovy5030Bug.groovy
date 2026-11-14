@@ -16,26 +16,30 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy5030Bug extends GroovyTestCase {
+import static groovy.test.GroovyAssert.assertScript
+
+
+class Groovy5030Bug {
+    @Test
     void testPrimitiveOptimizationGuardsMixupInInheritanceCase() {
         assertScript """
             def list = []
             ClassUnderTest5030 cut = new ClassUnderTest5030()
             cut.metaClass.getRemoteObject = { ->
-                return [method: {obj -> 
+                return [method: {obj ->
                     list << obj
                 }] as RemoteObject5030
             }
-              
-            String val = "Value" 
+
+            String val = "Value"
             cut.someMethod(val)
             assert list == [val]
-            
-            public class ClassUnderTest5030 extends RemoteObject5030 
+
+            public class ClassUnderTest5030 extends RemoteObject5030
             {
                 public def someMethod(String someValue) {
                    RemoteObject5030 object = getRemoteObject()
@@ -45,7 +49,7 @@ class Groovy5030Bug extends GroovyTestCase {
                    return new RemoteObject5030()
                 }
              }
-             
+
              public class RemoteObject5030 {
                 public void method(obj) { /* Something */ }
              }

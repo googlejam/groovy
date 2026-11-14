@@ -26,11 +26,12 @@
 <%
     def title = classDoc.name() + (props.docTitle ? " (${props.docTitle})" : "")
     def isVisible = { it.isPublic() || (it.isProtected() && props.protectedScope == 'true') || (!it.isProtected() && !it.isPrivate() && props.packageScope == 'true') || props.privateScope == 'true' }
+    def isDocumented = { !(it.respondsTo('isHidden') && it.isHidden()) }
     def isVisibleExt = { t -> java.lang.reflect.Modifier.isPublic(t.modifiers) || java.lang.reflect.Modifier.isProtected(t.modifiers) }
-    def visibleFields = classDoc.fields().findAll(isVisible)
-    def visibleProperties = classDoc.properties() // props visible be defn
-    def visibleMethods = classDoc.methods().findAll(isVisible)
-    def visibleConstructors = classDoc.constructors().findAll(isVisible)
+    def visibleFields = classDoc.fields().findAll{ isDocumented(it) && isVisible(it) }
+    def visibleProperties = classDoc.properties().findAll(isDocumented) // props visible by definition
+    def visibleMethods = classDoc.methods().findAll{ isDocumented(it) && isVisible(it) }
+    def visibleConstructors = classDoc.constructors().findAll{ isDocumented(it) && isVisible(it) }
     def visibleNested = classDoc.innerClasses().findAll(isVisible)
     boolean hasFields = !classDoc.isAnnotationType() && visibleFields
     boolean hasProperties = !classDoc.isAnnotationType() && visibleProperties
@@ -56,12 +57,12 @@
     }
     def linkfull = { t -> dolink(t, true) }
     def linkable = { t -> dolink(t, false) }
-    def modifiersWithOptions = { t, boolean ignorePublic, boolean ignoreAbstract ->
+    def modifiersWithOptions = { t, boolean ignorePublic, boolean ignoreAbstract, boolean ignoreFinal=false, boolean ignoreStatic=false ->
         (t.isPrivate()?"private&nbsp;":"") +
         (t.isPublic() && !ignorePublic?"public&nbsp;":"") +
         (t.isProtected()?"protected&nbsp;":"") +
-        (t.isStatic()?"static&nbsp;":"") +
-        (t.isFinal()?"final&nbsp;":"") +
+        (t.isStatic() && !ignoreStatic ?"static&nbsp;":"") +
+        (t.isFinal() && !ignoreFinal?"final&nbsp;":"") +
         (!ignoreAbstract && t.respondsTo('isAbstract') && t.isAbstract()?"abstract&nbsp;":"")
     }
     def modifiers = { t -> modifiersWithOptions(t, classDoc.isGroovy(), false) }
@@ -71,7 +72,10 @@
         (t.isStatic()?"static&nbsp;":"")
     }
     def annotations = { t, sepChar ->
-        t.annotations() ? t.annotations().collect{ it.isTypeAvailable()?'@'+linkable(it.type().typeName())+it.description():it.description()}.join(sepChar) + sepChar : ''
+        // An annotation's name and description are source text, not markup: description()
+        // re-embeds the annotation's arguments verbatim. Only linkable() produces HTML here.
+        def encode = { org.codehaus.groovy.tools.groovydoc.SimpleGroovyClassDoc.encodeAngleBrackets(it ?: '') }
+        t.annotations() ? t.annotations().collect{ it.isTypeAvailable()?'@'+linkable(it.type().typeName())+encode(it.description()):'@'+encode(it.name())+encode(it.description())}.join(sepChar) + sepChar : ''
     }
     def elementTypes = [
         "required":"true",
@@ -79,7 +83,7 @@
     ]
     def isRequired = { f, v -> def req = f.constantValueExpression() == null; req.toString() == v }
     def upcase = { n -> n[0].toUpperCase() + n[1..-1] }
-    def paramsOf = { n, boolean brief -> n.parameters().collect{ param -> (brief?'':annotations(param, ' ')) + linkable(param.isTypeAvailable()?param.type():param.typeName()) + (param.vararg()?'... ':' ') + param.name() + (param.defaultValue() ? " = " + param.defaultValue():"") }.join(", ") }
+    def paramsOf = { n, boolean brief -> n.parameters().collect{ param -> (brief?'':annotations(param, '<br>')) + linkable(param.isTypeAvailable()?param.type():param.typeName()) + (param.vararg()?'... ':' ') + param.name() + (param.defaultValue() ? " = " + param.defaultValue():"") }.join(", ") }
     def rawType = { n -> def g = n.indexOf("<"); g >= 0 ? n.substring(0, g) : n }
     def nameFromParams = { n -> n.name() + '(' + n.parameters().collect{ param -> rawType(param.isTypeAvailable()?param.type().qualifiedTypeName():param.typeName()) }.join(', ') + ')' }
     def nameFromJavaParams = { n -> n.getName() + '(' + n.parameterTypes.collect{ param -> param.getName() }.join(', ') + ')' }
@@ -93,6 +97,30 @@
     <link href="${classDoc.relativeRootPath}groovy.ico" type="image/x-icon" rel="shortcut icon">
     <link href="${classDoc.relativeRootPath}groovy.ico" type="image/x-icon" rel="icon">
     <link rel="stylesheet" type="text/css" href="${classDoc.relativeRootPath}stylesheet.css" title="Style">
+<% if (props.additionalStylesheets) props.additionalStylesheets.tokenize(',').each { __ss -> %>
+    <link rel="stylesheet" type="text/css" href="${classDoc.relativeRootPath}${__ss.trim()}">
+<% } %>
+<% if (props.syntaxHighlighter == 'prism') { def __p = "${classDoc.relativeRootPath}" %>
+    <% if (props.theme == 'dark') { %>
+    <link rel="stylesheet" type="text/css" href="${__p}prism-dark.min.css">
+    <% } else if (props.theme == 'light') { %>
+    <link rel="stylesheet" type="text/css" href="${__p}prism.min.css">
+    <% } else { %>
+    <link rel="stylesheet" type="text/css" href="${__p}prism.min.css" media="(prefers-color-scheme: light)">
+    <link rel="stylesheet" type="text/css" href="${__p}prism-dark.min.css" media="(prefers-color-scheme: dark)">
+    <% } %>
+    <script src="${__p}prism.js"></script>
+    <script src="${__p}prism-groovy.min.js"></script>
+    <script src="${__p}prism-java.min.js"></script>
+    <script src="${__p}prism-json.min.js"></script>
+    <script src="${__p}prism-yaml.min.js"></script>
+    <script src="${__p}prism-toml.min.js"></script>
+    <script src="${__p}prism-sql.min.js"></script>
+    <script src="${__p}prism-csv.min.js"></script>
+    <script src="${__p}prism-markdown.min.js"></script>
+    <script src="${__p}prism-xml-doc.min.js"></script>
+    <script src="${__p}prism-javadoclike.min.js"></script>
+<% } %>
 
 <body class="center">
 <script type="text/javascript"><!--
@@ -114,9 +142,10 @@ if (location.href.indexOf('is-external=true') == -1) {
         <li><a href="${classDoc.relativeRootPath}overview-summary.html">Overview</a></li>
         <li><a href="package-summary.html">Package</a></li>
         <li class="navBarCell1Rev">Class</li>
-        <li><a href="${classDoc.relativeRootPath}deprecated-list.html">Deprecated</a></li>
-        <li><a href="${classDoc.relativeRootPath}index-all.html">Index</a></li>
-        <li><a href="${classDoc.relativeRootPath}help-doc.html">Help</a></li>
+        <li><a href="package-tree.html">Tree</a></li>
+        <% if (props.noDeprecatedList != 'true') { %><li><a href="${classDoc.relativeRootPath}deprecated-list.html">Deprecated</a></li><% } %>
+        <% if (props.noIndex != 'true') { %><li><a href="${classDoc.relativeRootPath}index-all.html">Index</a></li><% } %>
+        <% if (props.noHelp != 'true') { %><li><a href="${classDoc.relativeRootPath}help-doc.html">Help</a></li><% } %>
     </ul>
 </div>
 
@@ -132,21 +161,21 @@ if (location.href.indexOf('is-external=true') == -1) {
             <li>Summary:&nbsp;</li>
             <%
     if (classDoc.isAnnotationType()) {
-        def hasReq = classDoc.fields().any{ isRequired(it, "true") }
-        def hasOpt = classDoc.fields().any{ isRequired(it, "false") }
-        if (hasReq) { %><li><a href="#required_element_summary"><% } %>Required<% if (hasReq) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
-        if (hasOpt) { %><li><a href="#optional_element_summary"><% } %>Optional<% if (hasOpt) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
+        def hasReq = classDoc.fields().findAll(isDocumented).any{ isRequired(it, "true") }
+        def hasOpt = classDoc.fields().findAll(isDocumented).any{ isRequired(it, "false") }
+        if (hasReq) { %><li><a href="#required_element_summary"><% } %>Required<% if (hasReq) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
+        if (hasOpt) { %><li><a href="#optional_element_summary"><% } %>Optional<% if (hasOpt) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
     } else {
-        if (visibleNested) { %><li><a href="#nested_summary"><% } %>Nested<% if (visibleNested) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
+        if (visibleNested) { %><li><a href="#nested_summary"><% } %>Nested<% if (visibleNested) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
         if (classDoc.isEnum()) {
-            if (hasEnumConstants) { %><li><a href="#enum_constant_summary"><% } %>Enum constants<% if (hasEnumConstants) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
+            if (hasEnumConstants) { %><li><a href="#enum_constant_summary"><% } %>Enum constants<% if (hasEnumConstants) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
         }
-        if (hasFields) { %><li><a href="#field_summary"><% } %>Field<% if (hasFields) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
-        if (hasProperties) { %><li><a href="#property_summary">Property</a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
+        if (hasFields) { %><li><a href="#field_summary"><% } %>Field<% if (hasFields) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
+        if (hasProperties) { %><li><a href="#property_summary">Property</a></li><% } %>&nbsp;&nbsp;&nbsp;<%
         if (classDoc.isClass()) {
-            if (visibleConstructors) { %><li><a href="#constructor_summary"><% } %>Constructor<% if (visibleConstructors) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
+            if (visibleConstructors) { %><li><a href="#constructor_summary"><% } %>Constructor<% if (visibleConstructors) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
         }
-        if (visibleMethods) { %><li><a href="#method_summary"><% } %>Method<% if (visibleMethods) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
+        if (visibleMethods) { %><li><a href="#method_summary"><% } %>Method<% if (visibleMethods) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
     }
     %>
         </ul>
@@ -154,17 +183,17 @@ if (location.href.indexOf('is-external=true') == -1) {
             <li>&nbsp;|&nbsp;Detail:&nbsp;</li>
             <%
             if (classDoc.isAnnotationType()) {
-                if (hasElements) { %><li><a href="#element_detail"><% } %>Element<% if (hasElements) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
+                if (hasElements) { %><li><a href="#element_detail"><% } %>Element<% if (hasElements) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
             } else {
                 if (classDoc.isEnum()) {
-                    if (hasEnumConstants) { %><li><a href="#enum_constant_detail"><% } %>Enum constants<% if (hasEnumConstants) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
+                    if (hasEnumConstants) { %><li><a href="#enum_constant_detail"><% } %>Enum constants<% if (hasEnumConstants) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
                 }
-                if (hasFields) { %><li><a href="#field_detail"><% } %>Field<% if (hasFields) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
-                if (hasProperties) { %><li><a href="#prop_detail">Property</a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
+                if (hasFields) { %><li><a href="#field_detail"><% } %>Field<% if (hasFields) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
+                if (hasProperties) { %><li><a href="#prop_detail">Property</a></li><% } %>&nbsp;&nbsp;&nbsp;<%
                 if (classDoc.isClass()) {
-                    if (visibleConstructors) { %><li><a href="#constructor_detail"><% } %>Constructor<% if (visibleConstructors) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
+                    if (visibleConstructors) { %><li><a href="#constructor_detail"><% } %>Constructor<% if (visibleConstructors) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
                 }
-                if (visibleMethods) { %><li><a href="#method_detail"><% } %>Method<% if (visibleMethods) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
+                if (visibleMethods) { %><li><a href="#method_detail"><% } %>Method<% if (visibleMethods) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
             }
             %>
         </ul>
@@ -230,13 +259,11 @@ if (classDoc.isInterface()) {
 <% } %>
             <!-- todo: direct known subclasses -->
             <hr>
-            <br>
 <%
 def declaration = annotations(classDoc, '\n') +
-    modifiersWithOptions(classDoc, classDoc.isGroovy(), classDoc.isInterface() || classDoc.isAnnotationType()) +
+    modifiersWithOptions(classDoc, classDoc.isGroovy(), classDoc.isInterface() || classDoc.isAnnotationType(), classDoc.isEnum(), false) +
     classDoc.typeSourceDescription +
-    ' ' +
-    nameEncoded
+    " ${nameEncoded}"
 final interfaces = classDoc.interfaces().collect{ linkable(it) }.join(', ')
 if (classDoc.isInterface() && classDoc.interfaces()) {
     if (interfaces) {
@@ -249,7 +276,7 @@ if (classDoc.isInterface() && classDoc.interfaces()) {
     }
 }
 %>
-<pre>${declaration}</pre>
+<pre>${declaration?.replace('&nbsp;', ' ')}</pre>
 <% if (classDoc.commentText()) { %>
     <p>${classDoc.commentText()}</p>
 <% } %>
@@ -312,6 +339,7 @@ if (classDoc.isInterface() && classDoc.interfaces()) {
         <!-- =========== FIELD SUMMARY =========== -->
         <%
         def buffer = new StringBuilder()
+        def propBuffer = new StringBuilder()
         classes = []
         if (classDoc.isInterface()) {
             classes.addAll(classDoc.interfaces().toList())
@@ -343,6 +371,19 @@ if (classDoc.isInterface() && classDoc.interfaces()) {
                             <td class="colFirst"><strong><code>${c.typeSourceDescription} ${linkable(c)}</code></strong></td>
                             <td class="colLast"><code>${list.join(', ')}</code></td>
                         </tr>
+"""
+                }
+
+                list = []
+                list = c.properties().collect { prop ->
+                        "<a href='${classDoc.relativeRootPath}${c.fullPathName}.html#${prop.name()}'>${prop.name()}</a>"
+                        prop.name()
+                }
+                if (list) {
+                    propBuffer << """                        <tr class="${i%2==0?'altColor':'rowColor'}">
+                                <td class="colFirst"><strong><code>${c.typeSourceDescription} ${linkable(c)}</code></strong></td>
+                                <td class="colLast"><code>${list.join(', ')}</code></td>
+                            </tr>
 """
                 }
             }
@@ -392,8 +433,9 @@ if (classDoc.isInterface() && classDoc.interfaces()) {
         <% } // if hasFields or buffer %>
 
         <!-- =========== PROPERTY SUMMARY =========== -->
-        <% if (hasProperties) { %>
-         <ul class="blockList">
+        <% if (hasProperties || propBuffer.length()>0) { %>
+         <ul class="blockList"> <%
+                if (hasProperties) { %>
                 <li class="blockList"><a name="property_summary"><!--   --></a>
                     <h3>Properties Summary</h3>
                     <ul class="blockList">
@@ -412,8 +454,24 @@ if (classDoc.isInterface() && classDoc.interfaces()) {
                     </table>
                    </ul>
                 </li>
+                <% } // if hasProperties
+
+                 if (propBuffer.length()>0) { %>
+                 <li class="blockList"><a name="properties_summary"><!--   --></a>
+                     <ul class="blockList">
+                         <table class="overviewSummary" border="0" cellpadding="3" cellspacing="0" summary="Inherited properties summary table">
+                             <caption><span>Inherited properties</span><span class="tabEnd">&nbsp;</span></caption>
+                             <tr>
+                                 <th class="colFirst" scope="col">Properties inherited from class</th>
+                                 <th class="colLast" scope="col">Properties</th>
+                             </tr>
+                             ${propBuffer}
+                         </table>
+                     </ul>
+                 </li>
+                 <% } // if propBuffer %>
             </ul>
-        <% } %>
+        <% } // if hasProperties or propBuffer %>
 
         <!-- =========== ELEMENT SUMMARY =========== -->
         <% if (hasElements) { %>
@@ -458,8 +516,7 @@ if (classDoc.isInterface() && classDoc.interfaces()) {
                         <% visibleConstructors.eachWithIndex { constructor, i -> %>
                         <tr class="${i%2==0?'altColor':'rowColor'}">
                             <td class="colFirst">
-                                <code>${modifiersBrief(constructor)}<a href="#${nameFromParams(constructor)}">${constructor.name()}</a>
-                                (${paramsOf(constructor, true)})</code><br>${constructor.firstSentenceCommentText()}</td>
+                                <code>${modifiersBrief(constructor)}<strong><a href="#${nameFromParams(constructor)}">${constructor.name()}</a></strong>(${paramsOf(constructor, true)})</code><br>${constructor.firstSentenceCommentText()}</td>
                         </tr>
                         <% } %>
                     </table>
@@ -499,7 +556,7 @@ if (classDoc.isInterface() && classDoc.interfaces()) {
                     buffer << """
                         <tr class="${i%2==0?'altColor':'rowColor'}">
                             <td class="colFirst"><code>${c.typeSourceDescription} ${linkable(c)}</code></td>
-                            <td class="colLast"><code>${list.join(', ')}</code></td>
+                            <td class="colLast"><code>${list.sort().join(', ')}</code></td>
                         </tr>"""
                 }
             }
@@ -568,7 +625,7 @@ if (classDoc.isInterface() && classDoc.interfaces()) {
                         <a name="${ec.name()}"><!-- --></a>
                         <ul class="blockListLast">
                             <li class="blockList">
-                                <h4>${modifiers(ec) + '<a href="' + classDoc.relativeRootPath + classDoc.fullPathName + '.html">' + classDoc.name() + '</a>'} <strong>${ec.name()}</strong></h4>
+                                <h4>${annotations(ec, '<br>') + modifiersWithOptions(ec, true, true, true, true) + '<a href="' + classDoc.relativeRootPath + classDoc.fullPathName + '.html">' + classDoc.name() + '</a>'} <strong>${ec.name()}</strong></h4>
                                 <p>${ec.commentText()}</p>
                             </li>
                         </ul>
@@ -588,7 +645,7 @@ if (classDoc.isInterface() && classDoc.interfaces()) {
                         <a name="${field.name()}"><!-- --></a>
                         <ul class="blockListLast">
                             <li class="blockList">
-                                <h4>${annotations(field, '\n') + modifiersWithOptions(field, false, false) + linkable(field.type())} <strong>${field.name()}</strong></h4>
+                                <h4>${annotations(field, '<br>') + modifiersWithOptions(field, false, false) + linkable(field.type())} <strong>${field.name()}</strong></h4>
                                 <p>${field.commentText()}</p>
                             </li>
                         </ul>
@@ -608,7 +665,7 @@ if (classDoc.isInterface() && classDoc.interfaces()) {
                         <a name="${prop.name()}"><!-- --></a>
                         <ul class="blockListLast">
                             <li class="blockList">
-                                <h4>${annotations(prop, '\n') + modifiers(prop) + linkable(prop.type())} <strong>${prop.name()}</strong></h4>
+                                <h4>${annotations(prop, '<br>') + modifiers(prop) + linkable(prop.type())} <strong>${prop.name()}</strong></h4>
                                 <p>${prop.commentText()}</p>
                             </li>
                         </ul>
@@ -648,7 +705,7 @@ if (classDoc.isInterface() && classDoc.interfaces()) {
                         <a name="${nameFromParams(constructor)}"><!-- --></a>
                         <ul class="blockListLast">
                             <li class="blockList">
-                                <h4>${annotations(constructor, '\n') + modifiers(constructor)}<strong>${constructor.name()}</strong>(${paramsOf(constructor, false)})</h4>
+                                <h4>${annotations(constructor, '<br>') + modifiers(constructor)}<strong>${constructor.name()}</strong>(${paramsOf(constructor, false)})</h4>
                                 <p>${constructor.commentText()}</p>
                             </li>
                         </ul>
@@ -670,7 +727,7 @@ if (classDoc.isInterface() && classDoc.interfaces()) {
                         <ul class="blockListLast">
                             <li class="blockList">
                                 <h4>${method.typeParameters() ?
-                                    org.codehaus.groovy.tools.groovydoc.SimpleGroovyClassDoc.encodeAngleBrackets(method.typeParameters()) + ' ' : ''}${annotations(method, '\n') + modifiers(method)}${linkable(method.returnType())} <strong>${method.name()}</strong>(${paramsOf(method, false)})</h4>
+                                    org.codehaus.groovy.tools.groovydoc.SimpleGroovyClassDoc.encodeAngleBrackets(method.typeParameters()) + ' ' : ''}${annotations(method, '<br>') + modifiers(method)}${linkable(method.returnType())} <strong>${method.name()}</strong>(${paramsOf(method, false)})</h4>
                                 <p>${method.commentText()}</p>
                             </li>
                         </ul>
@@ -693,9 +750,10 @@ if (classDoc.isInterface() && classDoc.interfaces()) {
         <li><a href="${classDoc.relativeRootPath}overview-summary.html">Overview</a></li>
         <li><a href="package-summary.html">Package</a></li>
         <li class="navBarCell1Rev">Class</li>
-        <li><a href="${classDoc.relativeRootPath}deprecated-list.html">Deprecated</a></li>
-        <li><a href="${classDoc.relativeRootPath}index-all.html">Index</a></li>
-        <li><a href="${classDoc.relativeRootPath}help-doc.html">Help</a></li>
+        <li><a href="package-tree.html">Tree</a></li>
+        <% if (props.noDeprecatedList != 'true') { %><li><a href="${classDoc.relativeRootPath}deprecated-list.html">Deprecated</a></li><% } %>
+        <% if (props.noIndex != 'true') { %><li><a href="${classDoc.relativeRootPath}index-all.html">Index</a></li><% } %>
+        <% if (props.noHelp != 'true') { %><li><a href="${classDoc.relativeRootPath}help-doc.html">Help</a></li><% } %>
     </ul>
 </div>
 
@@ -711,21 +769,21 @@ if (classDoc.isInterface() && classDoc.interfaces()) {
             <li>Summary:&nbsp;</li>
             <%
     if (classDoc.isAnnotationType()) {
-        def hasReq = classDoc.fields().any{ isRequired(it, "true") }
-        def hasOpt = classDoc.fields().any{ isRequired(it, "false") }
-        if (hasReq) { %><li><a href="#required_element_summary"><% } %>Required<% if (hasReq) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
-        if (hasOpt) { %><li><a href="#optional_element_summary"><% } %>Optional<% if (hasOpt) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
+        def hasReq = classDoc.fields().findAll(isDocumented).any{ isRequired(it, "true") }
+        def hasOpt = classDoc.fields().findAll(isDocumented).any{ isRequired(it, "false") }
+        if (hasReq) { %><li><a href="#required_element_summary"><% } %>Required<% if (hasReq) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
+        if (hasOpt) { %><li><a href="#optional_element_summary"><% } %>Optional<% if (hasOpt) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
     } else {
-        if (visibleNested) { %><li><a href="#nested_summary"><% } %>Nested<% if (visibleNested) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
+        if (visibleNested) { %><li><a href="#nested_summary"><% } %>Nested<% if (visibleNested) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
         if (classDoc.isEnum()) {
-            if (hasEnumConstants) { %><li><a href="#enum_constant_summary"><% } %>Enum constants<% if (hasEnumConstants) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
+            if (hasEnumConstants) { %><li><a href="#enum_constant_summary"><% } %>Enum constants<% if (hasEnumConstants) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
         }
-        if (hasFields) { %><li><a href="#field_summary"><% } %>Field<% if (hasFields) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
-        if (hasProperties) { %><li><a href="#property_summary">Property</a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
+        if (hasFields) { %><li><a href="#field_summary"><% } %>Field<% if (hasFields) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
+        if (hasProperties) { %><li><a href="#property_summary">Property</a></li><% } %>&nbsp;&nbsp;&nbsp;<%
         if (classDoc.isClass()) {
-            if (visibleConstructors) { %><li><a href="#constructor_summary"><% } %>Constructor<% if (visibleConstructors) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
+            if (visibleConstructors) { %><li><a href="#constructor_summary"><% } %>Constructor<% if (visibleConstructors) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
         }
-        if (visibleMethods) { %><li><a href="#method_summary"><% } %>Method<% if (visibleMethods) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
+        if (visibleMethods) { %><li><a href="#method_summary"><% } %>Method<% if (visibleMethods) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
     }
     %>
         </ul>
@@ -733,17 +791,17 @@ if (classDoc.isInterface() && classDoc.interfaces()) {
             <li>&nbsp;|&nbsp;Detail:&nbsp;</li>
             <%
             if (classDoc.isAnnotationType()) {
-                if (hasElements) { %><li><a href="#element_detail"><% } %>Element<% if (hasElements) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
+                if (hasElements) { %><li><a href="#element_detail"><% } %>Element<% if (hasElements) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
             } else {
                 if (classDoc.isEnum()) {
-                    if (hasEnumConstants) { %><li><a href="#enum_constant_detail"><% } %>Enum constants<% if (hasEnumConstants) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
+                    if (hasEnumConstants) { %><li><a href="#enum_constant_detail"><% } %>Enum constants<% if (hasEnumConstants) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
                 }
-                if (hasFields) { %><li><a href="#field_detail"><% } %>Field<% if (hasFields) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
-                if (hasProperties) { %><li><a href="#prop_detail">Property</a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
+                if (hasFields) { %><li><a href="#field_detail"><% } %>Field<% if (hasFields) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
+                if (hasProperties) { %><li><a href="#prop_detail">Property</a></li><% } %>&nbsp;&nbsp;&nbsp;<%
                 if (classDoc.isClass()) {
-                    if (visibleConstructors) { %><li><a href="#constructor_detail"><% } %>Constructor<% if (visibleConstructors) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
+                    if (visibleConstructors) { %><li><a href="#constructor_detail"><% } %>Constructor<% if (visibleConstructors) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
                 }
-                if (visibleMethods) { %><li><a href="#method_detail"><% } %>Method<% if (visibleMethods) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<% 
+                if (visibleMethods) { %><li><a href="#method_detail"><% } %>Method<% if (visibleMethods) { %></a></li><% } %>&nbsp;&nbsp;&nbsp;<%
             }
             %>
         </ul>

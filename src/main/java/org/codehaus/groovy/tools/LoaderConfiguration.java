@@ -19,7 +19,6 @@
 package org.codehaus.groovy.tools;
 
 import org.apache.groovy.util.SystemUtil;
-import org.codehaus.groovy.runtime.DefaultGroovyMethods;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -114,7 +113,7 @@ public class LoaderConfiguration {
                 line = line.trim();
                 lineNumber++;
 
-                if (line.startsWith("#") || line.length() == 0) continue;
+                if (line.startsWith("#") || line.isEmpty()) continue;
 
                 if (line.startsWith(LOAD_PREFIX)) {
                     String loadPath = line.substring(LOAD_PREFIX.length()).trim();
@@ -142,7 +141,7 @@ public class LoaderConfiguration {
 
         if (requireMain && main == null) throw new IOException("missing main class definition in config file");
         if (!configScripts.isEmpty()) {
-            System.setProperty("groovy.starter.configscripts", DefaultGroovyMethods.join((Iterable)configScripts, ","));
+            System.setProperty("groovy.starter.configscripts", String.join(",", configScripts));
         }
     }
 
@@ -205,7 +204,7 @@ public class LoaderConfiguration {
         int index = propertyIndexEnd + 1;
         if (index < str.length() && str.charAt(index) == '/' &&
                 propertyValue.endsWith("/") &&
-                propertyValue.length() > 0) {
+                !propertyValue.isEmpty()) {
             propertyValue = propertyValue.substring(0, propertyValue.length() - 1);
         }
         return propertyValue;

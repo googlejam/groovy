@@ -25,34 +25,47 @@ import java.math.BigInteger;
 
 /**
  * This class contains helper methods for converting and comparing types.
- * WARNING: This class is for internal use only. do not use it outside of its
- * package and not outside groovy-core.
+ * WARNING: This class is for internal use only. Do not use it outside of its
+ * package and not outside of groovy-core.
  */
 public class TypeHelper {
+
     /**
-     * Get wrapper class for a given class.
-     * If the class is for a primitive number type, then the wrapper class
-     * will be returned. If it is no primitive number type, we return the
-     * class itself.
+     * Returns the primitive type for a wrapper class when one exists.
+     *
+     * @param c the type to unbox
+     * @return the primitive counterpart, or the original type
+     */
+    protected static Class<?> getUnboxedType(Class<?> c) {
+        if (c == null || c.isPrimitive())                ;
+        else if (c ==   Boolean.class) c =   Boolean.TYPE;
+        else if (c ==      Byte.class) c =      Byte.TYPE;
+        else if (c == Character.class) c = Character.TYPE;
+        else if (c ==     Float.class) c =     Float.TYPE;
+        else if (c ==    Double.class) c =    Double.TYPE;
+        else if (c ==   Integer.class) c =   Integer.TYPE;
+        else if (c ==      Long.class) c =      Long.TYPE;
+        else if (c ==     Short.class) c =     Short.TYPE;
+      //else if (c ==      Void.class) c =      Void.TYPE;
+        return c;
+    }
+
+    /**
+     * Gets wrapper class for a given class. If the class is for a primitive
+     * number type, then the wrapper class will be returned. If it is not a
+     * primitive number type, we return the class itself.
      */
     protected static Class<?> getWrapperClass(Class<?> c) {
-        if (c == Integer.TYPE) {
-            c = Integer.class;
-        } else if (c == Byte.TYPE) {
-            c = Byte.class;
-        } else if (c == Long.TYPE) {
-            c = Long.class;
-        } else if (c == Double.TYPE) {
-            c = Double.class;
-        } else if (c == Float.TYPE) {
-            c = Float.class;
-        } else if (c == Boolean.TYPE) {
-            c = Boolean.class;
-        } else if (c == Character.TYPE) {
-            c = Character.class;
-        } else if (c == Short.TYPE) {
-            c = Short.class;
-        }
+        if (c == null || !c.isPrimitive())               ;
+        else if (c ==   Integer.TYPE) c =   Integer.class;
+        else if (c ==      Byte.TYPE) c =      Byte.class;
+        else if (c ==      Long.TYPE) c =      Long.class;
+        else if (c ==    Double.TYPE) c =    Double.class;
+        else if (c ==     Float.TYPE) c =     Float.class;
+        else if (c ==   Boolean.TYPE) c =   Boolean.class;
+        else if (c == Character.TYPE) c = Character.class;
+        else if (c ==     Short.TYPE) c =     Short.class;
+      //else if (c ==      Void.TYPE) c =      Void.class;
         return c;
     }
 
@@ -84,12 +97,24 @@ public class TypeHelper {
         return callSiteType;
     }
 
+    /**
+     * Checks whether the type belongs to Groovy's integral-int category.
+     *
+     * @param x the type to test
+     * @return {@code true} if the type is treated as an int-like type
+     */
     protected static boolean isIntCategory(Class<?> x) {
         return x == Integer.class || x == int.class ||
                 x == Byte.class || x == byte.class ||
                 x == Short.class || x == short.class;
     }
 
+    /**
+     * Checks whether the type belongs to Groovy's integral-long category.
+     *
+     * @param x the type to test
+     * @return {@code true} if the type is treated as a long-like type
+     */
     protected static boolean isLongCategory(Class<?> x) {
         return x == Long.class || x == long.class ||
                 isIntCategory(x);
@@ -99,10 +124,22 @@ public class TypeHelper {
         return x == BigInteger.class || isLongCategory(x);
     }
 
+    /**
+     * Checks whether the type belongs to Groovy's BigDecimal category.
+     *
+     * @param x the type to test
+     * @return {@code true} if the type is treated as a BigDecimal-like type
+     */
     protected static boolean isBigDecCategory(Class<?> x) {
         return x == BigDecimal.class || isBigIntCategory(x);
     }
 
+    /**
+     * Checks whether the type belongs to Groovy's floating-point category.
+     *
+     * @param x the type to test
+     * @return {@code true} if the type is treated as a double-like type
+     */
     protected static boolean isDoubleCategory(Class<?> x) {
         return x == Float.class || x == float.class ||
                 x == Double.class || x == double.class ||

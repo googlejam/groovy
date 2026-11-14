@@ -18,27 +18,52 @@
  */
 package org.codehaus.groovy.tools;
 
+import java.io.File;
 import java.io.FileInputStream;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.security.AccessController;
-import java.security.PrivilegedAction;
+import java.util.Arrays;
+import java.util.logging.LogManager;
+
+import static java.lang.System.Logger.Level.ERROR;
 
 /**
  * Helper class to initialize the Groovy runtime.
  */
 public class GroovyStarter {
 
+    // Logger is in a holder class so it is not initialized until after
+    // configuration (including logging properties) has been loaded.
+    private static class LogHolder {
+        static final System.Logger LOGGER = System.getLogger(GroovyStarter.class.getName());
+    }
+
     static void printUsage() {
         System.out.println("possible programs are 'groovyc','groovy','console', and 'groovysh'");
         System.exit(1);
     }
-    
-    
+
+    /**
+     * Bootstraps the requested Groovy launcher from command-line arguments.
+     *
+     * @param args launcher arguments
+     */
+    public static void main(String[] args) {
+        try {
+            rootLoader(args);
+        } catch (Throwable t) {
+            t.printStackTrace();
+        }
+    }
+
+    /**
+     * Configures the root loader and invokes the selected main class.
+     *
+     * @param args starter arguments
+     */
     public static void rootLoader(String[] args) {
         String conf = System.getProperty("groovy.starter.conf",null);
         final LoaderConfiguration lc = new LoaderConfiguration();
-        
+
         // evaluate parameters
         boolean hadMain=false, hadConf=false, hadCP=false;
         int argsOffset = 0;
@@ -74,7 +99,7 @@ public class GroovyStarter {
                     break;
                 default:
                     break label;
-            }            
+            }
         }
 
         // this allows to override the commandline conf
@@ -85,50 +110,60 @@ public class GroovyStarter {
         if (lc.getMainClass()==null && conf==null) {
             exit("no configuration file or main class specified");
         }
-        
-        // copy arguments for main class 
-        String[] newArgs = new String[args.length-argsOffset];
-        System.arraycopy(args, 0 + argsOffset, newArgs, 0, newArgs.length);
+
+        // copy arguments for main class
+        String[] mainArgs = Arrays.copyOfRange(args, argsOffset, args.length);
         // load configuration file
         if (conf!=null) {
             try {
                 lc.configure(new FileInputStream(conf));
             } catch (Exception e) {
-                System.err.println("exception while configuring main class loader:");
+                LogHolder.LOGGER.log(ERROR, "Exception while configuring main class loader");
                 exit(e);
             }
         }
+
+        // Auto-discover user logging configuration from ~/.groovy/logging.properties
+        // if no explicit logging config was set via -D or groovy-starter.conf.
+        // This must happen before any logger in LogHolder is accessed.
+        if (System.getProperty("java.util.logging.config.file") == null) {
+            File loggingConfig = new File(System.getProperty("user.home"), ".groovy/logging.properties");
+            if (loggingConfig.isFile()) {
+                System.setProperty("java.util.logging.config.file", loggingConfig.getAbsolutePath());
+                try {
+                    LogManager.getLogManager().readConfiguration();
+                } catch (Exception ignore) {
+                }
+            }
+        }
+
         // create loader and execute main class
-        ClassLoader loader = AccessController.doPrivileged((PrivilegedAction<RootLoader>) () -> new RootLoader(lc));
-        Method m=null;
+        ClassLoader loader = getLoader(lc);
+        Method m = null;
         try {
-            Class c = loader.loadClass(lc.getMainClass());
+            Class<?> c = loader.loadClass(lc.getMainClass());
             m = c.getMethod("main", String[].class);
-        } catch (ClassNotFoundException | NoSuchMethodException | SecurityException e1) {
-            exit(e1);
+        } catch (ReflectiveOperationException | SecurityException e2) {
+            exit(e2);
         }
         try {
-            m.invoke(null, new Object[]{newArgs});
-        } catch (IllegalArgumentException | InvocationTargetException | IllegalAccessException e3) {
+            m.invoke(null, new Object[]{mainArgs});
+        } catch (ReflectiveOperationException | IllegalArgumentException e3) {
             exit(e3);
         }
     }
-    
+
+    private static ClassLoader getLoader(LoaderConfiguration lc) {
+        return new RootLoader(lc);
+    }
+
     private static void exit(Exception e) {
         e.printStackTrace();
         System.exit(1);
     }
-    
-    private static void exit(String msg) {
-        System.err.println(msg);
+
+    private static void exit(String text) {
+        LogHolder.LOGGER.log(ERROR, text);
         System.exit(1);
-    }
-    
-    public static void main(String[] args) {
-        try {
-            rootLoader(args);
-        } catch (Throwable t) {
-            t.printStackTrace();
-        }
     }
 }

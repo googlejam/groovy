@@ -16,10 +16,10 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
 import groovy.transform.CompileStatic
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 import static groovy.test.GroovyAssert.assertScript
 import static groovy.test.GroovyAssert.shouldFail
@@ -73,8 +73,7 @@ final class Groovy7165 {
             }
             new B().test()
         '''
-
-        assert err =~ /Access to B#CONST is forbidden/
+        assert err.message =~ /No such property: CONST for class: B/
     }
 
     @Test
@@ -91,7 +90,7 @@ final class Groovy7165 {
             }
             assert false : 'compilation should fail'
         '''
-
-        assert err =~ /Access to A#CONST is forbidden/
+        // GROOVY-12290: reported by the type checker, no longer late by the static writer
+        assert err.message =~ /No such property: CONST for Class or static property for class: A/
     }
 }

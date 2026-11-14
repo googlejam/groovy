@@ -18,11 +18,15 @@
  */
 
 
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy6811Bug extends GroovyTestCase {
+import static groovy.test.GroovyAssert.assertScript
+
+
+class Groovy6811Bug {
+    @Test
     void testShouldAllowAnonymousInnerClassFromNonStaticInnerClass() {
         assertScript '''class CreatePaymentPanel {
     def foo() { new SomeFragment() {} }
@@ -34,6 +38,7 @@ new CreatePaymentPanel().foo()
 '''
     }
 
+    @Test
     void testShouldNotIntroduceThis0InSuperCallIfSuperIsInterface() {
         assertScript '''
 class Outer {

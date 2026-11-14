@@ -16,30 +16,36 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-class SubscriptOnPrimitiveTypeArrayBug extends TestSupport {
+import groovy.bugs.TestSupport
+import org.junit.jupiter.api.Test
+
+final class SubscriptOnPrimitiveTypeArrayBug extends TestSupport {
+
     int[] ia;  // type is not necessary
     int i1;
 
+    @Test
     void testBug() {
         def array = getIntArray() // this function returns [I, true primitive array
-        
+
         def value = array[2]
-        
+
         assert value == 3
-        
+
         array[2] = 8
 
         value = array[2]
         assert value == 8
-        
+
         // lets test a range
         def range = array[1..2]
-        
+
         assert range == [2, 8]
     }
 
+    @Test
     void testGroovyIntArray() {
         int[] ia = [1, 2]
         int[] ia1 = ia; // type is not necessary
@@ -48,11 +54,11 @@ class SubscriptOnPrimitiveTypeArrayBug extends TestSupport {
         assert i2 == 1
     }
 
+    @Test
     void testIntArrayObjectRangeSelection() {
         int[] ia = [1000, 1100, 1200, 1300, 1400]
         def range = new ObjectRange(new Integer(1), new Integer(3))
         def selected = ia[range]
         assert selected == [1100, 1200, 1300]
     }
-
 }

@@ -23,21 +23,21 @@
 :jls: https://docs.oracle.com/javase/specs/jls/se14/html/
 :javabeans: https://download.oracle.com/otndocs/jcp/7224-javabeans-1.01-fr-spec-oth-JSpec/
 
-This chapter covers the object orientation of the Groovy programming language.
+This chapter covers the object-oriented aspects of the Groovy programming language.
 
 == Types
 
 === Primitive types
 
-Groovy supports the same primitive types as those defined by the {jls}[Java Language Specification]:
+Groovy supports the same primitive types as defined by the {jls}[Java Language Specification]:
 
 * integral types: `byte` (8 bit), `short` (16 bit), `int` (32 bit) and `long` (64 bit)
 * floating-point types: `float` (32 bit) and `double` (64 bit)
-* `boolean` type (exactly `true` or `false`)
-* `char` type (16 bit, usable as a numeric type, representing an UTF-16 code)
+* the `boolean` type (one of `true` or `false`)
+* the `char` type (16 bit, usable as a numeric type, representing a UTF-16 code)
 
-While Groovy declares and stores primitive fields and variables as primitives, because it uses Objects for
-everything, it autowraps references to primitives. Just like Java, the wrappers it uses are
+Also like Java, Groovy uses the respective wrapper classes when objects corresponding to any
+of the primitive types are required:
 
 [cols="1,1" options="header"]
 .primitive wrappers
@@ -67,12 +67,22 @@ everything, it autowraps references to primitives. Just like Java, the wrappers 
 | Double
 |====
 
-Here's an example using `int`
+Automatic boxing and unboxing occur when, for instance, calling a method requiring
+the wrapper class and passing it a primitive variable as the parameter, or vice-versa.
+This is similar to Java but Groovy takes the idea further.
+
+In most scenarios, you can treat a primitive just like it was the full object wrapper equivalent.
+For instance, you can call `.toString()` or `.equals(other)` on a primitive.
+Groovy autowraps and unwraps between references and primitives as needed.
+
+Here's an example using `int` which is declared as a static field in a class (discussed shortly):
 
 [source,groovy]
 ----
 include::../test/PrimitiveTest.groovy[tags=primitive_references,indent=0]
 ----
+<1> Primitive type is respected in the bytecode
+<2> Looking at the field at runtime shows it has been autowrapped
 
 Now you may be concerned that this means every time you use a mathematical operator on a reference to a primitive
 that you'll incur the cost of unboxing and reboxing the primitive. But this is not the case, as Groovy will compile
@@ -81,11 +91,118 @@ Additionally, Groovy will automatically unbox to a primitive when calling a Java
 parameter and automatically box primitive method return values from Java. However, be aware there are some
 link:core-differences-java.html#_primitives_and_wrappers[differences] from Java's method resolution.
 
-=== Class
+=== Reference Types
+
+Apart from primitives, everything else is an object and has an associated class defining its type.
+We'll discuss classes, and class-related or class-like things like interfaces, traits and records shortly.
+
+We might declare two variables, of type String and List, as follows:
+[source,groovy]
+----
+String movie = 'The Matrix'
+List actors = ['Keanu Reeves', 'Hugo Weaving']
+----
+
+[[generics]]
+=== Generics
+
+Groovy carries across the same concepts with regard to generics as Java.
+When defining classes and methods, it is possible to use a type parameter and create
+a generic class, interface, method or constructor.
+
+Usage of generic classes and methods, regardless of whether they are defined in Java
+or Groovy, may involve supplying a type argument.
+
+We might declare a variable, of type _"list of string"_, as follows:
+[source,groovy]
+----
+List<String> roles = ['Trinity', 'Morpheus']
+----
+
+Java employs type erasure for backwards compatibility with earlier versions of Java.
+From Groovy 6, every compilation unit — dynamic Groovy and scripts included —
+requires generic types to be well-formed, following the same JLS rules as Java.
+Dynamic Groovy still does not check generic invariance, inference, or
+unchecked conversions; those remain the domain of
+`@TypeChecked` / `@CompileStatic`.
+
+[[generics-well-formedness]]
+==== Well-formedness (Groovy 6)
+
+The constructs below compiled on Groovy 4 and 5 (typically by silently using
+the erasure). They are compile errors from Groovy 6, in both dynamic and
+static compilation. `new List<?>[n]` remains legal: an unbounded wildcard is
+reifiable.
+
+[cols="2,3,3"]
+.Generic well-formedness rejected in Groovy 6
+|====
+| Construct
+| Why
+| Workaround
+
+| `new T[n]` / `new T[]{ t }`
+| JLS 15.10.1, 4.7: array creation requires a reifiable component type. Groovy 4/5 emitted `Object[]` (or the bound) typed as `T[]`.
+| `(T[]) new Object[n]`, or `(T[]) new Bound[n]` when `T extends Bound`; or `Array.newInstance` with a `Class<T>` token
+
+| `class E<T> extends Exception`
+| JLS 8.1.2: a generic class may not extend `Throwable`
+| Move the type parameter onto an accessor or factory; catch the erased class
+
+| `new List<String>[n]`
+| JLS 15.10.1: a parameterized component type is not reifiable (`ArrayStoreException` cannot see the type argument)
+| `new List<?>[n]`, or an explicit `(List<String>[]) new List[n]`
+
+| `List<int>` (and nested)
+| JLS 4.5: a type argument must be a reference type (a primitive cannot appear in a `Signature` attribute)
+| `List<Integer>` (`List<int[]>` is already legal)
+
+| `new T()` / `T.class`
+| JLS 15.9.1 / 15.8.2: a type variable is not a class that can be instantiated or named by a class literal
+| Pass a `Class<T>` token
+
+| `implements X<? extends …>`
+| JLS 8.1.5: a superinterface may not specify a wildcard (the superclass form was already rejected)
+| A concrete type argument, or the raw type
+
+| `new ArrayList<?>()`
+| JLS 15.9: a class instance creation may not mention a wildcard
+| `new ArrayList<>()` or `new ArrayList<Object>()`
+
+| `<T extends A & B>` with a class type not first
+| JLS 4.4: only the first bound may be a class or type variable; additional bounds are interfaces
+| Put the class bound first: `<T extends C & I>`
+
+| `Foo<String>.class`
+| JLS 15.8.2: a class literal may not name a parameterized type (there is one `Class` per erasure)
+| `Foo.class`
+
+| `Outer.Inner<String>` with raw generic `Outer`
+| JLS 4.8: a non-static member of a raw type is raw
+| `Outer<?>.Inner<String>`
+|====
+
+Generic array creation is not a Groovy shortcut for an unchecked cast.
+Write the Java idiom:
+
+[source,groovy]
+----
+include::../test/objectorientation/GenericsTest.groovy[tags=generic_array_workaround,indent=0]
+----
+
+A generic class may not extend `Throwable`. Move the type parameter onto an
+accessor if a typed payload is needed:
+
+[source,groovy]
+----
+include::../test/objectorientation/GenericsTest.groovy[tags=generic_throwable_workaround,indent=0]
+----
+
+== Classes
 
 Groovy classes are very similar to Java classes, and are compatible with Java ones at JVM level.
 They may have methods, fields and properties (think JavaBeans properties but with less boilerplate).
-Classes and class members can have the same modifiers (public, protected, private, static, etc) as in Java
+Classes and class members can have the same modifiers (public, protected, private, static, etc.) as in Java
 with some minor differences at the source level which are explained shortly.
 
 The key differences between Groovy classes and their Java counterparts are:
@@ -108,7 +225,7 @@ include::../test/ClassTest.groovy[tags=class_definition,indent=0]
 <3> method definition
 
 
-==== Normal class
+=== Normal class
 
 Normal classes refer to classes which are top level and concrete. This means they can be instantiated without restrictions from any other classes or scripts. This way, they can only be public (even though the `public` keyword may be suppressed). Classes are instantiated by calling their constructors, using the `new` keyword, as in the following snippet.
 
@@ -118,9 +235,9 @@ include::../test/ClassTest.groovy[tags=class_instantiation,indent=0]
 ----
 
 
-==== Inner class
+=== Inner class
 
-Inner classes are defined within another classes. The enclosing class can use the inner class as usual. On the other side, a inner class can access members of its enclosing class, even if they are private. Classes other than the enclosing class are not allowed to access inner classes. Here is an example:
+Inner classes are defined within another class. The enclosing class can use the inner class as usual. An inner class can access members of its enclosing class, even if they are private. Other classes can name the inner class when its visibility allows it: a `private` inner class is visible only inside the enclosing class, while a public one can be used from elsewhere (`Outer.Inner` for a static inner class, or through an enclosing instance for a non-static one). Here is an example:
 
 [source,groovy]
 ----
@@ -155,7 +272,7 @@ Groovy 3+ also supports Java syntax for non-static inner class instantiation, fo
 include::../test/ClassTest.groovy[tags=inner_instantiation,indent=0]
 --------------------------------------
 
-===== Anonymous inner class
+==== Anonymous inner class
 
 The earlier example of an inner class (`Inner2`) can be simplified with an anonymous inner class.
 The same functionality can be achieved with the following code:
@@ -201,22 +318,33 @@ Different forms of inheritance are supported:
 * _implementation_ inheritance where code (methods, fields or properties) from a <<superclass,superclass>> or from
 one or more <<_traits,traits>> is reused by a child class
 * _contract_ inheritance where a class promises to provide particular abstract methods defined in a <<superclass,superclass>>,
-or defined in one or more <<_traits,traits>> or <<_interface,interfaces>>.
+or defined in one or more <<_traits,traits>> or <<interfaces,interfaces>>.
 
-=== Interface
+[[superclass]]
+=== Superclasses
+
+Parent classes share visible fields, properties or methods with child classes.
+A child class may have at most one parent class.
+The `extends` keyword is used immediately prior to giving the superclass type.
+
+[[interfaces]]
+=== Interfaces
 
 An interface defines a contract that a class needs to conform to.
-An interface only defines a list of methods that need
-to be implemented, but does not define the method's implementation.
+Typically, an interface defines zero or more abstract method definitions,
+but does not define the method's implementation.
+
+Here is a `Greeter` interface defining one `greet` method:
 
 [source,groovy]
 ----
 include::../test/ClassTest.groovy[tags=interface_def_1,indent=0]
 ----
 <1> an interface needs to be declared using the `interface` keyword
-<2> an interface only defines method signatures
+<2> the abstract method signature for the `greet` method
 
-Methods of an interface are always *public*. It is an error to use `protected` or `private` methods in interfaces:
+Such method signatures are public by default.
+It is an error to use `protected` or package-private methods in interfaces:
 
 [source,groovy]
 ----
@@ -266,16 +394,24 @@ include::../test/ClassTest.groovy[tags=interface_coercion,indent=0]
 You can see that there are two distinct objects: one is the source object, a `DefaultGreeter` instance, which does not
 implement the interface. The other is an instance of `Greeter` that delegates to the coerced object.
 
-TIP: Groovy interfaces do not support default implementation like Java 8 interfaces. If you are looking for something
-similar (but not equal), <<_traits,traits>> are close to interfaces, but allow default implementation as well as other
-important features described in this manual.
+TIP: Groovy <<_traits,traits>> are close to interfaces, but support other
+important features described elsewhere in this manual. If you need more
+power than offered by interfaces, consider using traits.
 
-[[superclass]]
-=== Superclass
+While interfaces typically contain abstract method definitions,
+non-abstract methods are also possible.
+Variants allowed are `default`, `static`, or `private`:
 
-Parent classes share visible fields, properties or methods with child classes.
-A child class may have at most one parent class.
-The `extends` keyword is used immediately prior to giving the superclass type.
+* Default methods provide a mechanism to evolve API functionality.
+You can add new functionality to existing interfaces but maintain
+binary compatibility with code written for older versions of those interfaces.
+Shared functionality for default methods may be placed in private methods.
+* Static methods provide a mechanism to associate methods directly
+an interface class without it impacting the OO contracts or being overridden.
+You could use them for writing factory or utility methods without
+creating an additional utility class.
+
+== Class members
 
 === Constructors
 
@@ -293,7 +429,7 @@ Groovy supports two invocation styles:
 
 To create an object by using positional parameters, the respective class needs to declare one or more
 constructors. In the case of multiple constructors, each must have a unique type signature. The constructors can also
-added to the class using the gapi:groovy.transform.TupleConstructor[] annotation.
+be added to the class using the gapi:groovy.transform.TupleConstructor[] annotation.
 
 Typically, once at least one constructor is declared, the class can only be instantiated by having one of its
 constructors called. It is worth noting that, in this case, you can't normally create the class with named parameters.
@@ -351,7 +487,7 @@ is a Map but there are also additional positional parameters. Use this style wit
 
 === Methods
 
-Groovy methods are quite similar to other languages. Some peculiarities will be shown in the next subsections. 
+Groovy methods are quite similar to other languages. Some peculiarities will be shown in the next subsections.
 
 ==== Method definition
 
@@ -419,14 +555,23 @@ Mix named and positional arguments with caution.
 
 ==== Default arguments
 
-Default arguments make parameters optional. If the argument is not supplied, the method assumes a default value.
+Default arguments make parameters optional.
+If the argument is not supplied, the method assumes a default value.
 
 [source,groovy]
 ----
-include::../test/objectorientation/MethodsTest.groovy[tags=default_arguments ,indent=0]
+include::../test/objectorientation/MethodsTest.groovy[tags=default_arguments,indent=0]
 ----
 
-Note that no mandatory parameter can be defined after a default parameter is present, only other default parameters.
+Parameters are dropped from the right, however mandatory parameters are never dropped.
+
+[source,groovy]
+----
+include::../test/objectorientation/MethodsTest.groovy[tags=default_arguments2,indent=0]
+----
+
+The same rule applies to constructors as well as methods.
+If using `@TupleConstructor`, additional configuration options apply.
 
 ==== Varargs
 
@@ -439,7 +584,7 @@ include::../test/objectorientation/MethodsTest.groovy[tags=varargs_example,inden
 ----
 
 This example defines a method `foo`, that can take any number of arguments, including no arguments at all.
-`args.length` will return the number of arguments given. Groovy allows `T[]` as a alternative notation to `T...`.
+`args.length` will return the number of arguments given. Groovy allows `T[]` as an alternative notation to `T...`.
 That means any method with an array as last parameter is seen by Groovy as a method that can take a variable number of arguments.
 
 [source,groovy]
@@ -585,7 +730,6 @@ Casting can be used to select the desired method:
 include::../test/objectorientation/MethodsTest.groovy[tags=multi_method_ambiguous_cast,indent=0]
 ----
 
-
 ==== Exception declaration
 
 Groovy automatically allows you to treat checked exceptions like unchecked exceptions.
@@ -616,7 +760,8 @@ include::../test/objectorientation/MethodsTest.groovy[tags=checked_method_declar
 [[fields]]
 ==== Fields
 
-A field is a member of a class or a trait which has:
+A field is a member of a class, interface or trait which stores data.
+A field defined in a Groovy source file has:
 
 * a mandatory _access modifier_ (`public`, `protected`, or `private`)
 * one or more optional _modifiers_ (`static`, `final`, `synchronized`)
@@ -697,7 +842,7 @@ which defines the property:
 include::../test/ClassTest.groovy[tags=property_access,indent=0]
 ----
 <1> `this.name` will directly access the field because the property is accessed from within the class that defines it
-<2> similarily a read access is done directly on the `name` field
+<2> similarly a read access is done directly on the `name` field
 <3> write access to the property is done outside of the `Person` class so it will implicitly call `setName`
 <4> read access to the property is done outside of the `Person` class so it will implicitly call `getName`
 <5> this will call the `name` method on `Person` which performs a direct access to the field
@@ -723,7 +868,7 @@ include::../test/ClassTest.groovy[tags=pseudo_properties,indent=0]
 ----
 <1> writing `p.name` is allowed because there is a pseudo-property `name`
 <2> reading `p.age` is allowed because there is a pseudo-readonly property `age`
-<3> writing `p.groovy` is allowed because there is a pseudo-writeonly property `groovy`
+<3> writing `p.groovy` is allowed because there is a pseudo-write-only property `groovy`
 
 This syntactic sugar is at the core of many DSLs written in Groovy.
 
@@ -735,6 +880,20 @@ In those cases, generated getters and setters will have a name formed by capital
 property name and adding a `get` or `set` prefix (or optionally "is" for a boolean getter).
 So, `getLength` would be a getter  for a `length` property and `setFirstName` a setter for a `firstName` property.
 `isEmpty` might be the getter method name for a property named `empty`.
+
+A `boolean` property has two getters, `isX()` and `getX()`, while a `Boolean` property only has `getX()`.
+An `isX()` method acts as a getter only when it returns `boolean`.
+When a class has both an `isX()` and a `getX()` method, reading the property calls `isX()`.
+The same rule applies to `super.x`, which calls the superclass's getter, even when the current class overrides it:
+
+[source,groovy]
+----
+include::../test/ClassTest.groovy[tags=boolean_getters,indent=0]
+----
+<1> a `boolean` property has the getters `isLit()` and `getLit()`
+<2> a `Boolean` property only has the getter `getDimmed()`
+<3> reading `ready` calls `isReady()`
+<4> `super.ready` calls the superclass's `isReady()`
 
 [NOTE]
 ====
@@ -854,10 +1013,10 @@ Inherited accessor methods aren't normally considered but if an inherited
 accessor method is marked final, that will also cause no generation of an
 additional accessor method to honor the `final` requirement of no subclassing of such methods.
 
-=== Annotation
+== Annotations
 
 [[ann-definition]]
-==== Annotation definition
+=== Annotation definition
 
 An annotation is a kind of special interface dedicated at annotating elements of the code. An annotation is a type which
 superinterface is the jdk:java.lang.annotation.Annotation[Annotation] interface. Annotations are declared in a very
@@ -910,7 +1069,7 @@ include::../test/ClassTest.groovy[tags=apply_annotation_1,indent=0]
 ----
 <1> `@SomeAnnotation` applies to the `someMethod` method
 <2> `@SomeAnnotation` applies to the `SomeClass` class
-<3> `@SomeAnnotation` applies to the `var` variable
+<3> `@SomeAnnotation` applies to the `someVar` variable
 
 In order to limit the scope where an annotation can be applied, it is necessary to declare it on the annotation
 definition, using the jdk:java.lang.annotation.Target[Target] annotation. For example, here is how you would
@@ -993,7 +1152,7 @@ include::../test/ClassTest.groovy[tags=closure_ann_runner,indent=0]
 <1> create a new instance of the class passed as an argument (the task class)
 <2> emulate an environment which is JDK 6 and not Windows
 <3> iterate on all declared methods of the task class
-<4> if the method is public and takes no-argument
+<4> if the method is public and takes no arguments
 <5> try to find the `@OnlyIf` annotation
 <6> if it is found get the `value` and create a new `Closure` out of it
 <7> set the `delegate` of the closure to our environment variable
@@ -1009,9 +1168,9 @@ Then the runner can be used this way:
 include::../test/ClassTest.groovy[tags=closure_ann_runner_exec,indent=0]
 ----
 
-==== Meta-annotations
+=== Meta-annotations
 
-===== Declaring meta-annotations
+==== Declaring meta-annotations
 
 Meta-annotations, also known as annotation aliases are annotations that
 are replaced at compile time by other annotations (one meta-annotation
@@ -1049,7 +1208,7 @@ include::../test/ClassTest.groovy[tags=metaann_ts,indent=0]
 <3> annotate the meta-annotation with `@AnnotationCollector`
 
 [[meta-ann-behavior]]
-===== Behavior of meta-annotations
+==== Behavior of meta-annotations
 
 Groovy supports both _precompiled_ and _source form_
 meta-annotations. This means that your meta-annotation _may_ be
@@ -1080,7 +1239,7 @@ In addition to replacing the alias with the collected annotations, a meta-annota
 processing them, including arguments.
 
 [[meta-ann-members]]
-===== Meta-annotation parameters
+==== Meta-annotation parameters
 
 Meta-annotations can collect annotations which have parameters. To illustrate this,
 we will imagine two annotations, each of them accepting one argument:
@@ -1090,7 +1249,7 @@ we will imagine two annotations, each of them accepting one argument:
 include::../test/ClassTest.groovy[tags=collected_ann_explosive,indent=0]
 ----
 
-And suppose that you want create a meta-annotation named `@Explosive`:
+And suppose that you want to create a meta-annotation named `@Explosive`:
 
 [source,groovy]
 ----
@@ -1137,7 +1296,7 @@ annotations are expanded. We'll look at how to do that shortly but first there i
 processing option to cover.
 
 [[handling_duplicate_annotations]]
-===== Handling duplicate annotations
+==== Handling duplicate annotations in meta-annotations
 
 The `@AnnotationCollector` annotation supports a `mode` parameter which can be used to
 alter how the default processor handles annotation replacement in the presence of
@@ -1150,8 +1309,8 @@ and then place your meta-annotation on a class that already has an explicit `@To
 annotation. Should this be an error? Should both annotations be applied? Does one take
 priority over the other? There is no correct answer. In some scenarios it might be
 quite appropriate for any of these answers to be correct. So, rather than trying to
-preempt one correct way to handle the duplicate annotation issue, Groovy let's you
-write your own custom meta-annotation processors (covered next) and let's you write
+preempt one correct way to handle the duplicate annotation issue, Groovy lets you
+write your own custom meta-annotation processors (covered next) and lets you write
 whatever checking logic you like within AST transforms - which are a frequent target for
 aggregating. Having said that, by simply setting the `mode`, a number of commonly
 expected scenarios are handled automatically for you within any extra coding.
@@ -1168,7 +1327,7 @@ enum value chosen and is summarized in the following table.
 |================================
 
 [[meta-ann-processor]]
-===== Custom annotation processors
+==== Custom meta-annotation processors
 
 A custom annotation processor will let you choose how to expand a
 meta-annotation into collected annotations. The behaviour of the meta-annotation is,
@@ -1227,11 +1386,8 @@ In the example, the `visit` method is the only method which has to be overridden
 annotation nodes that will be added to the node annotated with the meta-annotation. In this example, we return a
 single one corresponding to `@CompileStatic(TypeCheckingMode.SKIP)`.
 
-[[generics]]
-=== Generics
-
-(TBD)
-
-
 include::_traits.adoc[leveloffset=+1]
 
+include::_records.adoc[leveloffset=+1]
+
+include::_sealed.adoc[leveloffset=+1]

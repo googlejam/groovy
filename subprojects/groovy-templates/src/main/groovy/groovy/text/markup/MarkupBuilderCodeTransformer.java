@@ -46,11 +46,12 @@ import org.codehaus.groovy.syntax.Types;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
  * <p>This AST transformer is responsible for modifying a source template into something which can be compiled as a
- * {@link groovy.text.markup.BaseTemplate} subclass.</p>
+ * {@link BaseTemplate} subclass.</p>
  * <p/>
  * <p>It performs the following operations:</p>
  * <p/>
@@ -61,23 +62,39 @@ import java.util.Map;
  */
 class MarkupBuilderCodeTransformer extends ClassCodeExpressionTransformer {
 
+    /**
+     * Node metadata key used to remember the original model variable behind an escaped expression.
+     */
     static final String TARGET_VARIABLE = "target.variable";
 
     private final SourceUnit unit;
     private final boolean autoEscape;
     private final ClassNode classNode;
 
-    public MarkupBuilderCodeTransformer(final SourceUnit unit, final ClassNode classNode, final boolean autoEscape) {
+    /**
+     * Creates a transformer for a generated markup template class.
+     *
+     * @param unit source unit being transformed
+     * @param classNode generated template class
+     * @param autoEscape whether dynamic model values should be wrapped in {@code tryEscape}
+     */
+    MarkupBuilderCodeTransformer(final SourceUnit unit, final ClassNode classNode, final boolean autoEscape) {
         this.unit = unit;
         this.autoEscape = autoEscape;
         this.classNode = classNode;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected SourceUnit getSourceUnit() {
         return unit;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public Expression transform(final Expression exp) {
         if (exp instanceof BinaryExpression) {
@@ -86,13 +103,11 @@ class MarkupBuilderCodeTransformer extends ClassCodeExpressionTransformer {
         if (exp instanceof MethodCallExpression) {
             return transformMethodCall((MethodCallExpression) exp);
         }
-        if (exp instanceof ClosureExpression) {
-            ClosureExpression cl = (ClosureExpression) exp;
+        if (exp instanceof ClosureExpression cl) {
             cl.getCode().visit(this);
             return cl;
         }
-        if (exp instanceof VariableExpression) {
-            VariableExpression var = (VariableExpression) exp;
+        if (exp instanceof VariableExpression var) {
             if (var.getAccessedVariable() instanceof DynamicVariable) {
                 MethodCallExpression callGetModel = new MethodCallExpression(
                         new VariableExpression("this"),
@@ -130,8 +145,7 @@ class MarkupBuilderCodeTransformer extends ClassCodeExpressionTransformer {
         Expression left = bin.getLeftExpression();
         Expression right = bin.getRightExpression();
         boolean assignment = bin.getOperation().getType() == Types.ASSIGN;
-        if (assignment && left instanceof VariableExpression) {
-            VariableExpression var = (VariableExpression) left;
+        if (assignment && left instanceof VariableExpression var) {
             if (var.getAccessedVariable() instanceof DynamicVariable) {
                 String varName = var.getName();
                 if (!"modelTypes".equals(varName)) {
@@ -153,8 +167,7 @@ class MarkupBuilderCodeTransformer extends ClassCodeExpressionTransformer {
                 }
             }
         }
-        if (assignment && left instanceof VariableExpression && right instanceof ClosureExpression) {
-            VariableExpression var = (VariableExpression) left;
+        if (assignment && left instanceof VariableExpression var && right instanceof ClosureExpression) {
             if ("modelTypes".equals(var.getName())) {
                 // template declaring its expected types from model directly
                 // modelTypes = {
@@ -177,8 +190,7 @@ class MarkupBuilderCodeTransformer extends ClassCodeExpressionTransformer {
     }
 
     private void extractModelTypesFromStatement(final Statement code, final Map<String, ClassNode> model) {
-        if (code instanceof BlockStatement) {
-            BlockStatement block = (BlockStatement) code;
+        if (code instanceof BlockStatement block) {
             for (Statement statement : block.getStatements()) {
                 extractModelTypesFromStatement(statement, model);
             }
@@ -240,14 +252,13 @@ class MarkupBuilderCodeTransformer extends ClassCodeExpressionTransformer {
         Expression arguments = exp.getArguments();
         if (arguments instanceof TupleExpression) {
             List<Expression> expressions = ((TupleExpression) arguments).getExpressions();
-            if (expressions.size() == 1 && expressions.get(0) instanceof MapExpression) {
-                MapExpression map = (MapExpression) expressions.get(0);
+            if (expressions.size() == 1 && expressions.get(0) instanceof MapExpression map) {
                 List<MapEntryExpression> entries = map.getMapEntryExpressions();
                 if (entries.size() == 1) {
                     MapEntryExpression mapEntry = entries.get(0);
                     Expression keyExpression = mapEntry.getKeyExpression();
                     try {
-                        IncludeType includeType = IncludeType.valueOf(keyExpression.getText().toLowerCase());
+                        IncludeType includeType = IncludeType.valueOf(keyExpression.getText().toLowerCase(Locale.ROOT));
                         MethodCallExpression call = new MethodCallExpression(
                                 exp.getObjectExpression(),
                                 includeType.getMethodName(),

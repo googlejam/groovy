@@ -22,70 +22,123 @@ import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.GroovyCodeVisitor;
 
 /**
- * Represents a range expression such as for iterating.
- * E.g.:
- * <pre>for i in 0..10 {...}</pre>
+ * Represents a range expression for creating range objects with bounded endpoints.
+ * Supports inclusive ranges (e.g., {@code 0..10}) and exclusive ranges (e.g., {@code 0..<10} or {@code <0..10}).
+ * Range expressions are commonly used in for-loops (e.g., {@code for (i in 0..10)}) and other iteration contexts.
+ * The type of a range expression is always {@link ClassHelper#RANGE_TYPE}.
+ * 
+ * @see {@link Expression} for the boundary expressions
+ * @see {@link ClassHelper#RANGE_TYPE} for the range type
  */
 public class RangeExpression extends Expression {
+    /**
+     * The starting value of the range.
+     */
     private final Expression from;
+    /**
+     * The ending value of the range.
+     */
     private final Expression to;
+    /**
+     * Whether the left endpoint is exclusive (i.e., using {@code <..}).
+     */
     private final boolean exclusiveLeft;
+    /**
+     * Whether the right endpoint is exclusive (i.e., using {@code ..<}).
+     */
     private final boolean exclusiveRight;
 
-    // Kept until sure this can be removed
-    public RangeExpression(Expression from, Expression to, boolean inclusive) {
+    /**
+     * Creates an inclusive or exclusive range expression.
+     * 
+     * @param from the starting expression (non-null)
+     * @param to the ending expression (non-null)
+     * @param inclusive true for inclusive range (no exclusion), false for exclusive right endpoint
+     */
+    public RangeExpression(final Expression from, final Expression to, final boolean inclusive) {
         this(from, to, false, !inclusive);
     }
 
-    // GROOVY-9649
-    public RangeExpression(Expression from, Expression to, boolean exclusiveLeft, boolean exclusiveRight) {
-        this.from = from;
-        this.to = to;
+    /**
+     * Creates a range expression with full control over inclusivity of both endpoints.
+     * 
+     * @param from the starting expression (non-null)
+     * @param to the ending expression (non-null)
+     * @param exclusiveLeft true if the left endpoint should be excluded (using {@code <..})
+     * @param exclusiveRight true if the right endpoint should be excluded (using {@code ..<})
+     */
+    public RangeExpression(final Expression from, final Expression to, final boolean exclusiveLeft, final boolean exclusiveRight) {
+        this.from = from; this.to = to;
         this.exclusiveLeft = exclusiveLeft;
         this.exclusiveRight = exclusiveRight;
-        setType(ClassHelper.RANGE_TYPE);
+
+        setType(ClassHelper.RANGE_TYPE.getPlainNodeReference());
     }
 
-
     @Override
-    public void visit(GroovyCodeVisitor visitor) {
+    public void visit(final GroovyCodeVisitor visitor) {
         visitor.visitRangeExpression(this);
     }
 
     @Override
-    public Expression transformExpression(ExpressionTransformer transformer) {
-        Expression ret = new RangeExpression(transformer.transform(from), transformer.transform(to), exclusiveLeft, exclusiveRight);
+    public Expression transformExpression(final ExpressionTransformer transformer) {
+        Expression ret = new RangeExpression(transformer.transform(getFrom()), transformer.transform(getTo()), isExclusiveLeft(), isExclusiveRight());
         ret.setSourcePosition(this);
         ret.copyNodeMetaData(this);
         return ret;
     }
 
+    /**
+     * Returns the starting expression of the range.
+     * 
+     * @return the from expression
+     */
     public Expression getFrom() {
         return from;
     }
 
+    /**
+     * Returns the ending expression of the range.
+     * 
+     * @return the to expression
+     */
     public Expression getTo() {
         return to;
     }
 
+    /**
+     * Indicates whether this is an inclusive range (no exclusion on the right endpoint).
+     * 
+     * @return true if the range is inclusive on the right, false if exclusive
+     */
     public boolean isInclusive() {
         return !isExclusiveRight();
     }
 
+    /**
+     * Indicates whether the left endpoint is exclusive (uses {@code <..}).
+     * 
+     * @return true if the left endpoint is excluded, false otherwise
+     */
     public boolean isExclusiveLeft() {
         return exclusiveLeft;
     }
 
+    /**
+     * Indicates whether the right endpoint is exclusive (uses {@code ..<}).
+     * 
+     * @return true if the right endpoint is excluded, false otherwise
+     */
     public boolean isExclusiveRight() {
         return exclusiveRight;
     }
 
     @Override
     public String getText() {
-        return "(" + from.getText() +
-                (this.exclusiveLeft ? "<" : "") +
+        return "(" + getFrom().getText() +
+                (isExclusiveLeft() ? "<" : "") +
                 ".." +
-                (this.exclusiveRight ? "<" : "") +
-                to.getText() + ")";
+                (isExclusiveRight() ? "<" : "") +
+                getTo().getText() + ")";
     }
 }

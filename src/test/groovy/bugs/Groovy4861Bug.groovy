@@ -16,11 +16,14 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import groovy.transform.PackageScope
+import org.junit.jupiter.api.Test
 
-class Groovy4861Bug extends GroovyTestCase {
+
+class Groovy4861Bug {
+    @Test
     void testCallSitesUsageInNestedInterface() {
         assert Foo4861.A.j == 3
         assert Foo4861.A.j2 == 7
@@ -28,7 +31,7 @@ class Groovy4861Bug extends GroovyTestCase {
     }
 }
 
-@groovy.transform.PackageScope class Foo4861 {
+@PackageScope class Foo4861 {
     static interface A {
         static Integer j = 3
         static Integer j2 = j + 4

@@ -22,23 +22,36 @@ import java.awt.*;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-/** 
+/**
  * Represents a cell in a table layout.
  */
 public class TableLayoutCell {
 
+    /**
+     * Logger used to report invalid cell usage.
+     */
     protected static final Logger LOG = Logger.getLogger(TableLayoutCell.class.getName());
-    
+
     private TableLayoutRow parent;
     private Component component;
     private GridBagConstraints constraints;
     private String align;
     private String valign;
 
+    /**
+     * Returns the number of columns spanned by this cell.
+     *
+     * @return the column span
+     */
     public int getColspan() {
         return colspan;
     }
 
+    /**
+     * Returns the number of rows spanned by this cell.
+     *
+     * @return the row span
+     */
     public int getRowspan() {
         return rowspan;
     }
@@ -48,11 +61,21 @@ public class TableLayoutCell {
     private boolean colfill;
     private boolean rowfill;
 
-        
+
+    /**
+     * Creates a table cell associated with the supplied row.
+     *
+     * @param parent the owning row
+     */
     public TableLayoutCell(TableLayoutRow parent) {
         this.parent = parent;
     }
 
+    /**
+     * Adds the component rendered by this table cell and registers the cell with its parent row.
+     *
+     * @param component the component to render in the cell
+     */
     public void addComponent(Component component)  {
         if (this.component != null) {
             LOG.log(Level.WARNING, "This td cell already has a component: " + component);
@@ -60,7 +83,12 @@ public class TableLayoutCell {
         this.component = component;
         parent.addCell(this);
     }
-    
+
+    /**
+     * Returns the component currently rendered by this cell.
+     *
+     * @return the cell component, or {@code null}
+     */
     public Component getComponent() {
         return component;
     }
@@ -81,7 +109,7 @@ public class TableLayoutCell {
         this.valign = valign;
     }
 
-    
+
     /**
      * Sets the number of columns that this cell should span. The default value is 1
      * @param colspan The default is 1
@@ -140,10 +168,15 @@ public class TableLayoutCell {
         }
         return constraints;
     }
-    
+
     // Implementation methods
-    //-------------------------------------------------------------------------                    
-    
+    //-------------------------------------------------------------------------
+
+    /**
+     * Creates the grid bag constraints that represent this cell in the table layout.
+     *
+     * @return the constraints for this cell
+     */
     protected GridBagConstraints createConstraints() {
         GridBagConstraints answer = new GridBagConstraints();
         answer.anchor = getAnchor();
@@ -155,12 +188,12 @@ public class TableLayoutCell {
         }
         if (isColfill())  {
             answer.fill = isRowfill()
-                ? GridBagConstraints.BOTH 
+                ? GridBagConstraints.BOTH
                 : GridBagConstraints.HORIZONTAL;
         }
         else {
             answer.fill = isRowfill()
-                ? GridBagConstraints.VERTICAL 
+                ? GridBagConstraints.VERTICAL
                 : GridBagConstraints.NONE;
         }
         answer.weightx = 0.2;
@@ -169,14 +202,14 @@ public class TableLayoutCell {
         answer.gridheight = rowspan;
         return answer;
     }
-    
+
     /**
      * @return the GridBagConstraints enumeration for anchor
      */
     protected int getAnchor() {
         boolean isTop = "top".equalsIgnoreCase(valign);
         boolean isBottom = "bottom".equalsIgnoreCase(valign);
-        
+
         if ("center".equalsIgnoreCase(align)) {
             if (isTop) {
                 return GridBagConstraints.NORTH;

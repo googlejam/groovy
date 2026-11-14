@@ -21,20 +21,19 @@ package groovy.xml.markupsupport;
 import java.util.Optional;
 import java.util.function.Function;
 
+/**
+ * Escapes the standard XML text markup characters.
+ */
 public class StandardXmlFilter implements Function<Character, Optional<String>> {
+    /** {@inheritDoc} */
     @Override
     public Optional<String> apply(Character ch) {
-        String result = null;
-        switch (ch) {
-            case '&':
-                result = "&amp;";
-                break;
-            case '<':
-                result = "&lt;";
-                break;
-            case '>':
-                result = "&gt;";
-        }
+        String result = switch (ch) {
+            case '&' -> "&amp;";
+            case '<' -> "&lt;";
+            case '>' -> "&gt;";
+            default -> null;
+        };
         return Optional.ofNullable(result);
     }
 }

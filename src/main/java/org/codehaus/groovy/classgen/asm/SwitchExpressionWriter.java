@@ -1,0 +1,441 @@
+/*
+ *  Licensed to the Apache Software Foundation (ASF) under one
+ *  or more contributor license agreements.  See the NOTICE file
+ *  distributed with this work for additional information
+ *  regarding copyright ownership.  The ASF licenses this file
+ *  to you under the Apache License, Version 2.0 (the
+ *  "License"); you may not use this file except in compliance
+ *  with the License.  You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing,
+ *  software distributed under the License is distributed on an
+ *  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *  KIND, either express or implied.  See the License for the
+ *  specific language governing permissions and limitations
+ *  under the License.
+ */
+package org.codehaus.groovy.classgen.asm;
+
+import org.apache.groovy.ast.tools.SwitchExpressionUtils;
+import org.codehaus.groovy.ast.ClassHelper;
+import org.codehaus.groovy.ast.ClassNode;
+import org.codehaus.groovy.ast.Parameter;
+import org.codehaus.groovy.ast.FieldNode;
+import org.codehaus.groovy.ast.expr.Expression;
+import org.codehaus.groovy.ast.expr.SwitchExpression;
+import org.codehaus.groovy.ast.stmt.CaseStatement;
+import org.codehaus.groovy.ast.stmt.Statement;
+import org.codehaus.groovy.ast.stmt.YieldStatement;
+import org.codehaus.groovy.classgen.AsmClassGenerator;
+import org.codehaus.groovy.transform.stc.StaticTypesMarker;
+import org.objectweb.asm.Label;
+import org.objectweb.asm.MethodVisitor;
+
+import java.util.List;
+
+import static org.apache.groovy.ast.tools.SwitchPatternUtils.getElementsVariable;
+import static org.apache.groovy.ast.tools.SwitchPatternUtils.getSubjectVariable;
+import static org.apache.groovy.ast.tools.SwitchPatternUtils.isPatternArm;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.maybeFallsThrough;
+import static org.objectweb.asm.Opcodes.ACONST_NULL;
+import static org.objectweb.asm.Opcodes.ATHROW;
+import static org.objectweb.asm.Opcodes.DUP;
+import static org.objectweb.asm.Opcodes.GOTO;
+import static org.objectweb.asm.Opcodes.IFEQ;
+import static org.objectweb.asm.Opcodes.IFNONNULL;
+import static org.objectweb.asm.Opcodes.INVOKESPECIAL;
+import static org.objectweb.asm.Opcodes.INVOKEVIRTUAL;
+import static org.objectweb.asm.Opcodes.NEW;
+import static org.objectweb.asm.Opcodes.V21;
+
+/**
+ * Emits JVM bytecode for a {@link SwitchExpression}. Completing arms leave the
+ * result on the operand stack and jump to a shared join point — the same shape
+ * javac uses for JEP 361 switch expressions.
+ * <p>
+ * This writer implements sequential {@code isCase} matching so Class, regex,
+ * Collection and Closure cases keep working. Tableswitch / lookupswitch
+ * specializations live on the static-compilation subclass.
+ *
+ * @since 6.0.0
+ */
+public class SwitchExpressionWriter {
+
+    private static final String ISE_INTERNAL_NAME = "java/lang/IllegalStateException";
+    private static final String ICCE_INTERNAL_NAME = "java/lang/IncompatibleClassChangeError";
+    private static final String MATCH_EXCEPTION_INTERNAL_NAME = "java/lang/MatchException";
+    private static final String STRING_BUILDER_INTERNAL_NAME = "java/lang/StringBuilder";
+
+    /** The controller coordinating all bytecode writers for the current class. */
+    protected final WriterController controller;
+
+    /**
+     * Creates a switch-expression writer with the given controller.
+     *
+     * @param controller the writer controller
+     */
+    public SwitchExpressionWriter(final WriterController controller) {
+        this.controller = controller;
+    }
+
+    /**
+     * Generates bytecode for a switch expression. The result is left on the
+     * operand stack with the expression's resolved type.
+     *
+     * @param expression the switch expression to compile
+     */
+    public void writeSwitchExpression(final SwitchExpression expression) {
+        AsmClassGenerator acg = controller.getAcg();
+        acg.onLineNumber(expression, "visitSwitchExpression");
+
+        CompileStack compileStack = controller.getCompileStack();
+        OperandStack operandStack = controller.getOperandStack();
+        MethodVisitor mv = controller.getMethodVisitor();
+
+        ClassNode resultType = resolveResultType(expression);
+        Label endLabel = compileStack.pushSwitchExpression(resultType);
+
+        expression.getExpression().visit(acg);
+        Parameter subject = getSubjectVariable(expression);
+        ClassNode selectorType;
+        int selectorIndex;
+        if (subject != null) { // GEP-19: pattern tests and bindings read the selector by name
+            selectorType = operandStack.box();
+            operandStack.remove(1);
+            selectorIndex = compileStack.defineVariable(subject, selectorType, true).getIndex();
+            Parameter elements = getElementsVariable(expression);
+            if (elements != null) { // the selector as a list, materialised by the first list pattern arm
+                compileStack.defineVariable(elements, ClassHelper.LIST_TYPE, false);
+            }
+        } else {
+            selectorType = prepareSelectorType(operandStack);
+            selectorIndex = compileStack.defineTemporaryVariable("switch", selectorType, true);
+        }
+
+        if (!writeOptimizedSwitch(expression, selectorIndex, selectorType)) {
+            writeIsCaseSwitch(expression, selectorIndex, selectorType);
+        }
+
+        mv.visitLabel(endLabel);
+        operandStack.push(resultType);
+
+        if (subject == null) compileStack.removeVar(selectorIndex);
+        compileStack.popSwitchExpression();
+    }
+
+    /**
+     * Generates bytecode for a {@code yield} statement: evaluate the operand,
+     * cast it to the enclosing switch-expression result type, apply intervening
+     * finally blocks, and jump to the expression join point.
+     *
+     * @param statement the yield statement to compile
+     */
+    public void writeYield(final YieldStatement statement) {
+        CompileStack compileStack = controller.getCompileStack();
+        CompileStack.SwitchExpressionContext context = compileStack.requireSwitchExpressionContext();
+
+        controller.getAcg().onLineNumber(statement, "visitYieldStatement");
+        OperandStack operandStack = controller.getOperandStack();
+        MethodVisitor mv = controller.getMethodVisitor();
+        statement.getExpression().visit(controller.getAcg());
+        operandStack.doGroovyCast(context.resultType);
+        if (compileStack.hasBlockRecorder()) {
+            // stash the result so intervening finally / synchronized can run
+            // without seeing it on the operand stack (same shape as return)
+            int rv = compileStack.defineTemporaryVariable("$yield", context.resultType, true);
+            compileStack.applyFinallyBlocks(context.endLabel, true);
+            operandStack.load(context.resultType, rv);
+            operandStack.remove(1);
+            compileStack.removeVar(rv);
+        } else {
+            operandStack.remove(1);
+        }
+        mv.visitJumpInsn(GOTO, context.endLabel);
+    }
+
+    /**
+     * Returns the type to store the selector under. Dynamic compilation boxes
+     * so the subsequent {@code isCase} tests see a reference.
+     */
+    protected ClassNode prepareSelectorType(final OperandStack operandStack) {
+        return operandStack.box();
+    }
+
+    /**
+     * Attempts a specialized dispatch (tableswitch / lookupswitch). The base
+     * writer has none; static compilation overrides this.
+     *
+     * @return {@code true} if specialized bytecode was emitted
+     */
+    protected boolean writeOptimizedSwitch(final SwitchExpression expression,
+            final int selectorIndex, final ClassNode selectorType) {
+        return false;
+    }
+
+    /**
+     * Emits one {@code isCase} test. Shared with {@link StatementWriter} via
+     * {@link BinaryExpressionHelper#writeIsCase}.
+     */
+    protected void writeIsCaseComparison(final CaseStatement caseStatement,
+            final int selectorIndex, final ClassNode selectorType) {
+        controller.getBinaryExpressionHelper().writeIsCase(selectorIndex, selectorType, caseStatement.getExpression());
+    }
+
+    //--------------------------------------------------------------------------
+
+    private void writeIsCaseSwitch(final SwitchExpression expression,
+            final int selectorIndex, final ClassNode selectorType) {
+        List<CaseStatement> caseStatements = expression.getCaseStatements();
+        int caseCount = caseStatements.size();
+        Label[] nextTargets = new Label[caseCount + 1];
+        for (int i = 0; i < caseCount; i += 1) {
+            nextTargets[i] = new Label();
+        }
+
+        for (int i = 0; i < caseCount; i += 1) {
+            writeIsCaseArm(caseStatements.get(i), selectorIndex, selectorType, nextTargets[i], nextTargets[i + 1]);
+        }
+
+        writeDefaultOrThrow(expression, selectorIndex, selectorType, false);
+    }
+
+    private void writeIsCaseArm(final CaseStatement caseStatement, final int selectorIndex,
+            final ClassNode selectorType, final Label thisTarget, final Label nextTarget) {
+        AsmClassGenerator acg = controller.getAcg();
+        MethodVisitor mv = controller.getMethodVisitor();
+
+        acg.onLineNumber(caseStatement, "visitCaseStatement");
+
+        boolean patternArm = isPatternArm(caseStatement);
+        if (patternArm) {
+            writePatternTest(caseStatement);
+        } else {
+            writeIsCaseComparison(caseStatement, selectorIndex, selectorType);
+        }
+
+        Label miss = controller.getOperandStack().jump(IFEQ);
+
+        mv.visitLabel(thisTarget);
+        if (patternArm) { // `break <arm>` in the matching steps continues with the next case test
+            controller.getCompileStack().pushBreakable(caseStatement.getStatementLabels(), miss);
+        }
+        caseStatement.getCode().visit(acg);
+        if (patternArm) {
+            controller.getCompileStack().pop();
+        }
+
+        if (nextTarget != null && maybeFallsThrough(caseStatement.getCode())) {
+            mv.visitJumpInsn(GOTO, nextTarget);
+        }
+
+        mv.visitLabel(miss);
+    }
+
+    /**
+     * Emits the boolean test of a pattern arm (GEP-19): the label expression is
+     * evaluated as a boolean rather than passed to {@code isCase}.
+     */
+    protected void writePatternTest(final CaseStatement caseStatement) {
+        caseStatement.getExpression().visit(controller.getAcg());
+        controller.getOperandStack().doGroovyCast(ClassHelper.boolean_TYPE);
+    }
+
+    /**
+     * Emits the default arm, or an unmatched-selector throw. A switch proven
+     * exhaustive without a {@code default} (a complete enum, or labels the type
+     * checker found to cover the selector type) can match nothing only when a
+     * constant or subtype was added after it was compiled: on a Java 21+ target
+     * that throws {@code MatchException} as in Java (JEP 441), and otherwise
+     * {@link IncompatibleClassChangeError} for the enum case. A {@code null}
+     * selector is matched only by an explicit {@code case null} label; without
+     * one it throws {@link IllegalStateException} on every target.
+     *
+     * @param completeEnum {@code true} when the arms name every constant of the enum selector
+     */
+    protected void writeDefaultOrThrow(final SwitchExpression expression, final int selectorIndex,
+            final ClassNode selectorType, final boolean completeEnum) {
+        Statement defaultStatement = expression.getDefaultStatement();
+        if (defaultStatement != null && !defaultStatement.isEmpty()) {
+            defaultStatement.visit(controller.getAcg());
+            if (maybeFallsThrough(defaultStatement)) {
+                throwUnmatchedSelector(selectorIndex, selectorType);
+            }
+            return;
+        }
+        boolean exhaustive = completeEnum || Boolean.TRUE.equals(expression.getNodeMetaData(StaticTypesMarker.SWITCH_EXHAUSTIVE));
+        if (exhaustive && (controller.getBytecodeVersion() & 0xFFFF) >= V21) {
+            throwMatchException(selectorIndex, selectorType);
+        } else if (completeEnum) {
+            throwIncompatibleClassChangeError();
+        } else {
+            throwUnmatchedSelector(selectorIndex, selectorType);
+        }
+    }
+
+    /**
+     * Throws {@code IllegalStateException} naming the unmatched selector.
+     */
+    protected void throwUnmatchedSelector(final int selectorIndex, final ClassNode selectorType) {
+        MethodVisitor mv = controller.getMethodVisitor();
+        mv.visitTypeInsn(NEW, ISE_INTERNAL_NAME);
+        mv.visitInsn(DUP);
+        pushUnmatchedMessage(selectorIndex, selectorType);
+        mv.visitMethodInsn(INVOKESPECIAL, ISE_INTERNAL_NAME, "<init>", "(Ljava/lang/String;)V", false);
+        mv.visitInsn(ATHROW);
+    }
+
+    /**
+     * Throws {@code MatchException} (Java 21) for an exhaustive switch
+     * expression that matched nothing, after diverting a {@code null} selector
+     * to {@link #throwUnmatchedSelector}.
+     */
+    protected void throwMatchException(final int selectorIndex, final ClassNode selectorType) {
+        MethodVisitor mv = controller.getMethodVisitor();
+        OperandStack operandStack = controller.getOperandStack();
+        if (!ClassHelper.isPrimitiveType(selectorType)) {
+            operandStack.load(selectorType, selectorIndex);
+            Label nonNull = operandStack.jump(IFNONNULL);
+            throwUnmatchedSelector(selectorIndex, selectorType);
+            mv.visitLabel(nonNull);
+        }
+        mv.visitTypeInsn(NEW, MATCH_EXCEPTION_INTERNAL_NAME);
+        mv.visitInsn(DUP);
+        pushUnmatchedMessage(selectorIndex, selectorType);
+        mv.visitInsn(ACONST_NULL);
+        mv.visitMethodInsn(INVOKESPECIAL, MATCH_EXCEPTION_INTERNAL_NAME, "<init>", "(Ljava/lang/String;Ljava/lang/Throwable;)V", false);
+        mv.visitInsn(ATHROW);
+    }
+
+    /**
+     * Leaves the message "the switch expression does not cover the value X" on
+     * the stack, where X is the selector.
+     */
+    private void pushUnmatchedMessage(final int selectorIndex, final ClassNode selectorType) {
+        MethodVisitor mv = controller.getMethodVisitor();
+        OperandStack operandStack = controller.getOperandStack();
+        mv.visitTypeInsn(NEW, STRING_BUILDER_INTERNAL_NAME);
+        mv.visitInsn(DUP);
+        mv.visitLdcInsn("the switch expression does not cover the value ");
+        mv.visitMethodInsn(INVOKESPECIAL, STRING_BUILDER_INTERNAL_NAME, "<init>", "(Ljava/lang/String;)V", false);
+        operandStack.load(selectorType, selectorIndex);
+        operandStack.box();
+        mv.visitMethodInsn(INVOKEVIRTUAL, STRING_BUILDER_INTERNAL_NAME, "append", "(Ljava/lang/Object;)Ljava/lang/StringBuilder;", false);
+        operandStack.remove(1);
+        mv.visitMethodInsn(INVOKEVIRTUAL, STRING_BUILDER_INTERNAL_NAME, "toString", "()Ljava/lang/String;", false);
+    }
+
+    /**
+     * Throws {@code IncompatibleClassChangeError} for an enum constant added
+     * after an exhaustive switch expression was compiled.
+     */
+    protected void throwIncompatibleClassChangeError() {
+        MethodVisitor mv = controller.getMethodVisitor();
+        mv.visitTypeInsn(NEW, ICCE_INTERNAL_NAME);
+        mv.visitInsn(DUP);
+        mv.visitLdcInsn("enum constant added after this switch expression was compiled");
+        mv.visitMethodInsn(INVOKESPECIAL, ICCE_INTERNAL_NAME, "<init>", "(Ljava/lang/String;)V", false);
+        mv.visitInsn(ATHROW);
+    }
+
+    /**
+     * Resolves the type left on the operand stack at the switch-expression join.
+     */
+    protected ClassNode resolveResultType(final SwitchExpression expression) {
+        ClassNode type = controller.getTypeChooser().resolveType(expression, controller.getClassNode());
+        if (type == null || ClassHelper.isDynamicTyped(type) || ClassHelper.isPrimitiveVoid(type)) {
+            type = ClassHelper.OBJECT_TYPE;
+        }
+        return type;
+    }
+
+    /**
+     * Whether {@code type} is {@code int}, {@code byte}, {@code short} or {@code char}.
+     * A {@code null} type is not integral.
+     *
+     * @param type the type to test
+     * @return {@code true} for those four primitives
+     */
+    protected static boolean isIntegralType(final ClassNode type) {
+        return SwitchExpressionUtils.isIntegralType(type);
+    }
+
+    /**
+     * Whether {@code type} is {@code Integer}, {@code Byte}, {@code Short} or
+     * {@code Character}. A {@code null} type is not a wrapper.
+     *
+     * @param type the type to test
+     * @return {@code true} for those four wrappers
+     */
+    protected static boolean isIntegralWrapper(final ClassNode type) {
+        return SwitchExpressionUtils.isIntegralWrapper(type);
+    }
+
+    /**
+     * The int value of a case label that is an {@code int}, {@code byte},
+     * {@code short} or {@code char} constant.
+     *
+     * @param expression the case label
+     * @return that int, or {@code null} when the label is not such a constant
+     */
+    protected static Integer intConstant(final Expression expression) {
+        return SwitchExpressionUtils.intConstant(expression);
+    }
+
+    /**
+     * The string value of a case label that is a string constant.
+     *
+     * @param expression the case label
+     * @return that string, or {@code null} when the label is not a string constant
+     */
+    protected static String stringConstant(final Expression expression) {
+        return SwitchExpressionUtils.stringConstant(expression);
+    }
+
+    /**
+     * The enum type behind {@code type}. A {@code null} type yields {@code null}.
+     * An enum is returned as itself; otherwise the redirect is returned when that
+     * redirect is an enum.
+     *
+     * @param type the selector type
+     * @return the enum {@link ClassNode}, or {@code null} when {@code type} is not an enum
+     */
+    protected static ClassNode unwrapEnumType(final ClassNode type) {
+        return SwitchExpressionUtils.unwrapEnumType(type);
+    }
+
+    /**
+     * Counts the enum constants of {@code enumType}. Fields of the redirect that
+     * are enum constants are counted first. When that count is zero and the type
+     * is resolved, {@link Class#getEnumConstants()} is used, and a {@code null}
+     * return from that call counts as zero.
+     *
+     * @param enumType the enum whose constants are counted
+     * @return the number of enum constants found
+     */
+    protected static int enumConstantCount(final ClassNode enumType) {
+        int count = 0;
+        for (FieldNode field : enumType.redirect().getFields()) {
+            if (field.isEnum()) count += 1;
+        }
+        if (count == 0 && enumType.isResolved()) {
+            Object[] constants = enumType.getTypeClass().getEnumConstants();
+            count = constants == null ? 0 : constants.length;
+        }
+        return count;
+    }
+
+    /**
+     * The enum-constant name of {@code expression} when it denotes a constant of
+     * {@code enumType}. Accepts {@code EnumType.NAME}, an unqualified name of
+     * that constant, or a constant expression holding the enum value.
+     *
+     * @param expression the case label
+     * @param enumType the selector enum type
+     * @return the constant name, or {@code null} when the label is not a constant of {@code enumType}
+     */
+    protected static String enumConstantName(final Expression expression, final ClassNode enumType) {
+        return SwitchExpressionUtils.enumConstantName(expression, enumType);
+    }
+}

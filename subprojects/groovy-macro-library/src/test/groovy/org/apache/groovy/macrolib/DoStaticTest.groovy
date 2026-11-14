@@ -1,0 +1,481 @@
+/*
+ *  Licensed to the Apache Software Foundation (ASF) under one
+ *  or more contributor license agreements.  See the NOTICE file
+ *  distributed with this work for additional information
+ *  regarding copyright ownership.  The ASF licenses this file
+ *  to you under the Apache License, Version 2.0 (the
+ *  "License"); you may not use this file except in compliance
+ *  with the License.  You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing,
+ *  software distributed under the License is distributed on an
+ *  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *  KIND, either express or implied.  See the License for the
+ *  specific language governing permissions and limitations
+ *  under the License.
+ */
+package org.apache.groovy.macrolib
+
+import org.codehaus.groovy.control.MultipleCompilationErrorsException
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.assertScript
+import static org.junit.jupiter.api.Assertions.fail
+
+/**
+ * The {@code DO} macro under {@code @CompileStatic} with the
+ * {@code groovy.typecheckers.MonadicChecker} extension: the extension
+ * (a) types the generator closure parameter as the carrier element type so the
+ * body type-checks, (b) restores the comprehension result type so downstream
+ * use type-checks, and (c) rejects non-participating carriers at compile time.
+ */
+final class DoStaticTest {
+
+    private static final String CS = "@groovy.transform.CompileStatic(extensions='groovy.typecheckers.MonadicChecker')"
+
+    @Test
+    void boundParameterIsTypedAsElementType_optional() {
+        assertScript """
+            $CS
+            class C {
+                static int run() {
+                    def r = DO(a in Optional.of(2),
+                               b in Optional.of(3)) { Optional.of(a.intValue() + b.intValue()) }
+                    r.get()
+                }
+            }
+            assert C.run() == 5
+        """
+    }
+
+    @Test
+    void dependentGeneratorTypeChecks() {
+        assertScript """
+            $CS
+            class C {
+                static int run() {
+                    def r = DO(a in Optional.of(2),
+                               b in Optional.of(a + 10)) { Optional.of(a + b) }
+                    r.get()
+                }
+            }
+            assert C.run() == 14
+        """
+    }
+
+    @Test
+    void streamResultTypeChecksDownstream() {
+        assertScript """
+            import java.util.stream.Stream
+            $CS
+            class C {
+                static List<Integer> run() {
+                    def r = DO(a in Stream.of(1, 2),
+                               b in Stream.of(10, 20)) { Stream.of(a + b) }
+                    r.toList()
+                }
+            }
+            assert C.run() == [11, 21, 12, 22]
+        """
+    }
+
+    @Test
+    void awaitableUnderCompileStatic() {
+        assertScript """
+            import groovy.concurrent.Awaitable
+            import static org.apache.groovy.runtime.async.AsyncSupport.await
+            $CS
+            class C {
+                static int run() {
+                    def r = DO(a in Awaitable.of(2),
+                               b in Awaitable.of(3)) { Awaitable.of(a + b) }
+                    await(r)
+                }
+            }
+            assert C.run() == 5
+        """
+    }
+
+    @Test
+    void monadicAnnotatedTypeUnderCompileStatic() {
+        assertScript """
+            import groovy.transform.Monadic
+            import java.util.function.Function
+
+            @Monadic(bind = 'chain', map = 'transform')
+            class Res {
+                final Object v
+                Res(Object v) { this.v = v }
+                Res chain(Function f) { (Res) f.apply(v) }
+                Res transform(Function f) { new Res(f.apply(v)) }
+            }
+
+            $CS
+            class C {
+                static Object run() {
+                    def r = DO(a in new Res(2), b in new Res(3)) { new Res(a) }
+                    r.v
+                }
+            }
+            assert C.run() == 2
+        """
+    }
+
+    @Test
+    void rejectsNonParticipatingCarrierAtCompileTime() {
+        assertCompileError("""
+            $CS
+            class C {
+                static def run() {
+                    DO(a in new Object()) { Optional.of(a) }
+                }
+            }
+        """, 'does not participate in monadic comprehensions')
+    }
+
+    @Test
+    void rejectsBareBodyAtCompileTime() {
+        // Body returns a bare value; the dispatcher's erased (Object,Closure):Object
+        // signature lets STC accept this, but Optional.flatMap would fail at runtime.
+        assertCompileError("""
+            $CS
+            class C {
+                static def run() {
+                    DO(a in Optional.of(2)) { a + 1 }
+                }
+            }
+        """, 'must yield java.util.Optional')
+    }
+
+    @Test
+    void rejectsCrossCarrierBodyAtCompileTime() {
+        // Outer carrier Optional, body produces a Stream — well-typed against the
+        // erased dispatcher but rejected by Optional.flatMap at runtime.
+        assertCompileError("""
+            import java.util.stream.Stream
+            $CS
+            class C {
+                static def run() {
+                    DO(a in Optional.of(2)) { Stream.of(a) }
+                }
+            }
+        """, 'Mixing carriers in a comprehension is not supported')
+    }
+
+    @Test
+    void rejectsCrossCarrierInNestedDoAtCompileTime() {
+        // The classic gotcha: outer Optional, inner Stream — the outer bind's
+        // closure ends up yielding Stream, contradicting the receiver Optional.
+        assertCompileError("""
+            import java.util.stream.Stream
+            $CS
+            class C {
+                static def run() {
+                    DO(a in Optional.of(2),
+                       b in Stream.of(a, a + 10)) { Stream.of(b) }
+                }
+            }
+        """, 'Mixing carriers in a comprehension is not supported')
+    }
+
+    @Test
+    void rejectsCarrierWithOnly2ArgFlatMapAtCompileTime() {
+        // Regression: hasMethodNamed used to count any 'flatMap' regardless of
+        // arity, so a 2-arg flatMap satisfied participation statically and
+        // then failed at runtime in the dispatcher (which needs a single-arg
+        // method). Now aligned with the runtime rule.
+        assertCompileError("""
+            class Box {
+                final int v
+                Box(int v) { this.v = v }
+                Box flatMap(int extra, Closure c) { (Box) c.call(v + extra) }
+            }
+            $CS
+            class C {
+                static def run() {
+                    DO(a in new Box(2)) { new Box(((Integer) a) + 1) }
+                }
+            }
+        """, 'does not participate in monadic comprehensions')
+    }
+
+    @Test
+    void monadicAnnotationOnSuperclassAcceptedAtCompileTime() {
+        // Regression: the static @Monadic check used to look only at the type's
+        // own annotations; the runtime walks superclasses. Without the walk,
+        // a SubRes whose @Monadic lives on BaseRes would be rejected here yet
+        // accepted at runtime.
+        assertScript """
+            import groovy.transform.Monadic
+
+            @Monadic
+            class BaseRes {
+                final Object v
+                BaseRes(Object v) { this.v = v }
+                BaseRes flatMap(Closure c) { (BaseRes) c.call(v) }
+                BaseRes map(Closure c) { new BaseRes(c.call(v)) }
+            }
+            class SubRes extends BaseRes {
+                SubRes(Object v) { super(v) }
+            }
+
+            $CS
+            class C {
+                static Object run() {
+                    def r = DO(a in new SubRes(2),
+                               b in new SubRes(3)) { new SubRes(b) }
+                    r.v
+                }
+            }
+            assert C.run() == 3
+        """
+    }
+
+    @Test
+    void monadicAnnotationOnInterfaceAcceptedAtCompileTime() {
+        // Regression: @Monadic declared on an interface was rejected by the
+        // static check (which didn't walk interfaces); the runtime accepts it.
+        assertScript """
+            import groovy.transform.Monadic
+
+            @Monadic
+            interface IRes {
+                IRes flatMap(Closure c)
+                IRes map(Closure c)
+            }
+            class Holder implements IRes {
+                final Object v
+                Holder(Object v) { this.v = v }
+                IRes flatMap(Closure c) { (IRes) c.call(v) }
+                IRes map(Closure c) { new Holder(c.call(v)) }
+            }
+
+            $CS
+            class C {
+                static Object run() {
+                    def r = DO(a in new Holder(2),
+                               b in new Holder(3)) { new Holder(b) }
+                    ((Holder) r).v
+                }
+            }
+            assert C.run() == 3
+        """
+    }
+
+    // GROOVY-12486
+    @Test
+    void boundParameterIsTypedFromBindInput_secondTypeArgument() {
+        assertScript """
+            import java.util.function.Function
+
+            class Result<E, A> {
+                final A value
+                Result(A value) { this.value = value }
+                static <E, A> Result<E, A> ok(A value) { new Result<E, A>(value) }
+                def <B> Result<E, B> flatMap(Function<? super A, ? extends Result<E, B>> f) { f.apply(value) }
+                def <B> Result<E, B> map(Function<? super A, ? extends B> f) { ok(f.apply(value)) }
+            }
+
+            $CS
+            class C {
+                static int run() {
+                    def r = DO(x in Result.<String, Integer>ok(1),
+                               y in Result.<String, Integer>ok(x + 1)) {
+                        int n = x + y
+                        Result.<String, Integer>ok(n)
+                    }
+                    r.value
+                }
+            }
+            assert C.run() == 3
+        """
+    }
+
+    // GROOVY-12486
+    @Test
+    void boundParameterIsTypedFromBindInput_monadicMiddleOfThree() {
+        assertScript """
+            import groovy.transform.Monadic
+            import java.util.function.Function
+
+            @Monadic(bind = 'chain', map = 'transform')
+            class Tri<E, A, X> {
+                final A value
+                Tri(A value) { this.value = value }
+                def <B> Tri<E, B, X> chain(Function<? super A, Tri<E, B, X>> f) { f.apply(value) }
+                def <B> Tri<E, B, X> transform(Function<? super A, B> f) { new Tri<E, B, X>(f.apply(value)) }
+            }
+
+            $CS
+            class C {
+                static int run() {
+                    def r = DO(x in new Tri<String, Integer, Date>(2)) { new Tri<String, Integer, Date>(x * 10) }
+                    r.value
+                }
+            }
+            assert C.run() == 20
+        """
+    }
+
+    // GROOVY-12486
+    @Test
+    void boundParameterIsTypedFromBindInput_inheritedBind() {
+        assertScript """
+            import java.util.function.Function
+
+            abstract class Res<E, A> {
+                abstract A get()
+                def <B> Res<E, B> flatMap(Function<? super A, ? extends Res<E, B>> f) { f.apply(get()) }
+                def <B> Res<E, B> map(Function<? super A, ? extends B> f) { new Ok<Object, B, Object>(f.apply(get())) as Res<E, B> }
+            }
+            class Ok<T, A, U> extends Res<String, A> {
+                final A value
+                Ok(A value) { this.value = value }
+                A get() { value }
+            }
+
+            $CS
+            class C {
+                static int run() {
+                    def r = DO(x in new Ok<Date, Integer, Date>(4)) { new Ok<Date, Integer, Date>(x + 1) }
+                    r.get()
+                }
+            }
+            assert C.run() == 5
+        """
+    }
+
+    // GROOVY-12486
+    @Test
+    void boundParameterIsTypedFromBindInput_interfaceDefaultBind() {
+        assertScript """
+            import java.util.function.Function
+
+            interface M<E, A> {
+                A get()
+                default <B> M<E, B> flatMap(Function<? super A, ? extends M<E, B>> f) { f.apply(get()) }
+                default <B> M<E, B> map(Function<? super A, ? extends B> f) { (M<E, B>) new Ok<Object, B>(f.apply(get())) }
+            }
+            class Ok<U, T> implements M<String, T> {
+                final T value
+                Ok(T value) { this.value = value }
+                T get() { value }
+            }
+
+            $CS
+            class C {
+                static int run() {
+                    def r = DO(x in new Ok<Date, Integer>(6)) { int n = x; new Ok<Date, Integer>(n + 1) }
+                    r.get()
+                }
+            }
+            assert C.run() == 7
+        """
+    }
+
+    // GROOVY-12486
+    @Test
+    void boundParameterIsTypedFromBindInput_wildcardReceiver() {
+        assertScript """
+            import java.util.function.Function
+
+            class Result<E, A> {
+                final A value
+                Result(A value) { this.value = value }
+                def <B> Result<E, B> flatMap(Function<? super A, ? extends Result<E, B>> f) { f.apply(value) }
+                def <B> Result<E, B> map(Function<? super A, ? extends B> f) { new Result<E, B>(f.apply(value)) }
+            }
+
+            $CS
+            class C {
+                static int run() {
+                    Result<String, ? extends Integer> src = new Result<String, Integer>(4)
+                    def r = DO(x in src) { int n = x; new Result<String, Integer>(n * 2) }
+                    r.value
+                }
+            }
+            assert C.run() == 8
+        """
+    }
+
+    // GROOVY-12486
+    @Test
+    void boundParameterIsTypedFromBindInput_nameKeyedCarrier() {
+        assertScript """
+            package fj.data
+
+            import fj.F
+
+            class Validation<E, T> {
+                final T value
+                Validation(T value) { this.value = value }
+                def <A> Validation<E, A> bind(F<T, Validation<E, A>> f) { f.f(value) }
+                def <A> Validation<E, A> map(F<T, A> f) { new Validation<E, A>(f.f(value)) }
+            }
+
+            $CS
+            class C {
+                static int run() {
+                    def r = DO(x in new Validation<String, Integer>(5)) { int n = x; new Validation<String, Integer>(n + 1) }
+                    r.value
+                }
+            }
+            assert C.run() == 6
+        """
+    }
+
+    // GROOVY-12486
+    @Test
+    void boundParameterFallsBackToFirstTypeArgument_closureBind() {
+        assertScript """
+            class Box<A, M> {
+                A value
+                Box flatMap(Closure c) { (Box) c(value) }
+                Box map(Closure c) { new Box(value: c(value)) }
+            }
+
+            $CS
+            class C {
+                static Object run() {
+                    def r = DO(x in new Box<Integer, String>(value: 7)) { int n = x; new Box<Integer, String>(value: n + 1) }
+                    r.value
+                }
+            }
+            assert C.run() == 8
+        """
+    }
+
+    // GROOVY-12486
+    @Test
+    void boundParameterFallsBackToFirstTypeArgument_rawFunctionBind() {
+        assertScript """
+            import java.util.function.Function
+
+            class P<A, M> {
+                A value
+                P flatMap(Function f) { (P) f.apply(value) }
+                P map(Function f) { new P(value: f.apply(value)) }
+            }
+
+            $CS
+            class C {
+                static Object run() {
+                    def r = DO(x in new P<Integer, String>(value: 8)) { int n = x; new P<Integer, String>(value: n + 1) }
+                    r.value
+                }
+            }
+            assert C.run() == 9
+        """
+    }
+
+    private static void assertCompileError(String script, String expectedMessage) {
+        try {
+            new GroovyShell().parse(script)
+            fail("Expected a compilation error containing: $expectedMessage")
+        } catch (MultipleCompilationErrorsException e) {
+            assert e.message.contains(expectedMessage)
+        }
+    }
+}

@@ -19,25 +19,30 @@
 package org.codehaus.groovy.tools.javac;
 
 import groovy.lang.GroovyClassLoader;
-import org.apache.groovy.util.SystemUtil;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.GroovyClassVisitor;
 import org.codehaus.groovy.ast.ModuleNode;
 import org.codehaus.groovy.classgen.GeneratorContext;
-import org.codehaus.groovy.classgen.VariableScopeVisitor;
 import org.codehaus.groovy.control.AnnotationConstantsVisitor;
+import org.codehaus.groovy.control.ClassNodeResolver;
 import org.codehaus.groovy.control.CompilationFailedException;
 import org.codehaus.groovy.control.CompilationUnit;
+import org.codehaus.groovy.control.CompilePhase;
 import org.codehaus.groovy.control.CompilerConfiguration;
 import org.codehaus.groovy.control.Phases;
+import org.codehaus.groovy.control.ResolveVisitor;
 import org.codehaus.groovy.control.SourceUnit;
 import org.codehaus.groovy.transform.ASTTransformationCollectorCodeVisitor;
+import org.codehaus.groovy.transform.ASTTransformationVisitor;
 
 import java.io.File;
 import java.io.FileNotFoundException;
-import java.util.LinkedList;
-import java.util.List;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
+
+import static org.codehaus.groovy.control.CompilerConfiguration.MEM_STUB;
 
 /**
  * Compilation Unit capable of compiling Java source files.
@@ -45,48 +50,78 @@ import java.util.Map;
 public class JavaAwareCompilationUnit extends CompilationUnit {
 
     private final JavaStubGenerator stubGenerator;
-    private final List<String> javaSources = new LinkedList<>();
+    private final Set<String> javaSources = new HashSet<>();
     private JavaCompilerFactory compilerFactory = new JavacCompilerFactory();
     private final File generationGoal;
     private final boolean keepStubs;
     private final boolean memStubEnabled;
 
+    /**
+     * Creates a joint compilation unit with the default configuration.
+     */
     public JavaAwareCompilationUnit() {
         this(null, null, null);
     }
 
+    /**
+     * Creates a joint compilation unit with the supplied configuration.
+     *
+     * @param configuration the compiler configuration to use
+     */
     public JavaAwareCompilationUnit(final CompilerConfiguration configuration) {
         this(configuration, null, null);
     }
 
+    /**
+     * Creates a joint compilation unit with the supplied configuration and
+     * class loader.
+     *
+     * @param configuration the compiler configuration to use
+     * @param groovyClassLoader the Groovy class loader to use
+     */
     public JavaAwareCompilationUnit(final CompilerConfiguration configuration, final GroovyClassLoader groovyClassLoader) {
         this(configuration, groovyClassLoader, null);
     }
 
+    /**
+     * Creates a joint compilation unit with explicit Groovy and transform class
+     * loaders.
+     *
+     * @param configuration the compiler configuration to use
+     * @param groovyClassLoader the Groovy class loader to use
+     * @param transformClassLoader the class loader used for AST transforms
+     */
     public JavaAwareCompilationUnit(final CompilerConfiguration configuration, final GroovyClassLoader groovyClassLoader, final GroovyClassLoader transformClassLoader) {
-        super(configuration, null, groovyClassLoader, transformClassLoader);
+        super(configuration, /*codeSource*/null, groovyClassLoader, transformClassLoader);
 
         {
             Map<String, Object> options = this.configuration.getJointCompilationOptions();
-
-            boolean atLeastJava5 = CompilerConfiguration.isPostJDK5(this.configuration.getTargetBytecode());
             String sourceEncoding = this.configuration.getSourceEncoding();
-            Object memStub = options.get(CompilerConfiguration.MEM_STUB);
-            if (memStub == null) {
-                memStub = Boolean.parseBoolean(SystemUtil.getSystemPropertySafe("groovy.mem.stub", "false"));
-                options.put(CompilerConfiguration.MEM_STUB, memStub);
-            }
 
             this.keepStubs = Boolean.TRUE.equals(options.get("keepStubs"));
-            this.memStubEnabled = Boolean.TRUE.equals(memStub);
+            this.memStubEnabled = Boolean.TRUE.equals(options.get(MEM_STUB));
             this.generationGoal = memStubEnabled ? null : (File) options.get("stubDir");
-            this.stubGenerator = new JavaStubGenerator(generationGoal, false, atLeastJava5, sourceEncoding);
+            this.stubGenerator = new JavaStubGenerator(generationGoal, false, sourceEncoding);
         }
 
         addPhaseOperation((final SourceUnit source, final GeneratorContext context, final ClassNode classNode) -> {
             if (!javaSources.isEmpty()) {
-                new VariableScopeVisitor(source).visitClass(classNode);
-                new JavaAwareResolveVisitor(this).startResolving(classNode, source);
+                ResolveVisitor resolveVisitor = new JavaAwareResolveVisitor(this);
+                resolveVisitor.setClassNodeResolver(new ClassNodeResolver() {
+                    @Override
+                    public LookupResult resolveName(final String name, final CompilationUnit unit) {
+                        LookupResult result = super.resolveName(name, unit);
+                        if (result == null) { // GROOVY-8184, GROOVY-10571: look for java source
+                            String spec = File.separator + name.replace('.', File.separatorChar) + ".java";
+                            if (javaSources.stream().anyMatch(path -> path.endsWith(spec))) {
+                                result = new LookupResult(null, NO_CLASS); // truthy value
+                            }
+                        }
+                        return result;
+                    }
+                });
+                resolveVisitor.startResolving(classNode, source);
+                // then resolve constants in annotation instances
                 new AnnotationConstantsVisitor().visitClass(classNode, source);
             }
         }, Phases.CONVERSION);
@@ -94,6 +129,18 @@ public class JavaAwareCompilationUnit extends CompilationUnit {
         addPhaseOperation((final SourceUnit source, final GeneratorContext context, final ClassNode classNode) -> {
             GroovyClassVisitor visitor = new ASTTransformationCollectorCodeVisitor(source, getTransformLoader());
             visitor.visitClass(classNode);
+        }, Phases.CONVERSION);
+
+        // GEP-21: invoke any local AST transforms registered for the CONVERSION phase so
+        // they can contribute to the joint-compilation stub before it is written out.
+        // Uses the standard ASTTransformationVisitor to walk the class (so field-level
+        // and method-level annotations are dispatched to their actual parents, not the
+        // enclosing class).
+        addPhaseOperation((final SourceUnit source, final GeneratorContext context, final ClassNode classNode) -> {
+            if (!javaSources.isEmpty()) {
+                ASTTransformationVisitor.invokeTransformsForClass(
+                        CompilePhase.CONVERSION, getASTTransformationsContext(), source, classNode);
+            }
         }, Phases.CONVERSION);
 
         addPhaseOperation((final SourceUnit source, final GeneratorContext context, final ClassNode classNode) -> {
@@ -105,6 +152,13 @@ public class JavaAwareCompilationUnit extends CompilationUnit {
         }, Phases.CONVERSION);
     }
 
+    /**
+     * Advances the compilation unit to the requested phase and triggers javac
+     * when the semantic analysis boundary is reached.
+     *
+     * @param phase the target compilation phase
+     * @throws CompilationFailedException if compilation fails
+     */
     @Override
     public void gotoPhase(final int phase) throws CompilationFailedException {
         super.gotoPhase(phase);
@@ -116,7 +170,7 @@ public class JavaAwareCompilationUnit extends CompilationUnit {
             try {
                 addJavaCompilationUnits(stubGenerator.getJavaStubCompilationUnitSet()); // add java stubs
                 JavaCompiler compiler = compilerFactory.createCompiler(configuration);
-                compiler.compile(javaSources, this);
+                compiler.compile(new ArrayList<>(javaSources), this);
             } finally {
                 if (!keepStubs) stubGenerator.clean();
                 javaSources.clear();
@@ -124,6 +178,12 @@ public class JavaAwareCompilationUnit extends CompilationUnit {
         }
     }
 
+    /**
+     * Configures the compilation unit and ensures the target directory is on
+     * the Groovy class loader classpath.
+     *
+     * @param configuration the compiler configuration to apply
+     */
     @Override
     public void configure(final CompilerConfiguration configuration) {
         super.configure(configuration);
@@ -135,29 +195,6 @@ public class JavaAwareCompilationUnit extends CompilationUnit {
         }
     }
 
-    private void addJavaSource(final File file) {
-        String path = file.getAbsolutePath();
-        for (String source : javaSources) {
-            if (path.equals(source))
-                return;
-        }
-        javaSources.add(path);
-    }
-
-    @Override
-    public void addSources(final String[] paths) {
-        for (String path : paths) {
-            addJavaOrGroovySource(new File(path));
-        }
-    }
-
-    @Override
-    public void addSources(final File[] files) {
-        for (File file : files) {
-            addJavaOrGroovySource(file);
-        }
-    }
-
     private void addJavaOrGroovySource(final File file) {
         if (file.getName().endsWith(".java")) {
             addJavaSource(file);
@@ -166,10 +203,48 @@ public class JavaAwareCompilationUnit extends CompilationUnit {
         }
     }
 
+    private void addJavaSource(final File file) {
+        javaSources.add(file.getAbsolutePath());
+    }
+
+    /**
+     * Adds Groovy or Java sources from the supplied path strings.
+     *
+     * @param paths the source paths to add
+     */
+    @Override
+    public void addSources(final String[] paths) {
+        for (String path : paths) {
+            addJavaOrGroovySource(new File(path));
+        }
+    }
+
+    /**
+     * Adds Groovy or Java sources from the supplied files.
+     *
+     * @param files the source files to add
+     */
+    @Override
+    public void addSources(final File[] files) {
+        for (File file : files) {
+            addJavaOrGroovySource(file);
+        }
+    }
+
+    /**
+     * Returns the factory used to create the backing Java compiler.
+     *
+     * @return the Java compiler factory
+     */
     public JavaCompilerFactory getCompilerFactory() {
         return compilerFactory;
     }
 
+    /**
+     * Sets the factory used to create the backing Java compiler.
+     *
+     * @param compilerFactory the Java compiler factory to use
+     */
     public void setCompilerFactory(final JavaCompilerFactory compilerFactory) {
         this.compilerFactory = compilerFactory;
     }

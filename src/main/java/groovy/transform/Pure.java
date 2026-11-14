@@ -18,18 +18,25 @@
  */
 package groovy.transform;
 
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 /**
- * Mark the return value of "pure" method only comes from expressions involving constants or other pure methods
+ * Marks the return value of "pure" method only comes from expressions involving
+ * constants or other pure methods.
+ * <p>
+ * On a parameter, declares that the argument must be pure: a closure, lambda or method
+ * reference with no side effects. On a local variable, declares that the closure assigned
+ * to it is pure, so the variable may be passed where a pure argument is required.
+ * These uses are checked by {@code groovy.typecheckers.PurityChecker}.
  *
  * @since 4.0.0
  */
-@java.lang.annotation.Documented
+@Documented
+@Target({ElementType.METHOD, ElementType.PARAMETER, ElementType.LOCAL_VARIABLE})
 @Retention(RetentionPolicy.RUNTIME)
-@Target({ElementType.METHOD})
 public @interface Pure {
 }

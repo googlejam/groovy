@@ -18,18 +18,17 @@
  */
 package org.codehaus.groovy.classgen.asm.indy;
 
-import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
-import org.codehaus.groovy.ast.expr.ArgumentListExpression;
 import org.codehaus.groovy.ast.expr.CastExpression;
 import org.codehaus.groovy.ast.expr.ClassExpression;
 import org.codehaus.groovy.ast.expr.ConstantExpression;
 import org.codehaus.groovy.ast.expr.ConstructorCallExpression;
 import org.codehaus.groovy.ast.expr.EmptyExpression;
 import org.codehaus.groovy.ast.expr.Expression;
+import org.codehaus.groovy.ast.expr.MethodCallExpression;
+import org.codehaus.groovy.ast.expr.PropertyExpression;
 import org.codehaus.groovy.ast.tools.WideningCategories;
 import org.codehaus.groovy.classgen.AsmClassGenerator;
-import org.codehaus.groovy.classgen.asm.BytecodeHelper;
 import org.codehaus.groovy.classgen.asm.CompileStack;
 import org.codehaus.groovy.classgen.asm.InvocationWriter;
 import org.codehaus.groovy.classgen.asm.MethodCallerMultiAdapter;
@@ -38,59 +37,74 @@ import org.codehaus.groovy.classgen.asm.WriterController;
 import org.codehaus.groovy.runtime.wrappers.Wrapper;
 import org.codehaus.groovy.vmplugin.v8.IndyInterface;
 import org.objectweb.asm.Handle;
+import org.objectweb.asm.Label;
+import org.objectweb.asm.Opcodes;
 
 import java.lang.invoke.CallSite;
 import java.lang.invoke.MethodHandles.Lookup;
 import java.lang.invoke.MethodType;
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.List;
 
+import static org.apache.groovy.ast.tools.ExpressionUtils.isSuperExpression;
+import static org.apache.groovy.ast.tools.ExpressionUtils.isThisExpression;
+import static org.codehaus.groovy.ast.ClassHelper.OBJECT_TYPE;
+import static org.codehaus.groovy.ast.ClassHelper.boolean_TYPE;
+import static org.codehaus.groovy.ast.ClassHelper.getWrapper;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveBoolean;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveType;
+import static org.codehaus.groovy.ast.ClassHelper.isWrapperBoolean;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.bytecodeX;
+import static org.codehaus.groovy.classgen.asm.BytecodeHelper.doCast;
 import static org.codehaus.groovy.classgen.asm.BytecodeHelper.getTypeDescription;
 import static org.codehaus.groovy.vmplugin.v8.IndyInterface.CallType.CAST;
 import static org.codehaus.groovy.vmplugin.v8.IndyInterface.CallType.GET;
 import static org.codehaus.groovy.vmplugin.v8.IndyInterface.CallType.INIT;
+import static org.codehaus.groovy.vmplugin.v8.IndyInterface.CallType.INTERFACE;
 import static org.codehaus.groovy.vmplugin.v8.IndyInterface.CallType.METHOD;
+import static org.codehaus.groovy.vmplugin.v8.IndyInterface.CallType.SET;
 import static org.codehaus.groovy.vmplugin.v8.IndyInterface.GROOVY_OBJECT;
 import static org.codehaus.groovy.vmplugin.v8.IndyInterface.IMPLICIT_THIS;
 import static org.codehaus.groovy.vmplugin.v8.IndyInterface.SAFE_NAVIGATION;
 import static org.codehaus.groovy.vmplugin.v8.IndyInterface.SPREAD_CALL;
 import static org.codehaus.groovy.vmplugin.v8.IndyInterface.THIS_CALL;
 import static org.objectweb.asm.Opcodes.H_INVOKESTATIC;
+import static org.objectweb.asm.Opcodes.IFNULL;
 
 /**
  * This Writer is used to generate the call invocation byte codes
  * for usage by invokedynamic.
  */
 public class InvokeDynamicWriter extends InvocationWriter {
-    
-    
-    private static final String INDY_INTERFACE_NAME = IndyInterface.class.getName().replace('.', '/');
-    private static final String BSM_METHOD_TYPE_DESCRIPTOR = 
-        MethodType.methodType(
-                CallSite.class, Lookup.class, String.class, MethodType.class,
-                String.class, int.class
-        ).toMethodDescriptorString();
-    private static final Handle BSM = 
-        new Handle(
-                H_INVOKESTATIC,
-                INDY_INTERFACE_NAME,
-                "bootstrap",
-                BSM_METHOD_TYPE_DESCRIPTOR,
-                false);
 
-    private final WriterController controller;
+    private static final String BSM_DESCRIPTOR = MethodType.methodType(
+            CallSite.class, Lookup.class, String.class, MethodType.class, String.class, int.class
+    ).toMethodDescriptorString();
 
-    public InvokeDynamicWriter(WriterController wc) {
-        super(wc);
-        this.controller = wc;
+    private static final Handle BSM = new Handle(H_INVOKESTATIC,
+        IndyInterface.class.getName().replace('.', '/'), "bootstrap", BSM_DESCRIPTOR, false
+    );
+
+    private static final Object[] CAST_ARGS = {"()", 0};
+
+    //--------------------------------------------------------------------------
+
+    /**
+     * Creates an invocation writer that emits {@code invokedynamic} call sites.
+     */
+    public InvokeDynamicWriter(final WriterController controller) {
+        super(controller);
     }
 
+    /** {@inheritDoc} */
     @Override
-    protected boolean makeCachedCall(Expression origin, ClassExpression sender,
-            Expression receiver, Expression message, Expression arguments,
-            MethodCallerMultiAdapter adapter, boolean safe, boolean spreadSafe,
-            boolean implicitThis, boolean containsSpreadExpression
-    ) {
+    protected boolean makeCachedCall(final Expression origin, final ClassExpression sender,
+            final Expression receiver, final Expression message, final Expression arguments,
+            final MethodCallerMultiAdapter adapter, final boolean safe, final boolean spreadSafe,
+            final boolean implicitThis, final boolean containsSpreadExpression) {
         // fixed number of arguments && name is a real String and no GString
-        if ((adapter == null || adapter == invokeMethod || adapter == invokeMethodOnCurrent || adapter == invokeStaticMethod) && !spreadSafe) {
+        if (!spreadSafe && (adapter == null || adapter == invokeMethod || adapter == invokeMethodOnCurrent || adapter == invokeStaticMethod)) {
             String methodName = getMethodName(message);
             if (methodName != null) {
                 makeIndyCall(adapter, receiver, implicitThis, safe, methodName, arguments);
@@ -99,45 +113,101 @@ public class InvokeDynamicWriter extends InvocationWriter {
         }
         return false;
     }
-    
-    private String prepareIndyCall(Expression receiver, boolean implicitThis) {
+
+    private String prepareIndyCall(final Expression receiver, final boolean implicitThis) {
         CompileStack compileStack = controller.getCompileStack();
         OperandStack operandStack = controller.getOperandStack();
 
         compileStack.pushLHS(false);
-        
+
         // load normal receiver as first argument
         compileStack.pushImplicitThis(implicitThis);
-        receiver.visit(controller.getAcg());
+        // GROOVY-7785: use iterative approach to avoid stack overflow for chained method calls
+        visitReceiverOfMethodCall(receiver);
         compileStack.popImplicitThis();
-        return "("+getTypeDescription(operandStack.getTopOperand());
-    }
-    
-    private void finishIndyCall(Handle bsmHandle, String methodName, String sig, int numberOfArguments, Object... bsmArgs) {
-        CompileStack compileStack = controller.getCompileStack();
-        OperandStack operandStack = controller.getOperandStack();
 
-        controller.getMethodVisitor().visitInvokeDynamicInsn(methodName, sig, bsmHandle, bsmArgs);
-
-        operandStack.replace(ClassHelper.OBJECT_TYPE, numberOfArguments);
-        compileStack.popLHS();
+        return "(" + getTypeDescription(operandStack.getTopOperand());
     }
 
-    private void makeIndyCall(MethodCallerMultiAdapter adapter, Expression receiver, boolean implicitThis, boolean safe, String methodName, Expression arguments) {
-        OperandStack operandStack = controller.getOperandStack();
+    // GROOVY-11955: chains shorter than this go through the normal recursive
+    // visitor, which lets InvocationWriter emit direct invokevirtual when a
+    // method target is resolved. Only when the chain is deep enough to risk
+    // JVM stack overflow do we switch to the iterative indy path.
+    private static final int CHAIN_FLATTEN_THRESHOLD = 64;
 
-        StringBuilder sig = new StringBuilder(prepareIndyCall(receiver, implicitThis));
-
-        // load arguments
-        int numberOfArguments = 1;
-        ArgumentListExpression ae = makeArgumentList(arguments);
-        boolean containsSpreadExpression = AsmClassGenerator.containsSpreadExpression(arguments);
+    /**
+     * Visits receiver expression. For short chains, delegates to the normal
+     * recursive visitor to preserve compact direct-invoke bytecode. For long
+     * chains, flattens iteratively to avoid StackOverflowError (GROOVY-7785).
+     */
+    private void visitReceiverOfMethodCall(final Expression receiver) {
         AsmClassGenerator acg = controller.getAcg();
-        if (containsSpreadExpression) {
-            acg.despreadList(ae.getExpressions(), true);
+
+        // Fast probe: measure chain depth without allocating the deque.
+        int depth = 0;
+        Expression probe = receiver;
+        while (probe instanceof MethodCallExpression mce
+                && !mce.isSpreadSafe() && !mce.isImplicitThis()
+                && !isSuperExpression(mce.getObjectExpression())
+                && !isThisExpression(mce.getObjectExpression())) {
+            String name = getMethodName(mce.getMethod());
+            if (name == null || "call".equals(name)) break;
+            depth++;
+            if (depth >= CHAIN_FLATTEN_THRESHOLD) break;
+            probe = mce.getObjectExpression();
+        }
+
+        if (depth < CHAIN_FLATTEN_THRESHOLD) {
+            receiver.visit(acg);
+            return;
+        }
+
+        // Deep chain: flatten iteratively to avoid visitor recursion overflow.
+        Deque<MethodCallExpression> chain = new ArrayDeque<>();
+        Expression current = receiver;
+        for (; current instanceof MethodCallExpression mce
+                && !mce.isSpreadSafe() && !mce.isImplicitThis()
+                && !isSuperExpression(mce.getObjectExpression())
+                && !isThisExpression(mce.getObjectExpression()); current = mce.getObjectExpression()) {
+            String name = getMethodName(mce.getMethod());
+            if (name == null || "call".equals(name)) break; // dynamic name or functional interface call
+            chain.push(mce);
+        }
+
+        current.visit(acg);
+
+        while (!chain.isEmpty()) {
+            MethodCallExpression call = chain.pop();
+            acg.onLineNumber(call, "visitMethodCallExpression: \"" + call.getMethod() + "\":");
+            finishIndyCallForChain(call);
+            controller.getAssertionWriter().record(call.getMethod());
+        }
+    }
+
+    /**
+     * Completes an indy call for a chained method with receiver already on stack.
+     */
+    private void finishIndyCallForChain(final MethodCallExpression call) {
+        OperandStack operandStack = controller.getOperandStack();
+        AsmClassGenerator acg = controller.getAcg();
+        Expression arguments = call.getArguments();
+        boolean safe = call.isSafe();
+
+        StringBuilder sig = new StringBuilder("(").append(getTypeDescription(operandStack.getTopOperand()));
+        Label end = null;
+        if (safe && !isPrimitiveType(operandStack.getTopOperand())) {
+            operandStack.dup();
+            end = operandStack.jump(IFNULL);
+        }
+
+        int nArgs = 1;
+        List<Expression> args = makeArgumentList(arguments).getExpressions();
+        boolean spread = AsmClassGenerator.containsSpreadExpression(arguments);
+        if (spread) {
+            acg.despreadList(args, true);
             sig.append(getTypeDescription(Object[].class));
         } else {
-            for (Expression arg : ae.getExpressions()) {
+            for (Expression arg : args) {
                 arg.visit(acg);
                 if (arg instanceof CastExpression) {
                     operandStack.box();
@@ -146,88 +216,190 @@ public class InvokeDynamicWriter extends InvocationWriter {
                 } else {
                     sig.append(getTypeDescription(operandStack.getTopOperand()));
                 }
-                numberOfArguments++;
+                nArgs++;
+            }
+        }
+        sig.append(")Ljava/lang/Object;");
+
+        int flags = safe ? SAFE_NAVIGATION : 0;
+        if (spread) flags |= SPREAD_CALL;
+        controller.getMethodVisitor().visitInvokeDynamicInsn(METHOD.getCallSiteName(), sig.toString(), BSM, getMethodName(call.getMethod()), flags);
+        operandStack.replace(OBJECT_TYPE, nArgs);
+        if (end != null) controller.getMethodVisitor().visitLabel(end);
+    }
+
+    private void finishIndyCall(final Handle bsmHandle, final String methodName, final String sig, final int numberOfArguments, final Object... bsmArgs) {
+        CompileStack compileStack = controller.getCompileStack();
+        OperandStack operandStack = controller.getOperandStack();
+
+        controller.getMethodVisitor().visitInvokeDynamicInsn(methodName, sig, bsmHandle, bsmArgs);
+
+        operandStack.replace(OBJECT_TYPE, numberOfArguments);
+        compileStack.popLHS();
+    }
+
+    private void makeIndyCall(final MethodCallerMultiAdapter adapter, final Expression origReceiver, final boolean implicitThis, final boolean safe, final String methodName, final Expression arguments) {
+        OperandStack operandStack = controller.getOperandStack();
+
+        Expression receiver = correctReceiverForInterfaceCall(origReceiver);
+        StringBuilder sig = new StringBuilder(prepareIndyCall(receiver, implicitThis));
+
+        Label end = null;
+        if (safe && !isPrimitiveType(operandStack.getTopOperand())) {
+            operandStack.dup();
+            end = operandStack.jump(IFNULL);
+        }
+
+        // load arguments
+        int numberOfArguments = 1;
+        List<Expression> args = makeArgumentList(arguments).getExpressions();
+        boolean containsSpreadExpression = AsmClassGenerator.containsSpreadExpression(arguments);
+        AsmClassGenerator acg = controller.getAcg();
+        if (containsSpreadExpression) {
+            acg.despreadList(args, true);
+            sig.append(getTypeDescription(Object[].class));
+        } else {
+            for (Expression arg : args) {
+                arg.visit(acg);
+                if (arg instanceof CastExpression) {
+                    operandStack.box();
+                    acg.loadWrapper(arg);
+                    sig.append(getTypeDescription(Wrapper.class));
+                } else {
+                    sig.append(getTypeDescription(operandStack.getTopOperand()));
+                }
+                numberOfArguments += 1;
             }
         }
 
         sig.append(")Ljava/lang/Object;");
+
         String callSiteName = METHOD.getCallSiteName();
         if (adapter == null) callSiteName = INIT.getCallSiteName();
-        int flags = getMethodCallFlags(adapter, safe, containsSpreadExpression);
+        if (receiver != origReceiver) callSiteName = INTERFACE.getCallSiteName();
+
+        int flags = getMethodCallFlags(adapter, false, containsSpreadExpression);
+
         finishIndyCall(BSM, callSiteName, sig.toString(), numberOfArguments, methodName, flags);
-    }
-    
-    private static int getMethodCallFlags(MethodCallerMultiAdapter adapter, boolean safe, boolean spread) {
-        int ret = 0;
-        if (safe)                           ret |= SAFE_NAVIGATION;
-        if (adapter==invokeMethodOnCurrent) ret |= THIS_CALL;
-        if (spread)                         ret |= SPREAD_CALL;
-        return ret;
+
+        if (end != null) controller.getMethodVisitor().visitLabel(end);
     }
 
-    @Override
-    public void makeSingleArgumentCall(Expression receiver, String message, Expression arguments, boolean safe) {
-        makeIndyCall(invokeMethod, receiver, false, safe, message, arguments);
+    private Expression correctReceiverForInterfaceCall(final Expression receiver) {
+        if (receiver instanceof PropertyExpression pexp) {
+            if (pexp.getObjectExpression() instanceof ClassExpression
+                     && pexp.getProperty() instanceof ConstantExpression) {
+                String name = pexp.getProperty().getText();
+                ClassNode type = pexp.getObjectExpression().getType();
+                if ((name.equals("this") || name.equals("super")) && type.isInterface()) {
+                    return bytecodeX(type, mv -> mv.visitIntInsn(Opcodes.ALOAD, 0)); // load this with type
+                }
+            }
+        }
+        return receiver;
     }
 
-    private static int getPropertyFlags(boolean safe, boolean implicitThis, boolean groovyObject) {
+    private static int getMethodCallFlags(final MethodCallerMultiAdapter adapter, final boolean safe, final boolean spread) {
         int flags = 0;
-        if (implicitThis)   flags |= IMPLICIT_THIS;
-        if (groovyObject)   flags |= GROOVY_OBJECT;
-        if (safe)           flags |= SAFE_NAVIGATION;
+        if (safe)                           flags |= SAFE_NAVIGATION;
+        if (spread)                         flags |= SPREAD_CALL;
+        if (adapter==invokeMethodOnCurrent) flags |= THIS_CALL;
+
         return flags;
     }
 
-    protected void writeGetProperty(Expression receiver, String propertyName, boolean safe, boolean implicitThis, boolean groovyObject) {
-        String sig = prepareIndyCall(receiver, implicitThis);
-        sig += ")Ljava/lang/Object;";
-        int flags = getPropertyFlags(safe,implicitThis,groovyObject);
-        finishIndyCall(BSM, GET.getCallSiteName(), sig, 1, propertyName, flags);
-    }
-    
+    /** {@inheritDoc} */
     @Override
-    protected void writeNormalConstructorCall(ConstructorCallExpression call) {
+    public void makeSingleArgumentCall(final Expression receiver, final String message, final Expression arguments, final boolean safe) {
+        makeIndyCall(invokeMethod, receiver, false, safe, message, arguments);
+    }
+
+    /** Emits an {@code invokedynamic} property-get call site with the given flags. */
+    protected void writeGetProperty(final Expression receiver, final String propertyName, final boolean safe, final boolean implicitThis, final boolean groovyObject) {
+        var descriptor = prepareIndyCall(receiver, implicitThis) + ")Ljava/lang/Object;";
+        int flags = 0;
+        if (safe)         flags |= SAFE_NAVIGATION;
+        if (groovyObject) flags |= GROOVY_OBJECT;
+        if (implicitThis) flags |= IMPLICIT_THIS;
+        else if (isThisExpression(receiver)) flags |= THIS_CALL; // GROOVY-6335
+        finishIndyCall(BSM, GET.getCallSiteName(), descriptor, 1, propertyName, flags);
+    }
+
+    /**
+     * Emits an {@code invokedynamic} property-write call site (GROOVY-12138).
+     * On entry, the assigned value sits on the operand stack (the assignment
+     * machinery evaluates the RHS before visiting the LHS). The value is
+     * boxed, the receiver pushed, and the two swapped so the call-site shape
+     * is receiver-first — {@code (ReceiverType, ValueType)void} — preserving
+     * the runtime invariant that {@code arguments[0]} is the receiver. The
+     * void return means no operand-stack result to clean up, matching the
+     * classic adapter path's accounting.
+     */
+    protected void writeSetProperty(final Expression receiver, final String propertyName, final boolean implicitThis, final boolean groovyObject) {
+        CompileStack compileStack = controller.getCompileStack();
+        OperandStack operandStack = controller.getOperandStack();
+
+        operandStack.box(); // the assigned value, pushed before the LHS visit
+
+        compileStack.pushLHS(false);
+        compileStack.pushImplicitThis(implicitThis);
+        visitReceiverOfMethodCall(receiver);
+        compileStack.popImplicitThis();
+
+        String receiverDescriptor = getTypeDescription(operandStack.getTopOperand());
+        operandStack.swap(); // ... value, receiver -> ... receiver, value
+        String valueDescriptor = getTypeDescription(operandStack.getTopOperand());
+        String descriptor = "(" + receiverDescriptor + valueDescriptor + ")V";
+
+        int flags = 0;
+        if (groovyObject) flags |= GROOVY_OBJECT;
+        if (implicitThis) flags |= IMPLICIT_THIS;
+        else if (isThisExpression(receiver)) flags |= THIS_CALL;
+        controller.getMethodVisitor().visitInvokeDynamicInsn(SET.getCallSiteName(), descriptor, BSM, propertyName, flags);
+
+        operandStack.remove(2); // the indy instruction consumed receiver and value
+        compileStack.popLHS();
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    protected void writeNormalConstructorCall(final ConstructorCallExpression call) {
         makeCall(call, new ClassExpression(call.getType()), new ConstantExpression("<init>"), call.getArguments(), null, false, false, false);
     }
-    
+
+    /** {@inheritDoc} */
     @Override
-    public void coerce(ClassNode from, ClassNode target) {
-        ClassNode wrapper = ClassHelper.getWrapper(target);
+    public void coerce(final ClassNode from, final ClassNode target) {
+        ClassNode wrapper = getWrapper(target);
         makeIndyCall(invokeMethod, EmptyExpression.INSTANCE, false, false, "asType", new ClassExpression(wrapper));
-        if (ClassHelper.boolean_TYPE.equals(target) || ClassHelper.Boolean_TYPE.equals(target)) {
-            writeIndyCast(ClassHelper.OBJECT_TYPE,target);
+        if (isPrimitiveBoolean(target) || isWrapperBoolean(target)) {
+            writeIndyCast(OBJECT_TYPE, target);
         } else {
-            BytecodeHelper.doCast(controller.getMethodVisitor(), wrapper);
+            doCast(controller.getMethodVisitor(),wrapper);
             controller.getOperandStack().replace(wrapper);
             controller.getOperandStack().doGroovyCast(target);
         }
     }
 
+    /** {@inheritDoc} */
     @Override
-    public void castToNonPrimitiveIfNecessary(ClassNode sourceType, ClassNode targetType) {
-        ClassNode boxedType = ClassHelper.getWrapper(sourceType);
-        if (WideningCategories.implementsInterfaceOrSubclassOf(boxedType, targetType)) {
+    public void castToNonPrimitiveIfNecessary(final ClassNode sourceType, final ClassNode targetType) {
+        if (WideningCategories.implementsInterfaceOrSubclassOf(getWrapper(sourceType), targetType)) {
             controller.getOperandStack().box();
-            return;
+        } else {
+            writeIndyCast(sourceType, targetType);
         }
-        writeIndyCast(sourceType, targetType);
     }
 
-    private void writeIndyCast(ClassNode sourceType, ClassNode targetType) {
-
-        String sig = "(" +
-                getTypeDescription(sourceType) +
-                ')' +
-                getTypeDescription(targetType);
-        controller.getMethodVisitor().visitInvokeDynamicInsn(
-                //TODO: maybe use a different bootstrap method since no arguments are needed here
-                CAST.getCallSiteName(), sig, BSM, "()", 0);
-        controller.getOperandStack().replace(targetType);
-    }
-
+    /** {@inheritDoc} */
     @Override
-    public void castNonPrimitiveToBool(ClassNode sourceType) {
-        writeIndyCast(sourceType, ClassHelper.boolean_TYPE);
+    public void castNonPrimitiveToBool(final ClassNode sourceType) {
+        writeIndyCast(sourceType, boolean_TYPE);
     }
 
+    private void writeIndyCast(final ClassNode sourceType, final ClassNode targetType) {
+        String descriptor = "(" + getTypeDescription(sourceType) + ')' + getTypeDescription(targetType);
+        controller.getMethodVisitor().visitInvokeDynamicInsn(CAST.getCallSiteName(), descriptor, BSM, CAST_ARGS);
+        controller.getOperandStack().replace(targetType); // cast converts top operand from source to target type
+    }
 }

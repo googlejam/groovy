@@ -20,16 +20,18 @@ package groovy.transform;
 
 import org.codehaus.groovy.transform.GroovyASTTransformationClass;
 
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+import java.util.Objects;
 
 /**
  * Class annotation used to assist in creating appropriate {@code equals()} and {@code hashCode()} methods.
  * <p>
  * It allows you to write classes in this shortened form:
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * import groovy.transform.EqualsAndHashCode
  * {@code @EqualsAndHashCode}
  * class Person {
@@ -54,7 +56,8 @@ import java.lang.annotation.Target;
  * implementations are supported both of which support the equals contract outlined in the javadoc
  * for <code>java.lang.Object</code>
  * <p>
- * To illustrate the 'canEqual' implementation style (see http://www.artima.com/lejava/articles/equality.html
+ * To illustrate the 'canEqual' implementation style (see
+ * https://www.artima.com/articles/how-to-write-an-equality-method-in-java
  * for further details), consider this class:
  * <pre>
  * {@code @EqualsAndHashCode}
@@ -83,7 +86,7 @@ import java.lang.annotation.Target;
  * to be used in limited cases where its purpose is for overriding implementation details rather than
  * creating a derived type with different behavior. This is useful when using JPA Proxies for example or
  * as shown in the following examples:
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * import groovy.transform.*
  * {@code @Canonical} class IntPair { int x, y }
  * def p1 = new IntPair(1, 2)
@@ -160,7 +163,7 @@ import java.lang.annotation.Target;
  * </pre>
  * There is also support for including or excluding fields/properties by name when constructing
  * the equals and hashCode methods as shown here:
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * import groovy.transform.*
  * {@code @EqualsAndHashCode}(excludes="z")
  * {@code @TupleConstructor}
@@ -194,7 +197,7 @@ import java.lang.annotation.Target;
  * you have such structures.
  * A future version of this transform may better handle some additional recursive scenarios.
  * <p>More examples:</p>
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * import groovy.transform.EqualsAndHashCode
  *
  * &#64;EqualsAndHashCode(includeFields=true)
@@ -222,10 +225,13 @@ import java.lang.annotation.Target;
  * @see org.codehaus.groovy.util.HashCodeHelper
  * @since 1.8.0
  */
-@java.lang.annotation.Documented
-@Retention(RetentionPolicy.RUNTIME)
-@Target({ElementType.TYPE})
-@GroovyASTTransformationClass("org.codehaus.groovy.transform.EqualsAndHashCodeASTTransformation")
+@Documented
+@Retention(RetentionPolicy.SOURCE)
+@Target(ElementType.TYPE)
+@GroovyASTTransformationClass({
+        "org.codehaus.groovy.transform.EqualsAndHashCodeASTStubber",
+        "org.codehaus.groovy.transform.EqualsAndHashCodeASTTransformation"
+})
 public @interface EqualsAndHashCode {
     /**
      * List of property names (and field names if includeFields is true) to exclude from the equals and hashCode calculations.
@@ -285,8 +291,8 @@ public @interface EqualsAndHashCode {
     boolean allNames() default false;
 
     /**
-     * Whether to avoid using Groovy runtime methods and instead use methods like {@link java.util.Objects#hash(Object...)}
-     * and {@link java.util.Objects#equals(Object, Object)} for the generated {@code equals} and {@code hashCode} methods.
+     * Whether to avoid using Groovy runtime methods and instead use methods like {@link Objects#hash(Object...)}
+     * and {@link Objects#equals(Object, Object)} for the generated {@code equals} and {@code hashCode} methods.
      * The generated code is more similar to what is typically used in POJO classes.
      * The presence of the {@code @POJO} annotation on a class is looked for by default but this annotation attribute
      * allows the feature to be explicitly configured if desired.
@@ -296,4 +302,11 @@ public @interface EqualsAndHashCode {
      * @since 4.0.0
      */
     boolean pojo() default false;
+
+    /**
+     * Whether to access properties directly by their fields (faster) or via their getters.
+     *
+     * @since 4.0.12
+     */
+    boolean useGetters() default true;
 }

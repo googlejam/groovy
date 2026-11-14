@@ -22,15 +22,17 @@ import org.codehaus.groovy.classgen.asm.util.TypeUtil;
 import org.codehaus.groovy.vmplugin.VMPlugin;
 import org.codehaus.groovy.vmplugin.VMPluginFactory;
 
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.lang.reflect.AccessibleObject;
 import java.lang.reflect.Array;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
-import java.security.AccessController;
-import java.security.PrivilegedAction;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Optional;
@@ -44,36 +46,36 @@ import java.util.function.Function;
  */
 @SuppressWarnings("rawtypes")
 public class ReflectionUtils {
-    private static final VMPlugin VM_PLUGIN = VMPluginFactory.getPlugin();
+
+    private static final Class<?>[] EMPTY_CLASS_ARRAY = {};
 
     /** The packages in the call stack that are only part of the Groovy MOP. */
-    private static final Set<String> IGNORED_PACKAGES;
-    static {
-        Set<String> set = new HashSet<>();
+    private static final Set<String> IGNORED_PACKAGES = Set.of(
+        "groovy.lang",
+        "sun.reflect",
+        "java.security",
+        "java.lang.invoke",
+      //"java.lang.reflect",
+        "org.codehaus.groovy.reflection",
+        "org.codehaus.groovy.runtime",
+        "org.codehaus.groovy.runtime.callsite",
+        "org.codehaus.groovy.runtime.metaclass",
+        "org.codehaus.groovy.vmplugin.v5",
+        "org.codehaus.groovy.vmplugin.v6",
+        "org.codehaus.groovy.vmplugin.v7",
+        "org.codehaus.groovy.vmplugin.v8",
+        "org.codehaus.groovy.vmplugin.v9",
+        "org.codehaus.groovy.vmplugin.v10",
+        "org.codehaus.groovy.vmplugin.v16"
+    );
 
-        set.add("groovy.lang");
-        set.add("sun.reflect");
-        set.add("java.security");
-        set.add("java.lang.invoke");
-      //set.add("java.lang.reflect");
-        set.add("org.codehaus.groovy.reflection");
-        set.add("org.codehaus.groovy.runtime");
-        set.add("org.codehaus.groovy.runtime.callsite");
-        set.add("org.codehaus.groovy.runtime.metaclass");
-        set.add("org.codehaus.groovy.vmplugin.v5");
-        set.add("org.codehaus.groovy.vmplugin.v6");
-        set.add("org.codehaus.groovy.vmplugin.v7");
-        set.add("org.codehaus.groovy.vmplugin.v8");
-        set.add("org.codehaus.groovy.vmplugin.v9");
-        set.add("org.codehaus.groovy.vmplugin.v10");
+    private static final VMPlugin VM_PLUGIN = VMPluginFactory.getPlugin();
 
-        IGNORED_PACKAGES = Collections.unmodifiableSet(set);
-    }
-
-    private static final ClassContextHelper HELPER = new ClassContextHelper();
+    private static final StackWalker STACK_WALKER =
+        StackWalker.getInstance(Set.of(StackWalker.Option.RETAIN_CLASS_REFERENCE)); // StackWalker is thread-safe
 
     /**
-     * Determines whether or not the getCallingClass methods will return
+     * Determines whether the getCallingClass methods will return
      * any sensible results.  On JVMs that are not Sun derived i.e.
      * (gcj, Harmony) this will likely return false.  When not available
      * all getCallingClass methods will return null.
@@ -119,25 +121,107 @@ public class ReflectionUtils {
      *         enough stackframes to satisfy matchLevel
      */
     public static Class getCallingClass(final int matchLevel, final Collection<String> extraIgnoredPackages) {
-        Class[] classContext = HELPER.getClassContext();
-        int depth = 0, level = matchLevel;
         try {
-            Class c;
-            do {
-                do {
-                    c = classContext[depth++];
-                } while (classShouldBeIgnored(c, extraIgnoredPackages));
-            } while (c != null && level-- > 0 && depth < classContext.length);
-            return c;
+            Class result = STACK_WALKER
+                            .walk(s -> s.map(StackWalker.StackFrame::getDeclaringClass)
+                                        .filter(c -> !classShouldBeIgnored(c, extraIgnoredPackages))
+                                        .skip(Math.max(0, matchLevel)).limit(1).findFirst().orElse(null));
+            return result;
         } catch (Throwable ignore) {
             return null;
         }
     }
 
+    /**
+     * Returns the methods {@code type} declares whose name is {@code name} and
+     * whose parameter list {@link #parameterTypeMatches(Class[], Class[])} accepts.
+     * Inherited methods are omitted. The list is empty when none match.
+     *
+     * @param type the class to inspect
+     * @param name the method name
+     * @param parameterTypes the expected parameter types; an empty array matches only
+     *        methods that declare no parameters
+     * @return the matching methods, in the order {@link Class#getDeclaredMethods()} produced
+     */
     public static List<Method> getDeclaredMethods(final Class<?> type, final String name, final Class<?>... parameterTypes) {
         return doGetMethods(type, name, parameterTypes, Class::getDeclaredMethods);
     }
 
+    /**
+     * Returns the declared methods of a class in a deterministic order.
+     * <p>
+     * {@link Class#getDeclaredMethods()} does not guarantee an order, and
+     * HotSpot's varies between JVM runs. When members of a precompiled class
+     * are enumerated at compile time (annotation members copied to generated
+     * code, trait methods woven into implementing classes, MOP {@code super$}
+     * bridge methods, etc.), that order flows into the generated bytecode, so
+     * a nondeterministic order produces byte-different class files from
+     * identical sources. Callers whose output depends on member order should
+     * use this variant so builds are reproducible.
+     *
+     * @param type the class to introspect
+     * @return the declared methods, sorted by name then signature
+     * @since 5.0.8
+     */
+    public static Method[] getDeclaredMethodsSorted(final Class<?> type) {
+        Method[] methods = type.getDeclaredMethods();
+        Arrays.sort(methods, ReflectionUtils::compareMethods);
+        return methods;
+    }
+
+    /**
+     * Returns the declared constructors of a class in a deterministic order.
+     * <p>
+     * {@link Class#getDeclaredConstructors()} does not guarantee an order, and
+     * a nondeterministic order can flow into generated bytecode; see
+     * {@link #getDeclaredMethodsSorted(Class)}.
+     *
+     * @param type the class to introspect
+     * @return the declared constructors, sorted by parameter types
+     * @since 5.0.8
+     */
+    public static Constructor<?>[] getDeclaredConstructorsSorted(final Class<?> type) {
+        Constructor<?>[] constructors = type.getDeclaredConstructors();
+        // name is always <init> and the return type always void, so the parameters decide
+        Arrays.sort(constructors, (c1, c2) ->
+            compareParameterTypes(c1.getParameterTypes(), c2.getParameterTypes()));
+        return constructors;
+    }
+
+    /**
+     * Orders by name, then parameter types, then return type. This is a total order:
+     * the JVM forbids two methods in one class sharing a name and descriptor, and the
+     * descriptor is exactly the parameter types plus the return type.
+     */
+    private static int compareMethods(final Method m1, final Method m2) {
+        int c = m1.getName().compareTo(m2.getName());
+        if (c != 0) return c;
+        c = compareParameterTypes(m1.getParameterTypes(), m2.getParameterTypes());
+        if (c != 0) return c;
+        return m1.getReturnType().getName().compareTo(m2.getReturnType().getName());
+    }
+
+    private static int compareParameterTypes(final Class<?>[] p1, final Class<?>[] p2) {
+        int c = Integer.compare(p1.length, p2.length);
+        if (c != 0) return c;
+        for (int i = 0; i < p1.length; i += 1) {
+            c = p1[i].getName().compareTo(p2[i].getName());
+            if (c != 0) return c;
+        }
+        return 0;
+    }
+
+    /**
+     * Returns the public methods of {@code type}, including inherited methods, whose
+     * name is {@code name} and whose parameter list
+     * {@link #parameterTypeMatches(Class[], Class[])} accepts.
+     *
+     * @param type the class to inspect
+     * @param name the method name
+     * @param parameterTypes the expected parameter types; an empty array matches only
+     *        methods that declare no parameters
+     * @return the matching methods, in the order {@link Class#getMethods()} produced
+     */
     public static List<Method> getMethods(final Class<?> type, final String name, final Class<?>... parameterTypes) {
         return doGetMethods(type, name, parameterTypes, Class::getMethods);
     }
@@ -145,27 +229,13 @@ public class ReflectionUtils {
     private static List<Method> doGetMethods(final Class<?> type, final String name, final Class<?>[] parameterTypes, final Function<? super Class<?>, ? extends Method[]> f) {
         List<Method> methodList = new LinkedList<>();
 
-        out:
         for (Method m : f.apply(type)) {
             if (!m.getName().equals(name)) {
                 continue;
             }
-
             Class<?>[] methodParameterTypes = m.getParameterTypes();
-            if (methodParameterTypes.length != parameterTypes.length) {
+            if (!parameterTypeMatches(methodParameterTypes, parameterTypes)) {
                 continue;
-            }
-
-            for (int i = 0, n = methodParameterTypes.length; i < n; i += 1) {
-                Class<?> parameterType = TypeUtil.autoboxType(parameterTypes[i]);
-                if (null == parameterType) {
-                    continue out;
-                }
-
-                Class<?> methodParameterType = TypeUtil.autoboxType(methodParameterTypes[i]);
-                if (!methodParameterType.isAssignableFrom(parameterType)) {
-                    continue out;
-                }
             }
 
             methodList.add(m);
@@ -174,14 +244,73 @@ public class ReflectionUtils {
         return methodList;
     }
 
+    /**
+     * Whether each parameter type accepts the argument type in the same position.
+     * A parameter of {@code Object} matches any argument type, including {@code null}.
+     * Any other parameter rejects a {@code null} argument type. Remaining pairs match
+     * when the classes are the same, or when the boxed parameter type is assignable
+     * from the boxed argument type.
+     *
+     * @param parameterTypes the method's parameter types
+     * @param argTypes the argument types, with {@code null} for an unknown argument
+     * @return {@code true} when the arrays have equal length and every position matches
+     */
+    public static boolean parameterTypeMatches(final Class<?>[] parameterTypes, final Class<?>[] argTypes) {
+        if (parameterTypes.length != argTypes.length) {
+            return false;
+        }
+
+        for (int i = 0, n = parameterTypes.length; i < n; i += 1) {
+            Class<?> parameterType = parameterTypes[i];
+            if (Object.class == parameterType) continue;
+
+            Class<?> argType = argTypes[i];
+            if (null == argType) return false;
+            if (parameterType == argType) continue;
+
+            Class<?> boxedArgType = TypeUtil.autoboxType(argType);
+            Class<?> boxedParameterType = TypeUtil.autoboxType(parameterType);
+            if (!boxedParameterType.isAssignableFrom(boxedArgType)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Whether the VM plugin allows {@code accessibleObject} to be made accessible
+     * from {@code caller}.
+     *
+     * @param accessibleObject the reflected member to check
+     * @param caller the class that would call {@code setAccessible}
+     * @return what {@link VMPlugin#checkCanSetAccessible(AccessibleObject, Class)} returns
+     */
     public static boolean checkCanSetAccessible(final AccessibleObject accessibleObject, final Class<?> caller) {
         return VM_PLUGIN.checkCanSetAccessible(accessibleObject, caller);
     }
 
+    /**
+     * Whether {@code callerClass} can access a member of {@code declaringClass}
+     * with the given modifiers, as decided by the VM plugin.
+     *
+     * @param callerClass the class requesting access
+     * @param declaringClass the class that declares the member
+     * @param memberModifiers the member's modifiers
+     * @param allowIllegalAccess whether illegal access is permitted
+     * @return what {@link VMPlugin#checkAccessible(Class, Class, int, boolean)} returns
+     */
     public static boolean checkAccessible(final Class<?> callerClass, final Class<?> declaringClass, final int memberModifiers, final boolean allowIllegalAccess) {
         return VM_PLUGIN.checkAccessible(callerClass, declaringClass, memberModifiers, allowIllegalAccess);
     }
 
+    /**
+     * Tries to set the accessible flag on {@code ao}. A security, module, or other
+     * failure is swallowed.
+     *
+     * @param ao the reflected member
+     * @return {@code true} when the flag was set; {@code false} when it could not be
+     */
     public static boolean trySetAccessible(final AccessibleObject ao) {
         try {
             return VM_PLUGIN.trySetAccessible(ao);
@@ -191,23 +320,48 @@ public class ReflectionUtils {
         return false;
     }
 
+    /**
+     * Makes {@code ao} accessible when the VM plugin allows it. This does not enter
+     * a privileged action; it calls {@link #makeAccessible(AccessibleObject)}.
+     *
+     * @param ao the reflected member
+     * @return {@code ao} when access was enabled, otherwise an empty optional
+     */
     public static Optional<AccessibleObject> makeAccessibleInPrivilegedAction(final AccessibleObject ao) {
-        return AccessController.doPrivileged((PrivilegedAction<Optional<AccessibleObject>>) () -> makeAccessible(ao));
+        return makeAccessible(ao);
     }
 
     // to be run in PrivilegedAction!
+    /**
+     * Enables access to {@code ao} when {@link #trySetAccessible(AccessibleObject)}
+     * succeeds. A failure leaves the member unchanged.
+     *
+     * @param ao the reflected member
+     * @return {@code ao} when it was made accessible, otherwise an empty optional
+     */
     public static Optional<AccessibleObject> makeAccessible(final AccessibleObject ao) {
         try {
-            if (ao.isAccessible() || trySetAccessible(ao)) {
+            if (trySetAccessible(ao)) {
                 return Optional.of(ao);
             }
         } catch (Throwable ignore) {
-            // swallow for strict security managers, module systems, android, etc.
+            // swallow for module systems, android, etc.
         }
         return Optional.empty();
     }
 
     // to be run in PrivilegedAction!
+    /**
+     * Enables access to every element of {@code aoa}. When
+     * {@link AccessibleObject#setAccessible(AccessibleObject[], boolean)} succeeds,
+     * the same array is returned. When that call fails, each element is tried on
+     * its own and only the members that succeed are returned, using {@code aoa}'s
+     * component type.
+     *
+     * @param aoa the reflected members
+     * @return {@code aoa} after a successful bulk update, otherwise a new array of
+     *         the members that could be made accessible
+     */
     public static AccessibleObject[] makeAccessible(final AccessibleObject[] aoa) {
         try {
             AccessibleObject.setAccessible(aoa, true);
@@ -226,18 +380,77 @@ public class ReflectionUtils {
         }
     }
 
-    private static boolean classShouldBeIgnored(final Class c, final Collection<String> extraIgnoredPackages) {
-        return (c != null
-                && (c.isSynthetic()
-                    || (c.getPackage() != null
-                        && (IGNORED_PACKAGES.contains(c.getPackage().getName())
-                          || extraIgnoredPackages.contains(c.getPackage().getName())))));
+    /**
+     * Whether {@code clazz} is sealed. Returns {@code false} when {@code clazz} is
+     * {@code null}, when {@link Class#isSealed()} is unavailable on this JVM, or
+     * when calling it fails.
+     *
+     * @param clazz the class to test, or {@code null}
+     * @return {@code true} only when the JVM reports that the class is sealed
+     */
+    public static boolean isSealed(Class<?> clazz) {
+        if (null == IS_SEALED_METHODHANDLE) return false;
+        if (null == clazz) return false;
+
+        boolean sealed = false;
+        try {
+            sealed = (boolean) IS_SEALED_METHODHANDLE.invokeExact(clazz);
+        } catch (Throwable ignored) {
+        }
+        return sealed;
     }
 
-    private static class ClassContextHelper extends SecurityManager {
-        @Override
-        public Class[] getClassContext() {
-            return super.getClassContext();
+    /**
+     * The direct permitted subclasses of a sealed class. Returns a shared empty
+     * array when {@code clazz} is {@code null}, when
+     * {@link Class#getPermittedSubclasses()} is unavailable, or when calling it
+     * fails. When the JVM method returns {@code null} because the class is not
+     * sealed, this method returns {@code null} as well.
+     *
+     * @param clazz the class to inspect, or {@code null}
+     * @return the permitted subclasses, a shared empty array, or {@code null}
+     */
+    public static Class<?>[] getPermittedSubclasses(Class<?> clazz) {
+        if (null == GET_PERMITTED_SUBCLASSES_METHODHANDLE) return EMPTY_CLASS_ARRAY;
+        if (null == clazz) return EMPTY_CLASS_ARRAY;
+
+        Class<?>[] result = EMPTY_CLASS_ARRAY;
+        try {
+            result = (Class<?>[]) GET_PERMITTED_SUBCLASSES_METHODHANDLE.invokeExact(clazz);
+        } catch (Throwable ignored) {
         }
+        return result;
+    }
+
+    private static boolean classShouldBeIgnored(final Class c, final Collection<String> extraIgnoredPackages) {
+        if (c == null) return false;
+        if (c.isSynthetic()) return true;
+        String packageName = c.getPackageName(); // never null, unlike getPackage()
+        if (packageName.isEmpty()) return false;
+        return IGNORED_PACKAGES.contains(packageName)
+                || extraIgnoredPackages.contains(packageName)
+                // GraalVM native image runs dynamically built MethodHandle chains in an
+                // interpreter whose frames (com.oracle.svm.core.methodhandles) are not
+                // hidden, and its reflection accessors live in com.oracle.svm.core.reflect;
+                // all are dispatch machinery, never the caller (GROOVY-12362)
+                || packageName.startsWith("com.oracle.svm.");
+    }
+
+    private static final MethodHandle IS_SEALED_METHODHANDLE;
+    private static final MethodHandle GET_PERMITTED_SUBCLASSES_METHODHANDLE;
+    static {
+        MethodHandle isSealedMethodHandle = null;
+        try {
+            isSealedMethodHandle = MethodHandles.lookup().findVirtual(Class.class, "isSealed", MethodType.methodType(boolean.class, new Class[0]));
+        } catch (NoSuchMethodException | IllegalAccessException ignored) {
+        }
+        IS_SEALED_METHODHANDLE = isSealedMethodHandle;
+
+        MethodHandle getPermittedSubclassesMethodHandle = null;
+        try {
+            getPermittedSubclassesMethodHandle = MethodHandles.lookup().findVirtual(Class.class, "getPermittedSubclasses", MethodType.methodType(Class[].class, new Class[0]));
+        } catch (NoSuchMethodException | IllegalAccessException ignored) {
+        }
+        GET_PERMITTED_SUBCLASSES_METHODHANDLE = getPermittedSubclassesMethodHandle;
     }
 }

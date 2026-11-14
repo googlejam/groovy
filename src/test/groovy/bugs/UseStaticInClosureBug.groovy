@@ -16,31 +16,31 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-/**
- */
-class UseStaticInClosureBug extends GroovyTestCase {
+final class UseStaticInClosureBug {
 
     static def stuff = [:]
 
+    @Test
     void testBug() {
-        [1,2,3].each { stuff[it] = "dog" }
+        [1,2,3].each { stuff[it] = 'dog' }
 
         assert stuff.size() == 3
-        assert stuff[2] == "dog"
+        assert stuff[2] == 'dog'
     }
 
+    @Test
     void testBug2() {
         doStatic()
     }
 
-    static def doStatic() {
-        [1,2,3].each { stuff[it] = "dog" }
+    private static doStatic() {
+        [1,2,3].each { stuff[it] = 'dog' }
 
         assert stuff.size() == 3
-        assert stuff[2] == "dog"
+        assert stuff[2] == 'dog'
     }
 }

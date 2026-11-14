@@ -35,11 +35,14 @@ import org.codehaus.groovy.control.CompilePhase;
 import org.codehaus.groovy.control.SourceUnit;
 import org.codehaus.groovy.control.messages.SimpleMessage;
 import org.codehaus.groovy.transform.GroovyASTTransformation;
+import org.codehaus.groovy.transform.StubberSupport;
 import org.objectweb.asm.Opcodes;
 
 import java.beans.PropertyVetoException;
 import java.beans.VetoableChangeListener;
 import java.beans.VetoableChangeSupport;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.apache.groovy.ast.tools.ClassNodeUtils.addGeneratedMethod;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.args;
@@ -74,6 +77,9 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.varX;
 @GroovyASTTransformation(phase = CompilePhase.CANONICALIZATION)
 public class VetoableASTTransformation extends BindableASTTransformation {
 
+    /**
+     * Class node for {@link Vetoable}.
+     */
     protected static final ClassNode constrainedClassNode = ClassHelper.make(Vetoable.class);
 
     /**
@@ -99,10 +105,9 @@ public class VetoableASTTransformation extends BindableASTTransformation {
      */
     @Override
     public void visit(ASTNode[] nodes, SourceUnit source) {
-        if (!(nodes[0] instanceof AnnotationNode) || !(nodes[1] instanceof AnnotatedNode)) {
+        if (!(nodes[0] instanceof AnnotationNode node) || !(nodes[1] instanceof AnnotatedNode)) {
             throw new RuntimeException("Internal error: wrong types: $node.class / $parent.class");
         }
-        AnnotationNode node = (AnnotationNode) nodes[0];
 
         if (nodes[1] instanceof ClassNode) {
             addListenerToClass(source, (ClassNode) nodes[1]);
@@ -139,6 +144,16 @@ public class VetoableASTTransformation extends BindableASTTransformation {
 
 
     private void addListenerToClass(SourceUnit source, ClassNode classNode) {
+        // GEP-21 Shape C: discard any stubber-emitted placeholder methods so
+        // needsVetoableChangeSupport() correctly detects "no existing
+        // user-written support" and the real bodies get installed.
+        // Use removeMethod() rather than removeIf() on the list, since
+        // ClassNode keeps a parallel name->methods map.
+        List<MethodNode> stubs = new ArrayList<>();
+        for (MethodNode m : classNode.getMethods()) {
+            if (StubberSupport.isStub(m)) stubs.add(m);
+        }
+        stubs.forEach(classNode::removeMethod);
         boolean bindable = BindableASTTransformation.hasBindableAnnotation(classNode);
         for (PropertyNode propertyNode : classNode.getProperties()) {
             if (!hasVetoableAnnotation(propertyNode.getField())
@@ -257,9 +272,9 @@ public class VetoableASTTransformation extends BindableASTTransformation {
         while (consideredClass!= null) {
             for (MethodNode method : consideredClass.getMethods()) {
                 // just check length, MOP will match it up
-                foundAdd = foundAdd || method.getName().equals("addVetoableChangeListener") && method.getParameters().length == 1;
-                foundRemove = foundRemove || method.getName().equals("removeVetoableChangeListener") && method.getParameters().length == 1;
-                foundFire = foundFire || method.getName().equals("fireVetoableChange") && method.getParameters().length == 3;
+                foundAdd = foundAdd || "addVetoableChangeListener".equals(method.getName()) && method.getParameters().length == 1;
+                foundRemove = foundRemove || "removeVetoableChangeListener".equals(method.getName()) && method.getParameters().length == 1;
+                foundFire = foundFire || "fireVetoableChange".equals(method.getName()) && method.getParameters().length == 3;
                 if (foundAdd && foundRemove && foundFire) {
                     return false;
                 }

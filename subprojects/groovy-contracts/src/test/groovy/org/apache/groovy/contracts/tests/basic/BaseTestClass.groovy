@@ -20,11 +20,12 @@ package org.apache.groovy.contracts.tests.basic
 
 import groovy.text.GStringTemplateEngine
 import groovy.text.TemplateEngine
-import org.junit.Before
 import org.codehaus.groovy.runtime.ScriptBytecodeAdapter
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.BeforeEach
 
-import static org.junit.Assert.assertTrue
-import static org.junit.Assert.fail
+import static org.junit.jupiter.api.Assertions.assertTrue
+import static org.junit.jupiter.api.Assertions.fail
 
 class BaseTestClass {
 
@@ -33,10 +34,16 @@ class BaseTestClass {
     private TemplateEngine templateEngine
     private GroovyClassLoader loader;
 
-    @Before
+    @BeforeEach
     void setUp() {
         templateEngine = new GStringTemplateEngine()
         loader = new GroovyClassLoader(getClass().getClassLoader())
+    }
+
+    @AfterEach
+    void tearDown() {
+        loader?.close()
+        loader = null
     }
 
     String createSourceCodeForTemplate(final String template, final Map binding) {

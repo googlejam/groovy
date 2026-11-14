@@ -18,7 +18,6 @@
  */
 package org.codehaus.groovy.ast.builder
 
-import groovy.test.GroovyTestCase
 import org.codehaus.groovy.ast.ASTNode
 import org.codehaus.groovy.ast.ClassHelper
 import org.codehaus.groovy.ast.ClassNode
@@ -46,6 +45,7 @@ import org.codehaus.groovy.ast.expr.NamedArgumentListExpression
 import org.codehaus.groovy.ast.expr.NotExpression
 import org.codehaus.groovy.ast.expr.PostfixExpression
 import org.codehaus.groovy.ast.expr.PrefixExpression
+import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.RangeExpression
 import org.codehaus.groovy.ast.expr.SpreadMapExpression
 import org.codehaus.groovy.ast.expr.TernaryExpression
@@ -70,15 +70,18 @@ import org.codehaus.groovy.ast.stmt.WhileStatement
 import org.codehaus.groovy.control.CompilePhase
 import org.codehaus.groovy.syntax.Token
 import org.codehaus.groovy.syntax.Types
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.shouldFail
 
 /**
  * Test case to show an ASTBuilder working off of a code block.
  *
- * The field declarations, static initializers, instance initializers, 
- * and most of the comments are all meaningful and tested. 
+ * The field declarations, static initializers, instance initializers,
+ * and most of the comments are all meaningful and tested.
  */
 @WithAstBuilder
-class AstBuilderFromCodeTest extends GroovyTestCase {
+class AstBuilderFromCodeTest {
 
     List<ASTNode> normalField = new AstBuilder().buildFromCode { "constant#1" }
 
@@ -95,6 +98,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
     List<ASTNode> normalProperty = new AstBuilder().buildFromCode { "constant#5" }
 
 
+    @Test
     void testImportedClassName() {
 
         def expected = new AstBuilder().buildFromString(""" println "Hello World" """)
@@ -105,17 +109,19 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree(expected, result)
     }
 
+    @Test
     void testFullyQualifiedClassName() {
 
         def expected = new AstBuilder().buildFromString(""" println "Hello World" """)
 
         // it is important for this to remain a method invocation on a fully qualified class name
-        def result = new org.codehaus.groovy.ast.builder.AstBuilder().buildFromCode {
+        def result = new AstBuilder().buildFromCode {
             println "Hello World"
         }
         AstAssert.assertSyntaxTree(expected, result)
     }
 
+    @Test
     void testAliasedClassName() {
 
         def expected = new AstBuilder().buildFromString(""" println "Hello World" """)
@@ -126,6 +132,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree(expected, result)
     }
 
+    @Test
     void testVariableInvocation() {
 
         def expected = new AstBuilder().buildFromString(""" println "Hello World" """)
@@ -137,6 +144,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree(expected, result)
     }
 
+    @Test
     void testMethodReturnTypeInvocation() {
         shouldFail(IllegalStateException) {
             //todo: is there any way to make this work?
@@ -154,6 +162,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
     }
 
 
+    @Test
     void testPhase_SemanticAnalysis() {
 
         def expected = new AstBuilder().buildFromString(CompilePhase.SEMANTIC_ANALYSIS, """ println "Hello World" """)
@@ -164,6 +173,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree(expected, result)
     }
 
+    @Test
     void testPhase_Conversion() {
 
         def expected = new AstBuilder().buildFromString(CompilePhase.CONVERSION, """ println "Hello World" """)
@@ -174,6 +184,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree(expected, result)
     }
 
+    @Test
     void testStatementsOnly_ReturnsScriptClass() {
         def expected = new AstBuilder().buildFromString(CompilePhase.CONVERSION, false, """ println "Hello World" """)
 
@@ -183,6 +194,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree(expected, result)
     }
 
+    @Test
     void testSingleLineClosure() {
         def expected = new AstBuilder().buildFromString(""" println "Hello World" """)
 
@@ -190,6 +202,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree(expected, result)
     }
 
+    @Test
     void testSingleLineClosure_WithComment() {
         def expected = new AstBuilder().buildFromString(""" println "Hello World" """)
 
@@ -197,6 +210,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree(expected, result)
     }
 
+    @Test
     void testSingleLineClosure_MultipleStatements() {
         def expected = new AstBuilder().buildFromString(""" println "Hello World" """)
 
@@ -204,6 +218,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree(expected, result)
     }
 
+    @Test
     void testMultilineClosure_WithComments() {
         def expected = new AstBuilder().buildFromString(""" println "Hello World" """)
 
@@ -213,6 +228,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree(expected, result)
     }
 
+    @Test
     void testSingleLineClosure_WithCStyleComment() {
         def expected = new AstBuilder().buildFromString(""" println "Hello World" """)
 
@@ -220,6 +236,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree(expected, result)
     }
 
+    @Test
     void testSingleLineClosure_WithMultipleCStyleComments() {
         def expected = new AstBuilder().buildFromString(""" println "Hello World" """)
 
@@ -229,6 +246,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree(expected, result)
     }
 
+    @Test
     void testThreeLineClosure() {
         def expected = new AstBuilder().buildFromString(""" println "I"; println "Love"; println "Groovy" """)
 
@@ -240,26 +258,31 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree(expected, result)
     }
 
+    @Test
     void testInitializationInFieldDeclaration() {
         def expected = new AstBuilder().buildFromString(""" "constant#1" """)
         AstAssert.assertSyntaxTree(expected, normalField)
     }
 
+    @Test
     void testInitializationInstaticInialization() {
         def expected = new AstBuilder().buildFromString(""" "constant#3" """)
         AstAssert.assertSyntaxTree(expected, staticInitializedField)
     }
 
+    @Test
     void testInitializationInConstructor() {
         def expected = new AstBuilder().buildFromString(""" "constant#4" """)
         AstAssert.assertSyntaxTree(expected, constructorInializedField)
     }
 
+    @Test
     void testInitializationInPropertyDeclaration() {
         def expected = new AstBuilder().buildFromString(""" "constant#5" """)
         AstAssert.assertSyntaxTree(expected, normalProperty)
     }
 
+    @Test
     void testNamedArgumentListExpression() {
 
         def result = new AstBuilder().buildFromCode {
@@ -285,6 +308,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree([expected], result)
     }
 
+    @Test
     void testElvisOperatorExpression() {
 
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
@@ -302,6 +326,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
     }
 
 
+    @Test
     void testWhileStatementAndContinue() {
 
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
@@ -334,6 +359,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
     }
 
 
+    @Test
     void testTernaryExpression() {
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
             true ? 'male' : 'female'
@@ -352,6 +378,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree([expected], result)
     }
 
+    @Test
     void testSpreadMapExpression() {
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
             func(*: m)
@@ -376,6 +403,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
     }
 
 
+    @Test
     void testForStatementAndClosureListExpression() {
 
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
@@ -385,44 +413,44 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         }
 
         def expected = new BlockStatement([new ForStatement(
-                new Parameter(ClassHelper.OBJECT_TYPE, "forLoopDummyParameter"),
-                new ClosureListExpression(
-                        [
-                                new DeclarationExpression(
-                                        new VariableExpression("x"),
-                                        new Token(Types.EQUALS, "=", -1, -1),
-                                        new ConstantExpression(0)
-                                ),
-                                new BinaryExpression(
-                                        new VariableExpression("x"),
-                                        new Token(Types.COMPARE_LESS_THAN, "<", -1, -1),
-                                        new ConstantExpression(10)
-                                ),
-                                new PostfixExpression(
-                                        new VariableExpression("x"),
-                                        new Token(Types.PLUS_PLUS, "++", -1, -1)
-                                )
-                        ]
-                ),
-                new BlockStatement(
-                        [
-                                new ExpressionStatement(
-                                        new MethodCallExpression(
-                                                new VariableExpression("this"),
-                                                new ConstantExpression("println"),
-                                                new ArgumentListExpression(
-                                                        new VariableExpression("x"),
-                                                )
-                                        )
-                                )
-                        ],
-                        new VariableScope()
-                )
+            new ClosureListExpression(
+                [
+                    new DeclarationExpression(
+                        new VariableExpression("x"),
+                        new Token(Types.EQUALS, "=", -1, -1),
+                        new ConstantExpression(0)
+                    ),
+                    new BinaryExpression(
+                        new VariableExpression("x"),
+                        new Token(Types.COMPARE_LESS_THAN, "<", -1, -1),
+                        new ConstantExpression(10)
+                    ),
+                    new PostfixExpression(
+                        new VariableExpression("x"),
+                        new Token(Types.PLUS_PLUS, "++", -1, -1)
+                    )
+                ]
+            ),
+            new BlockStatement(
+                [
+                    new ExpressionStatement(
+                        new MethodCallExpression(
+                            new VariableExpression("this"),
+                            new ConstantExpression("println"),
+                            new ArgumentListExpression(
+                                new VariableExpression("x"),
+                            )
+                        )
+                    )
+                ],
+                new VariableScope()
+            )
         )], new VariableScope())
 
         AstAssert.assertSyntaxTree([expected], result)
     }
 
+    @Test
     void testFinallyStatement() {
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
             try {
@@ -460,6 +488,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree([expected], result)
     }
 
+    @Test
     void testReturnAndSynchronizedStatement() {
 
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
@@ -483,6 +512,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
     }
 
 
+    @Test
     void testAssertStatement() {
 
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
@@ -514,6 +544,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree([expected], result)
     }
 
+    @Test
     void testSwitchAndCaseAndBreakStatements() {
 
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
@@ -578,6 +609,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
     }
 
 
+    @Test
     void testRangeExpression_SimpleForm() {
 
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
@@ -595,6 +627,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree([expected], result)
     }
 
+    @Test
     void testMethodPointerExpression() {
 
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
@@ -612,6 +645,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
     }
 
 
+    @Test
     void testGStringExpression() {
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
             "$foo"
@@ -627,6 +661,23 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree([expected], result)
     }
 
+    @Test
+    void testGStringExpression2() {
+        def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
+            "${foo.bar}"
+        }
+
+        def expected = new BlockStatement(
+                [new ExpressionStatement(
+                        new GStringExpression('${foo.bar}',
+                                [new ConstantExpression(''), new ConstantExpression('')],
+                                [new PropertyExpression(new VariableExpression('foo'), 'bar')])
+                )], new VariableScope())
+
+        AstAssert.assertSyntaxTree([expected], result)
+    }
+
+    @Test
     void testMapAndMapEntryExpression() {
 
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
@@ -652,6 +703,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
     }
 
 
+    @Test
     void testClassExpression() {
 
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
@@ -670,6 +722,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
     }
 
 
+    @Test
     void testUnaryPlusExpression() {
 
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
@@ -685,6 +738,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree([expected], result)
     }
 
+    @Test
     void testUnaryMinusExpression() {
 
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
@@ -700,6 +754,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree([expected], result)
     }
 
+    @Test
     void testPrefixExpression() {
 
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
@@ -717,6 +772,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
     }
 
 
+    @Test
     void testPostfixExpression() {
 
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
@@ -734,6 +790,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
     }
 
 
+    @Test
     void testNotExpression() {
 
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
@@ -750,6 +807,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
     }
 
 
+    @Test
     void testConstructorCallExpression() {
 
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
@@ -769,6 +827,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
     }
 
 
+    @Test
     void testClosureExpression_MultipleParameters() {
 
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
@@ -799,6 +858,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
     }
 
 
+    @Test
     void testCastExpression() {
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
             (Integer) ""
@@ -813,6 +873,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree([expected], result)
     }
 
+    @Test
     void testDeclarationAndListExpression() {
 
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {
@@ -833,6 +894,7 @@ class AstBuilderFromCodeTest extends GroovyTestCase {
         AstAssert.assertSyntaxTree([expected], result)
     }
 
+    @Test
     void testIfStatement() {
 
         def result = new AstBuilder().buildFromCode(CompilePhase.SEMANTIC_ANALYSIS) {

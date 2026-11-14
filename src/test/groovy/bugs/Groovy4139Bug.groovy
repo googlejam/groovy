@@ -16,13 +16,16 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import groovy.time.TimeCategory
+import org.junit.jupiter.api.Test
 
-class Groovy4139Bug extends GroovyTestCase {
+
+class Groovy4139Bug {
+    @Test
     void testEmptyStringAsMapEntryKey() {
-        use (groovy.time.TimeCategory) {
+        use (TimeCategory) {
             def topics = [:]
             topics[''] = 100
 

@@ -18,7 +18,9 @@
  */
 package org.codehaus.groovy.transform
 
+import groovy.transform.ASTTest
 import groovy.transform.CompilationUnitAware
+import groovy.transform.Internal
 import org.codehaus.groovy.ast.ASTNode
 import org.codehaus.groovy.ast.AnnotationNode
 import org.codehaus.groovy.ast.ClassCodeVisitorSupport
@@ -45,13 +47,80 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.classX
 import static org.codehaus.groovy.ast.tools.GeneralUtils.propX
 import static org.codehaus.groovy.control.CompilePhase.fromPhaseNumber as toCompilePhase
 
+/**
+ * Implements {@link ASTTest} by scheduling the supplied test closure across compilation phases.
+ */
 @GroovyASTTransformation(phase = CompilePhase.SEMANTIC_ANALYSIS)
 class ASTTestTransformation implements ASTTransformation, CompilationUnitAware {
 
+    /**
+     * System property which, when set to {@code false}, makes {@link ASTTest} a no-op.
+     * Compiling source containing the annotation then no longer evaluates its closure. Mirrors the
+     * {@code groovy.grape.enable} switch for {@code @Grab}.
+     */
+    public static final String ENABLE_PROPERTY = 'groovy.asttest.enable'
+
+    /**
+     * Per-thread override of {@value #ENABLE_PROPERTY}. In-process tooling
+     * sets this for the compile it is running so the JVM property, which a
+     * host compile on another thread still reads, stays unchanged.
+     * The override can only force the annotation off. It cannot turn the
+     * annotation back on when the JVM property is {@code false}.
+     */
+    private static final ThreadLocal<Boolean> THREAD_ENABLED = new ThreadLocal<>()
+
+    /**
+     * @return the override on this thread, or {@code null} when the system property applies
+     * @since 7.0.0
+     */
+    @Internal
+    static Boolean currentThreadEnabled() {
+        THREAD_ENABLED.get()
+    }
+
+    /**
+     * Sets the per-thread override. {@code null} clears it.
+     * {@code true} does not defeat {@value #ENABLE_PROPERTY}{@code =false}:
+     * the annotation stays a no-op for that JVM.
+     *
+     * @param enabled {@code false} to skip {@code @ASTTest} on this thread, {@code true} to leave the property in charge, {@code null} to clear
+     * @since 7.0.0
+     */
+    @Internal
+    static void setThreadEnabled(Boolean enabled) {
+        if (enabled == null) {
+            THREAD_ENABLED.remove()
+        } else {
+            THREAD_ENABLED.set(enabled)
+        }
+    }
+
+    private static boolean enabled() {
+        boolean property = Boolean.parseBoolean(System.getProperty(ENABLE_PROPERTY, 'true'))
+        Boolean override = THREAD_ENABLED.get()
+        if (override == null) {
+            return property
+        }
+        return override.booleanValue() && property
+    }
+
+    /**
+     * Compilation unit that owns the current transformation.
+     */
     CompilationUnit compilationUnit
 
+    /**
+     * Validates the annotation and schedules execution of its AST assertions.
+     * <p>
+     * Does nothing when {@value #ENABLE_PROPERTY} is set to {@code false}.
+     *
+     * @param nodes the annotation node and annotated AST node
+     * @param source the source unit containing the annotation
+     */
     @Override
     void visit(final ASTNode[] nodes, final SourceUnit source) {
+        if (!enabled()) return
+
         AnnotationNode annotationNode = nodes[0]
 
         def member = annotationNode.getMember('phase')
@@ -69,21 +138,27 @@ class ASTTestTransformation implements ASTTransformation, CompilationUnitAware {
             }
         }
 
-        member = annotationNode.getMember('value')
-        if (member && !(member instanceof ClosureExpression)) {
-            throw new SyntaxException('ASTTest value must be a closure', member)
-        }
-        if (!member && !annotationNode.getNodeMetaData(ASTTestTransformation)) {
-            throw new SyntaxException('Missing test expression', annotationNode)
+        // a declaration with several declarators shares one annotation node, so this
+        // transformation is called once per declarator: convert the annotation once
+        ClosureExpression testClosure = annotationNode.getNodeMetaData(ASTTestTransformation)
+        if (testClosure == null) {
+            member = annotationNode.getMember('value')
+            if (member && !(member instanceof ClosureExpression)) {
+                throw new SyntaxException('ASTTest value must be a closure', member)
+            }
+            if (!member) {
+                throw new SyntaxException('Missing test expression', annotationNode)
+            }
+
+            // convert value into node metadata so that the expression doesn't mix up with other AST xforms like STC
+            testClosure = (ClosureExpression) member
+            annotationNode.setNodeMetaData(ASTTestTransformation, testClosure)
+            annotationNode.setMember('value', new ClosureExpression(
+                Parameter.EMPTY_ARRAY, EmptyStatement.INSTANCE))
+            testClosure.variableScope?.@parent = null
         }
 
-        // convert value into node metadata so that the expression doesn't mix up with other AST xforms like STC
-        annotationNode.setNodeMetaData(ASTTestTransformation, member)
-        annotationNode.setMember('value', new ClosureExpression(
-            Parameter.EMPTY_ARRAY, EmptyStatement.INSTANCE))
-        member.variableScope.@parent = null
-
-        ISourceUnitOperation astTester = new ASTTester(astNode: nodes[1], sourceUnit: source, testClosure: annotationNode.getNodeMetaData(ASTTestTransformation))
+        ISourceUnitOperation astTester = new ASTTester(astNode: nodes[1], sourceUnit: source, testClosure: testClosure)
         for (int p = (phase ?: CompilePhase.SEMANTIC_ANALYSIS).phaseNumber, q = (phase ?: CompilePhase.FINALIZATION).phaseNumber; p <= q; p += 1) {
             compilationUnit.addNewPhaseOperation(astTester, p)
         }
@@ -93,14 +168,28 @@ class ASTTestTransformation implements ASTTransformation, CompilationUnitAware {
 
     private class ASTTester implements ISourceUnitOperation {
 
+        /**
+         * AST node being exposed to the test closure.
+         */
         ASTNode astNode
+        /**
+         * Source unit that declared the annotated node.
+         */
         SourceUnit sourceUnit
+        /**
+         * Closure expression that contains the AST assertions.
+         */
         ClosureExpression testClosure
         private final Binding binding = new Binding([:].withDefault { null })
 
+        /**
+         * Runs the AST test for the matching source unit.
+         *
+         * @param unit the source unit currently being processed
+         */
         @Override
-        void call(final SourceUnit source) {
-            if (source == sourceUnit) {
+        void call(final SourceUnit unit) {
+            if (unit == sourceUnit) {
                 test()
             }
         }
@@ -108,10 +197,16 @@ class ASTTestTransformation implements ASTTransformation, CompilationUnitAware {
         private void test() {
             def sb = new StringBuilder()
             for (int i = testClosure.lineNumber, n = testClosure.lastLineNumber; i <= n; i += 1) {
-                sb.append(sourceUnit.source.getLine(i, new Janitor())).append('\n')
+                String line = sourceUnit.source.getLine(i, new Janitor())
+                if (i == n) { // drop any code that follows the closure on its last line
+                    line = line.substring(0, testClosure.lastColumnNumber - 1)
+                }
+                sb.append(line).append('\n')
             }
             sb = sb[testClosure.columnNumber..<sb.length()]
             String testSource = sb[0..<sb.lastIndexOf('}')]
+
+            def compilationUnit = ASTTestTransformation.this.@compilationUnit
 
             binding['node'] = astNode
             binding['sourceUnit'] = sourceUnit
@@ -135,12 +230,20 @@ class ASTTestTransformation implements ASTTransformation, CompilationUnitAware {
 
             def config = new CompilerConfiguration()
             config.addCompilationCustomizers(customizer)
-            new GroovyShell(binding, config).evaluate(testSource)
+            def loader = compilationUnit.transformLoader
+            new GroovyShell(loader, binding, config).evaluate(testSource)
         }
     }
 
-    static class LabelFinder extends ClassCodeVisitorSupport {
+    private static class LabelFinder extends ClassCodeVisitorSupport {
 
+        /**
+         * Finds labeled statements inside the supplied method.
+         *
+         * @param node the method to inspect
+         * @param label the statement label to match
+         * @return matching labeled statements
+         */
         static List<Statement> lookup(final MethodNode node, final String label) {
             LabelFinder finder = new LabelFinder(label, null)
             node.code.visit(finder)
@@ -148,6 +251,13 @@ class ASTTestTransformation implements ASTTransformation, CompilationUnitAware {
             finder.targets
         }
 
+        /**
+         * Finds labeled statements inside the supplied class.
+         *
+         * @param node the class whose methods and constructors should be inspected
+         * @param label the statement label to match
+         * @return matching labeled statements
+         */
         static List<Statement> lookup(final ClassNode node, final String label) {
             LabelFinder finder = new LabelFinder(label, null)
             node.methods*.code*.visit(finder)
@@ -160,22 +270,43 @@ class ASTTestTransformation implements ASTTransformation, CompilationUnitAware {
         private final SourceUnit unit
         private final List<Statement> targets = [] as LinkedList
 
+        /**
+         * Creates a finder for statements carrying the supplied label.
+         *
+         * @param label the label to search for
+         * @param unit the source unit reported to the visitor infrastructure
+         */
         LabelFinder(final String label, final SourceUnit unit) {
             this.label = label
             this.unit = unit
         }
 
+        /**
+         * Returns the source unit associated with this visitor.
+         *
+         * @return the associated source unit, or {@code null}
+         */
         @Override
         protected SourceUnit getSourceUnit() {
             unit
         }
 
+        /**
+         * Records statements whose labels match the requested target label.
+         *
+         * @param statement the statement currently being visited
+         */
         @Override
         protected void visitStatement(final Statement statement) {
             super.visitStatement(statement)
             if (label in statement.statementLabels) targets << statement
         }
 
+        /**
+         * Returns the statements collected for the configured label.
+         *
+         * @return matching labeled statements
+         */
         List<Statement> getTargets() {
             Collections.unmodifiableList(targets)
         }

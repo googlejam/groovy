@@ -18,6 +18,10 @@
  */
 package groovy.lang;
 
+import groovy.lang.annotation.ExtendedElementType;
+import groovy.lang.annotation.ExtendedTarget;
+
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -28,7 +32,7 @@ import java.lang.annotation.Target;
  * <p>
  * For example:
  * <pre>
- * {@code @GrabResolver}(name='restlet.org', root='http://maven.restlet.org')
+ * {@code @GrabResolver}(name='restlet.org', root='https://maven.restlet.talend.com')
  * {@code @Grab}(group='org.restlet', module='org.restlet', version='1.1.6')
  * class MyRestlet extends org.restlet.Restlet {
  *   // ...
@@ -41,8 +45,9 @@ import java.lang.annotation.Target;
  * to resolve artifacts in the order specified in the chain of resolvers.
  * <p>
  * Further information about customising grape behavior can be found on the Grape documentation page:
- * <a href="http://groovy-lang.org/grape.html">http://groovy-lang.org/grape.html</a>.
+ * <a href="https://groovy-lang.org/grape.html">https://groovy-lang.org/grape.html</a>.
  */
+@Documented
 @Retention(RetentionPolicy.SOURCE)
 @Target({
         ElementType.CONSTRUCTOR,
@@ -51,6 +56,7 @@ import java.lang.annotation.Target;
         ElementType.METHOD,
         ElementType.PARAMETER,
         ElementType.TYPE})
+@ExtendedTarget(ExtendedElementType.IMPORT)
 public @interface GrabResolver {
     /**
      * Allows a shorthand form which sets the name and root to this value.

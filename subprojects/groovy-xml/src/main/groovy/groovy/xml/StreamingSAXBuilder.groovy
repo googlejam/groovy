@@ -23,31 +23,46 @@ import groovy.xml.streamingmarkupsupport.BaseMarkupBuilder
 import org.xml.sax.ext.LexicalHandler
 import org.xml.sax.helpers.AttributesImpl
 
+/**
+ * A streaming builder that turns Groovy builder calls into SAX events for XML generation.
+ */
+@SuppressWarnings('Instanceof')
 class StreamingSAXBuilder extends AbstractStreamingBuilder {
+    /** Stack of namespace declarations deferred while nested SAX elements are processed. */
     def pendingStack = []
 
+    /** Closure backing {@code mkp.comment} for SAX handlers supporting lexical events. */
     def commentClosure = {doc, pendingNamespaces, namespaces, namespaceSpecificTags, prefix, attrs, body, contentHandler ->
+        // Checked before the handler type is consulted: a handler that is not a LexicalHandler drops
+        // the comment, and silently discarding malformed content is worse than reporting it.
+        checkCommentText(body)
         if (contentHandler instanceof LexicalHandler) {
             contentHandler.comment(body.toCharArray(), 0, body.size())
         }
     }
 
+    /** Closure backing {@code mkp.pi} for emitting processing instructions. */
     def piClosure = {doc, pendingNamespaces, namespaces, namespaceSpecificTags, prefix, attrs, body, contentHandler ->
         attrs.each {target, instruction ->
+            checkProcessingInstruction(target)
             if (instruction instanceof Map) {
+                // toMapStringClosure rejects '?>' in the names and values it assembles
                 contentHandler.processingInstruction(target, toMapStringClosure(instruction))
             } else {
+                checkProcessingInstruction(instruction)
                 contentHandler.processingInstruction(target, instruction)
             }
         }
     }
 
+    /** Closure backing {@code mkp.yield} and {@code mkp.yieldUnescaped} for SAX text output. */
     def noopClosure = {doc, pendingNamespaces, namespaces, namespaceSpecificTags, prefix, attrs, body, contentHandler ->
         if (body != null) {
             processBody(body, doc, contentHandler)
         }
     }
 
+    /** Default element-emitting closure used for ordinary SAX builder nodes. */
     def tagClosure = {tag, doc, pendingNamespaces, namespaces, namespaceSpecificTags, prefix, attrs, body, contentHandler ->
         def attributes = new AttributesImpl()
         attrs.each {key, value ->
@@ -58,13 +73,13 @@ class StreamingSAXBuilder extends AbstractStreamingBuilder {
             def k = (key == ':' ? '' : key)
             hiddenNamespaces[k] = namespaces[key]
             namespaces[k] = value
-            attributes.addAttribute("http://www.w3.org/2000/xmlns/", k, "xmlns${k == '' ? '' : ":$k"}", "CDATA", "$value")
+            attributes.addAttribute('http://www.w3.org/2000/xmlns/', k, "xmlns${k == '' ? '' : ":$k"}", 'CDATA', "$value")
             contentHandler.startPrefixMapping(k, value)
         }
         // set up the tag info
-        def uri = ""
+        def uri = ''
         def qualifiedName = tag
-        if (prefix != "") {
+        if (prefix != '') {
             if (namespaces.containsKey(prefix)) {
                 uri = namespaces[prefix]
             } else if (pendingNamespaces.containsKey(prefix)) {
@@ -72,13 +87,13 @@ class StreamingSAXBuilder extends AbstractStreamingBuilder {
             } else {
                 throw new GroovyRuntimeException("Namespace prefix: ${prefix} is not bound to a URI")
             }
-            if (prefix != ":") {
-                qualifiedName = prefix + ":" + tag
+            if (prefix != ':') {
+                qualifiedName = prefix + ':' + tag
             }
         }
         contentHandler.startElement(uri, tag, qualifiedName, attributes)
         if (body != null) {
-            pendingStack.add pendingNamespaces.clone()
+            pendingStack.push pendingNamespaces.clone()
             pendingNamespaces.clear()
             processBody(body, doc, contentHandler)
             pendingNamespaces.clear()
@@ -99,12 +114,12 @@ class StreamingSAXBuilder extends AbstractStreamingBuilder {
             def parts = key.tokenize('$')
             if (namespaces.containsKey(parts[0])) {
                 def namespaceUri = namespaces[parts[0]]
-                attributes.addAttribute(namespaceUri, parts[1], "${parts[0]}:${parts[1]}", "CDATA", "$value")
+                attributes.addAttribute(namespaceUri, parts[1], "${parts[0]}:${parts[1]}", 'CDATA', "$value")
             } else {
                 throw new GroovyRuntimeException("bad attribute namespace tag in ${key}")
             }
         } else {
-            attributes.addAttribute("", key, key, "CDATA", "$value")
+            attributes.addAttribute('', key, key, 'CDATA', "$value")
         }
     }
 
@@ -135,8 +150,10 @@ class StreamingSAXBuilder extends AbstractStreamingBuilder {
         }
     }
 
+    /** Backing namespace-aware builder reused for each {@link #bind(Closure)} call. */
     def builder = null
 
+    /** Creates a SAX-oriented builder with the standard {@code mkp} helper tags installed. */
     StreamingSAXBuilder() {
         specialTags.putAll(['yield': noopClosure,
                 'yieldUnescaped': noopClosure,
@@ -150,7 +167,13 @@ class StreamingSAXBuilder extends AbstractStreamingBuilder {
         this.builder = new BaseMarkupBuilder(nsSpecificTags)
     }
 
-    public bind(closure) {
+    /**
+     * Binds a markup closure for later emission to a SAX content handler.
+     *
+     * @param closure closure describing the XML to generate
+     * @return a closure that writes the generated XML to the supplied content handler
+     */
+    def bind(closure) {
         def boundClosure = this.builder.bind(closure)
         return {contentHandler ->
             contentHandler.startDocument()

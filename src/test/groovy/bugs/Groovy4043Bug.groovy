@@ -16,20 +16,23 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
 import gls.CompilableTestSupport
+import org.junit.jupiter.api.Test
 
-class Groovy4043Bug extends CompilableTestSupport {
+final class Groovy4043Bug extends CompilableTestSupport {
+
+    @Test
     void testResolveInnerClsDefByAParent() {
         shouldCompile """
             class A4043 {
                 static class B4043 {}
             }
-            
+
             class C4043 extends A4043 {
                 B4043 b
             }
-        """        
+        """
     }
 }

@@ -21,17 +21,38 @@ plugins {
 }
 
 dependencies {
-    api rootProject  // JsonBuilder extends GroovyObjectSupport...
-    testImplementation project(':groovy-test')
-    testImplementation project(':groovy-dateutil')
-    testImplementation 'net.javacrumbs.json-unit:json-unit:2.25.0'
-    testRuntimeOnly "org.slf4j:slf4j-api:${versions.slf4j}"
-    testRuntimeOnly project(':groovy-ant') // for JavadocAssertionTests
-    testRuntimeOnly 'com.google.code.gson:gson:2.8.6' // json-unit requires gson, jackson1, or jackson2
+    api project(':') // JsonBuilder extends GroovyObjectSupport...
+
+    testImplementation projects.groovyTest
+    testImplementation projects.groovyTestJunit6 // for groovy.junit6.plugin.ForkedJvm
+    testImplementation projects.groovyDateutil
+    testImplementation('net.javacrumbs.json-unit:json-unit:6.4.0') {
+        // hamcrest-core 3.0 is an empty deprecation stub; exclude it to avoid pinning a
+        // verification checksum for it. JUnit already supplies hamcrest-core and the tests
+        // here only use JsonAssert.assertJsonEquals (no hamcrest matchers).
+        exclude group: 'org.hamcrest', module: 'hamcrest-core'
+    }
+
+    testRuntimeOnly project(':'), {
+        because "Tests are using Grapes"
+        capabilities {
+            requireCapability 'org.apache.groovy:groovy-grapes'
+        }
+    }
+    testRuntimeOnly projects.groovyGrapeIvy
+    testRuntimeOnly projects.groovyAnt // for JavadocAssertionTests
+    testRuntimeOnly 'com.google.code.gson:gson:2.15.0' // json-unit requires a backend: gson, jackson2 or jackson3
 }
 
 plugins.withId('eclipse') {
     eclipse.classpath.file.whenMerged {
         entries.removeAll { entry -> entry.path in ['/groovy-ant', '/groovy-groovydoc'] }
     }
+}
+
+tasks.named('rat') {
+    excludes += [
+            // test file
+            'src/test/resources/groovy9802.json'
+    ]
 }

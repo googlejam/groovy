@@ -29,7 +29,7 @@ import java.lang.annotation.Target
  * Meta annotation used when defining immutable classes.
  * <p>
  * It allows you to write classes in this shortened form:
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * {@code @groovy.transform.Immutable} class Customer {
  *     String first, last
  *     int age
@@ -133,10 +133,10 @@ import java.lang.annotation.Target
  * </ul>
  * <p>More examples:</p>
  --------------------------------------------------------------------------------
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * import groovy.transform.*
  *
- * &#64;Canonical
+ * &#64;Immutable(defaults=true, noArg=false)
  * class Building {
  *     String name
  *     int floors
@@ -153,7 +153,7 @@ import java.lang.annotation.Target
  * // arguments are not assigned.
  * def theOffice = new Building('Wernham Hogg Paper Company')
  * assert theOffice.floors == 0
- * theOffice.officeSpace = true
+ * assert theOffice.officeSpace == false
  *
  * def anotherOfficeSpace = new Building(name: 'Initech office', floors: 1, officeSpace: true)
  *
@@ -165,7 +165,7 @@ import java.lang.annotation.Target
  * assert offices.size() == 2
  * assert offices.name.join(',') == 'Initech office,Wernham Hogg Paper Company'
  *
- * &#64;Canonical
+ * &#64;Immutable
  * &#64;ToString(excludes='age')  // Customize one of the transformations.
  * class Person {
  *     String name
@@ -183,6 +183,7 @@ import java.lang.annotation.Target
  * @see PropertyOptions
  * @see TupleConstructor
  * @see MapConstructor
+ * @see Final
  * @see KnownImmutable
  * @see Canonical
  * @since 1.7
@@ -190,21 +191,34 @@ import java.lang.annotation.Target
 @ToString(cache = true, includeSuperProperties = true)
 @EqualsAndHashCode(cache = true)
 @ImmutableBase
+@Final
 @ImmutableOptions
 @PropertyOptions(propertyHandler = ImmutablePropertyHandler)
 @TupleConstructor(defaults = false)
 @MapConstructor(noArg = true, includeSuperProperties = true, includeFields = true)
 @KnownImmutable
 @AnnotationCollector(mode = AnnotationCollectorMode.PREFER_EXPLICIT_MERGED)
-@Retention(RetentionPolicy.RUNTIME)
-@Target([ElementType.TYPE])
+@Retention(RetentionPolicy.SOURCE)
+@Target(ElementType.TYPE)
 @interface Immutable {
-    /** No longer used directly but instead collected from {@link ImmutableOptions}. Remains for legacy handling only. */
+    /**
+     * No longer used directly but instead collected from {@link ImmutableOptions}. Remains for legacy handling only.
+     *
+     * @return additional classes treated as immutable for legacy handling
+     */
     Class[] knownImmutableClasses() default []
 
-    /** No longer used directly but instead collected from {@link ImmutableOptions}. Remains for legacy handling only. */
+    /**
+     * No longer used directly but instead collected from {@link ImmutableOptions}. Remains for legacy handling only.
+     *
+     * @return additional property names treated as immutable for legacy handling
+     */
     String[] knownImmutables() default []
 
-    /** No longer used directly but instead collected from {@link ImmutableBase}. Remains for legacy handling only. */
+    /**
+     * No longer used directly but instead collected from {@link ImmutableBase}. Remains for legacy handling only.
+     *
+     * @return {@code true} if copy-with support should be enabled for legacy handling
+     */
     boolean copyWith() default false
 }

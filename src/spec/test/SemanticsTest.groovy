@@ -16,19 +16,27 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-import gls.CompilableTestSupport
+
 import groovy.transform.Immutable
+import org.junit.jupiter.api.Test
 
-class SemanticsTest extends CompilableTestSupport {
+import static groovy.test.GroovyAssert.assertScript
+import static groovy.test.GroovyAssert.shouldFail
 
+final class SemanticsTest {
+
+    @Test
     void testVariableDefinition() {
-        // tag::variable_definition_example[]
+        // tag::variable_definition_example1[]
         String x
         def y
+        // end::variable_definition_example1[]
+        // tag::variable_definition_example2[]
         var z
-        // end::variable_definition_example[]
+        // end::variable_definition_example2[]
     }
 
+    @Test
     void testVariableAssignment() {
         assertScript '''
         // tag::variable_assignment_example[]
@@ -50,6 +58,7 @@ class SemanticsTest extends CompilableTestSupport {
         '''
     }
 
+    @Test
     void testMultipleAssignment() {
         // tag::multiple_assignment_example[]
         def (a, b, c) = [10, 20, 'foo']
@@ -57,6 +66,7 @@ class SemanticsTest extends CompilableTestSupport {
         // end::multiple_assignment_example[]
     }
 
+    @Test
     void testMultipleAssignmentWithTypes() {
         // tag::multiple_assignment_with_types[]
         def (int i, String j) = [10, 'foo']
@@ -64,6 +74,7 @@ class SemanticsTest extends CompilableTestSupport {
         // end::multiple_assignment_with_types[]
     }
 
+    @Test
     void testMultipleAssignmentWithExistingVariables() {
         // tag::multiple_assignment_with_existing_variables[]
         def nums = [1, 3, 5]
@@ -73,6 +84,7 @@ class SemanticsTest extends CompilableTestSupport {
         // end::multiple_assignment_with_existing_variables[]
     }
 
+    @Test
     void testMultipleAssignmentWithArraysAndLists() {
         // tag::multiple_assignment_with_arrays_and_lists[]
         def (_, month, year) = "18th June 2009".split()
@@ -80,6 +92,43 @@ class SemanticsTest extends CompilableTestSupport {
         // end::multiple_assignment_with_arrays_and_lists[]
     }
 
+    @Test
+    void testMultipleAssignmentEvaluatesValuesFirst() {
+        // tag::multiple_assignment_swap[]
+        def a = 1, b = 2, c = 3
+        (a, b) = [b, a]                 // swap
+        assert a == 2 && b == 1
+        (a, b, c) = [b, c, a]           // rotate
+        assert a == 1 && b == 3 && c == 2
+        // end::multiple_assignment_swap[]
+    }
+
+    @Test
+    void testMultipleAssignmentDeclarationReadsEarlierMeaning() {
+        assertScript '''
+        // tag::multiple_assignment_declaration_scope[]
+        class Counter {
+            int count = 10
+            def reset() {
+                def (count, previous) = [0, count]  // this count is the field
+                [count, previous]
+            }
+        }
+        assert new Counter().reset() == [0, 10]
+        // end::multiple_assignment_declaration_scope[]
+        '''
+    }
+
+    @Test
+    void testMultipleAssignmentValue() {
+        // tag::multiple_assignment_value[]
+        def a = 1, b = 2
+        def result = ((a, b) = [b, a])
+        assert result == [2, 1]
+        // end::multiple_assignment_value[]
+    }
+
+    @Test
     void testMultipleAssignmentOverflow() {
         // tag::multiple_assignment_overflow[]
         def (a, b, c) = [1, 2]
@@ -87,6 +136,20 @@ class SemanticsTest extends CompilableTestSupport {
         // end::multiple_assignment_overflow[]
     }
 
+    @Test
+    void testMultipleAssignmentOverflowTypeChecked() {
+        // tag::multiple_assignment_overflow_type_checked[]
+        def err = shouldFail '''
+            @groovy.transform.TypeChecked
+            def m() {
+                def (a, b, c) = [1, 2]
+            }
+        '''
+        assert err.message.contains('Incorrect number of values. Expected:3 Was:2')
+        // end::multiple_assignment_overflow_type_checked[]
+    }
+
+    @Test
     void testMultipleAssignmentUnderflow() {
         // tag::multiple_assignment_underflow[]
         def (a, b) = [1, 2, 3]
@@ -94,6 +157,7 @@ class SemanticsTest extends CompilableTestSupport {
         // end::multiple_assignment_underflow[]
     }
 
+    @Test
     void testIfElse() {
         // tag::if_else_example[]
         def x = false
@@ -115,61 +179,94 @@ class SemanticsTest extends CompilableTestSupport {
         // end::if_else_example[]
     }
 
+    @Test
     void testSwitchCase() {
         // tag::switch_case_example[]
         def x = 1.23
         def result = ""
 
-        switch ( x ) {
-            case "foo":
-                result = "found foo"
-                // lets fall through
+        switch (x) {
+          case "foo":
+            result = "found foo"
+            // lets fall through
 
-            case "bar":
-                result += "bar"
+          case "bar":
+            result += "bar"
 
-            case [4, 5, 6, 'inList']:
-                result = "list"
-                break
+          case [4, 5, 6, 'inList']:
+            result = "list"
+            break
 
-            case 12..30:
-                result = "range"
-                break
+          case 12..30:
+            result = "range"
+            break
 
-            case Integer:
-                result = "integer"
-                break
+          case Integer:
+            result = "integer"
+            break
 
-            case Number:
-                result = "number"
-                break
+          case Number:
+            result = "number"
+            break
 
-            case ~/fo*/: // toString() representation of x matches the pattern?
-                result = "foo regex"
-                break
+          case ~/fo*/: // toString() representation of x matches the pattern?
+            result = "foo regex"
+            break
 
-            case { it < 0 }: // or { x < 0 }
-                result = "negative"
-                break
+          case { it < 0 }: // or { x < 0 }
+            result = "negative"
+            break
 
-            default:
-                result = "default"
+          default:
+            result = "default"
         }
 
         assert result == "number"
         // end::switch_case_example[]
     }
 
+    @Test
+    void testSwitchExpression() {
+        def person = 'Romeo'
+        // tag::switch_expression[]
+        def partner = switch(person) {
+            case 'Romeo'  -> 'Juliet'
+            case 'Adam'   -> 'Eve'
+            case 'Antony' -> 'Cleopatra'
+            case 'Bonnie' -> 'Clyde'
+        }
+        // end::switch_expression[]
+        assert partner == 'Juliet'
+    }
+
+    @Test
+    void testSwitchExpressionYieldBlock() {
+        // tag::switch_expression_yield[]
+        int n = 2
+        int value = switch (n) {
+            case 1 -> 10
+            case 2 -> {
+                int doubled = n * 10
+                yield doubled
+            }
+            default -> throw new IllegalArgumentException(String.valueOf(n))
+        }
+        // end::switch_expression_yield[]
+        assert value == 20
+    }
+
+    @Test
     void testClassicForLoop() {
         // tag::classic_for_loop_example[]
         String message = ''
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < 5; i += 1) {
             message += 'Hi '
         }
         assert message == 'Hi Hi Hi Hi Hi '
         // end::classic_for_loop_example[]
     }
 
+    @Test
     void testGroovyForLoop() {
         // tag::groovy_for_loop_example[]
         // iterate over a range
@@ -187,15 +284,14 @@ class SemanticsTest extends CompilableTestSupport {
         assert x == 10
 
         // iterate over an array
-        def array = (0..4).toArray()
         x = 0
-        for ( i in array ) {
+        for ( i in new int[]{0, 1, 2, 3, 4} ) {
             x += i
         }
         assert x == 10
 
         // iterate over a map
-        def map = ['abc':1, 'def':2, 'xyz':3]
+        def map = [a:1, b:2, c:3]
         x = 0
         for ( e in map ) {
             x += e.value
@@ -210,15 +306,20 @@ class SemanticsTest extends CompilableTestSupport {
         assert x == 6
 
         // iterate over the characters in a string
-        def text = "abc"
         def list = []
-        for (c in text) {
+        for ( c in 'abc' ) {
             list.add(c)
         }
-        assert list == ["a", "b", "c"]
+        assert list == ['a', 'b', 'c']
+
+        // iterate with index
+        for ( int i, k in map.keySet() ) {
+            assert map.get(k) == i + 1
+        }
         // end::groovy_for_loop_example[]
     }
 
+    @Test
     void testWhileLoop() {
         // tag::while_loop_example[]
         def x = 0
@@ -232,6 +333,7 @@ class SemanticsTest extends CompilableTestSupport {
         // end::while_loop_example[]
     }
 
+    @Test
     void testTryCatch() {
         // tag::try_catch_example[]
         try {
@@ -243,6 +345,7 @@ class SemanticsTest extends CompilableTestSupport {
         // end::try_catch_example[]
     }
 
+    @Test
     void testTryCatchFinally() {
         // tag::try_catch_finally_example[]
         def z
@@ -261,6 +364,7 @@ class SemanticsTest extends CompilableTestSupport {
         // end::try_catch_finally_example[]
     }
 
+    @Test
     void testDestructuringMultipleAssignment() {
         // tag::destructuring[]
         def coordinates = new Coordinates(latitude: 43.23, longitude: 3.67) // <1>
@@ -271,18 +375,19 @@ class SemanticsTest extends CompilableTestSupport {
         assert lo == 3.67
         // end::destructuring[]
     }
-}
 
-// tag::coordinates-class[]
-@Immutable
-class Coordinates {
-    double latitude
-    double longitude
+    static
+    // tag::coordinates-class[]
+    @Immutable
+    class Coordinates {
+        double latitude
+        double longitude
 
-    double getAt(int idx) {
-        if (idx == 0) latitude
-        else if (idx == 1) longitude
-        else throw new Exception("Wrong coordinate index, use 0 or 1")
+        double getAt(int idx) {
+            if (idx == 0) latitude
+            else if (idx == 1) longitude
+            else throw new Exception('Wrong coordinate index, use 0 or 1')
+        }
     }
+    // end::coordinates-class[]
 }
-// end::coordinates-class[]

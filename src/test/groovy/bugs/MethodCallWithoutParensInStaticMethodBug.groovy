@@ -16,16 +16,18 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class MethodCallWithoutParensInStaticMethodBug extends GroovyTestCase {
 
+class MethodCallWithoutParensInStaticMethodBug {
+
+    @Test
     void testBug() {
         staticMethod()
     }
-    
+
     static void staticMethod() {
         println 'hello'[1]
     }

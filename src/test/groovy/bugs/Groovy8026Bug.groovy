@@ -16,12 +16,16 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy8026Bug extends GroovyTestCase {
-    void testJavaBeanPropertiesAvailableInInnerClasses() {
+import static groovy.test.GroovyAssert.assertScript
+
+
+class Groovy8026Bug {
+    @Test
+    void testMatcherGetAtCases() {
         assertScript '''
             def mm = '1 2 3 4 5 6 7 8 9' =~ /\\d/
             assert mm.collect { it }.toString() == '[1, 2, 3, 4, 5, 6, 7, 8, 9]'

@@ -18,29 +18,34 @@
  */
 package org.codehaus.groovy.vmplugin.v8;
 
-import groovy.lang.AdaptingMetaClass;
 import groovy.lang.Closure;
 import groovy.lang.ExpandoMetaClass;
 import groovy.lang.GroovyInterceptable;
 import groovy.lang.GroovyObject;
 import groovy.lang.GroovyRuntimeException;
 import groovy.lang.GroovySystem;
+import groovy.lang.MetaBeanProperty;
 import groovy.lang.MetaClass;
 import groovy.lang.MetaClassImpl;
 import groovy.lang.MetaClassImpl.MetaConstructor;
 import groovy.lang.MetaMethod;
 import groovy.lang.MetaProperty;
 import groovy.lang.MissingMethodException;
-import groovy.transform.Internal;
+import groovy.lang.ProxyMetaClass;
+import org.apache.groovy.internal.metaclass.GroovyObjectOverrides;
+import org.apache.groovy.runtime.indy.IndyInvalidation;
 import org.codehaus.groovy.GroovyBugError;
 import org.codehaus.groovy.reflection.CachedField;
 import org.codehaus.groovy.reflection.CachedMethod;
+import org.codehaus.groovy.reflection.android.AndroidSupport;
 import org.codehaus.groovy.reflection.ClassInfo;
 import org.codehaus.groovy.reflection.GeneratedMetaMethod;
 import org.codehaus.groovy.reflection.stdclasses.CachedSAMClass;
+import org.codehaus.groovy.runtime.ArrayTypeUtils;
 import org.codehaus.groovy.runtime.GeneratedClosure;
 import org.codehaus.groovy.runtime.GroovyCategorySupport;
-import org.codehaus.groovy.runtime.GroovyCategorySupport.CategoryMethod;
+import org.codehaus.groovy.runtime.MetaClassHelper;
+import org.codehaus.groovy.runtime.MethodClosure;
 import org.codehaus.groovy.runtime.NullObject;
 import org.codehaus.groovy.runtime.dgmimpl.NumberNumberMetaMethod;
 import org.codehaus.groovy.runtime.metaclass.ClosureMetaClass;
@@ -49,70 +54,136 @@ import org.codehaus.groovy.runtime.metaclass.MethodMetaProperty;
 import org.codehaus.groovy.runtime.metaclass.NewInstanceMetaMethod;
 import org.codehaus.groovy.runtime.metaclass.NewStaticMetaMethod;
 import org.codehaus.groovy.runtime.metaclass.ReflectionMetaMethod;
+import org.codehaus.groovy.runtime.typehandling.DefaultTypeTransformation;
 import org.codehaus.groovy.runtime.wrappers.Wrapper;
+import org.codehaus.groovy.util.FastArray;
+import org.codehaus.groovy.vmplugin.VMPlugin;
 import org.codehaus.groovy.vmplugin.VMPluginFactory;
-import org.codehaus.groovy.vmplugin.v8.IndyInterface.CallType;
 
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
-import java.lang.invoke.MutableCallSite;
+import java.lang.invoke.SwitchPoint;
 import java.lang.reflect.Array;
 import java.lang.reflect.Constructor;
-import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashSet;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.function.Predicate;
 
-import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.ARRAYLIST_CONSTRUCTOR;
+import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.asCallSiteType;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.BEAN_CONSTRUCTOR_PROPERTY_SETTER;
-import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.BOOLEAN_IDENTITY;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.CLASS_FOR_NAME;
+import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.INVOKE_REFLECTIVELY;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.DTT_CAST_TO_TYPE;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.EQUALS;
+import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.explicitCastToCallSiteType;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.GROOVY_CAST_EXCEPTION;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.GROOVY_OBJECT_GET_PROPERTY;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.GROOVY_OBJECT_INVOKER;
-import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.HASHSET_CONSTRUCTOR;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.HAS_CATEGORY_IN_CURRENT_THREAD_GUARD;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.INTERCEPTABLE_INVOKER;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.IS_NULL;
+import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.META_CLASS_INVOKE_METHOD;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.META_CLASS_INVOKE_STATIC_METHOD;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.META_METHOD_INVOKER;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.META_PROPERTY_GETTER;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.MOP_GET;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.MOP_INVOKE_CONSTRUCTOR;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.MOP_INVOKE_METHOD;
+import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.NON_NULL;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.NULL_REF;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.SAME_CLASS;
+import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.SAME_CLASSES;
+import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.SAME_CLASSES_2;
+import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.SAME_CLASSES_3;
+import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.SAME_CLASSES_4;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.SAME_MC;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.SAM_CONVERSION;
+import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.SET_PROPERTY;
+import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.STRONG_AS_TYPE_CACHE;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.UNWRAP_EXCEPTION;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.UNWRAP_METHOD;
 import static org.codehaus.groovy.vmplugin.v8.IndyGuardsFiltersAndSignatures.unwrap;
+import static org.codehaus.groovy.vmplugin.v8.IndyInterface.CallType;
 import static org.codehaus.groovy.vmplugin.v8.IndyInterface.LOG;
 import static org.codehaus.groovy.vmplugin.v8.IndyInterface.LOG_ENABLED;
-import static org.codehaus.groovy.vmplugin.v8.IndyInterface.LOOKUP;
-import static org.codehaus.groovy.vmplugin.v8.IndyInterface.switchPoint;
+import static org.codehaus.groovy.vmplugin.v8.IndyInterface.applyMopSwitchPoints;
 
+/**
+ * Base state holder for invokedynamic method, property, constructor, and cast selection.
+ */
 public abstract class Selector {
+    /**
+     * Effective invocation arguments, possibly after spread-call normalization.
+     */
     public Object[] args, originalArguments;
+    /**
+     * Selected meta method, when method dispatch resolves through the metaclass.
+     */
     public MetaMethod method;
+    /**
+     * Call-site target type and the currently adapted working type.
+     */
     public MethodType targetType, currentType;
+    /**
+     * Name of the method or property being resolved.
+     */
     public String name;
+    /**
+     * Method handle assembled for the current dispatch path.
+     */
     public MethodHandle handle;
+    /**
+     * Flags controlling metaclass fallback usage and call-site caching.
+     */
     public boolean useMetaClass = false, cache = true;
-    public MutableCallSite callSite;
+    /**
+     * Call site being linked.
+     */
+    public CacheableCallSite callSite;
+    /**
+     * Sending class used for visibility and MOP decisions.
+     */
     public Class<?> sender;
+    /**
+     * Indicates whether the selected target accepts varargs.
+     */
     public boolean isVargs;
+    /**
+     * Flags tracking safe navigation and spread-call semantics.
+     */
     public boolean safeNavigation, safeNavigationOrig, spread;
+    /**
+     * Indicates whether spread-collector adaptation should be skipped.
+     */
     public boolean skipSpreadCollector;
+    /**
+     * Indicates whether the invocation is a {@code this} call.
+     */
     public boolean thisCall;
+    /**
+     * Class used as the selection base for metaclass lookups.
+     */
     public Class<?> selectionBase;
+    /**
+     * Controls whether Groovy runtime exceptions are unwrapped around the target.
+     */
     public boolean catchException = true;
+    /**
+     * Call-site category associated with this selector.
+     */
     public CallType callType;
+
+    /**
+     * Receiver's class-domain MetaClass SwitchPoint, captured before
+     * selection reads MOP state (see {@code captureTokenAndGetMetaClass});
+     * {@code null} until then.
+     */
+    SwitchPoint mopSwitchPoint;
 
     /**
      * Cache values for read-only access
@@ -120,173 +191,200 @@ public abstract class Selector {
     private static final CallType[] CALL_TYPE_VALUES = CallType.values();
 
     /**
-     * Returns the Selector
+     * Returns a Selector or throws a GroovyBugError.
      */
-    public static Selector getSelector(MutableCallSite callSite, Class<?> sender, String methodName, int callID, boolean safeNavigation, boolean thisCall, boolean spreadCall, Object[] arguments) {
+    public static Selector getSelector(CacheableCallSite callSite, Class<?> sender, String methodName, int callID, boolean safeNavigation, boolean thisCall, boolean spreadCall, Object[] arguments) {
         CallType callType = CALL_TYPE_VALUES[callID];
-        switch (callType) {
-            case INIT:
-                return new InitSelector(callSite, sender, methodName, callType, safeNavigation, thisCall, spreadCall, arguments);
-            case METHOD:
-                return new MethodSelector(callSite, sender, methodName, callType, safeNavigation, thisCall, spreadCall, arguments);
-            case GET:
-                return new PropertySelector(callSite, sender, methodName, callType, safeNavigation, thisCall, spreadCall, arguments);
-            case SET:
-                throw new GroovyBugError("your call tried to do a property set, which is not supported.");
-            case CAST:
-                return new CastSelector(callSite, arguments);
-            default:
-                throw new GroovyBugError("unexpected call type");
-        }
+        return switch (callType) {
+            case INIT      -> new InitSelector(callSite, sender, methodName, callType, safeNavigation, thisCall, spreadCall, arguments);
+            case METHOD    -> new MethodSelector(callSite, sender, methodName, callType, safeNavigation, thisCall, spreadCall, arguments);
+            case GET       -> new PropertySelector(callSite, sender, methodName, callType, safeNavigation, thisCall, spreadCall, arguments);
+            case SET       -> new SetPropertySelector(callSite, sender, methodName, callType, safeNavigation, thisCall, spreadCall, arguments);
+            case CAST      -> new CastSelector(callSite, sender, methodName, arguments);
+            case INTERFACE -> new InterfaceSelector(callSite, sender, methodName, callType, safeNavigation, thisCall, spreadCall, arguments);
+            default        -> throw new GroovyBugError("unexpected call type");
+        };
     }
 
+    /**
+     * Returns {@link NullObject#getNullObject()} if the receiver
+     * (args[0]) is null.  If it is not null, the receiver itself
+     * is returned.
+     */
+    public Object getCorrectedReceiver() {
+        var receiver = args[0];
+        if (receiver == null) {
+            if (LOG_ENABLED) LOG.info("receiver is null");
+            receiver = NullObject.getNullObject();
+        }
+        return receiver;
+    }
+
+    /**
+     * Finalizes the call-site target represented by this selector.
+     */
     abstract void setCallSiteTarget();
 
     /**
-     * Helper method to transform the given arguments, consisting of the receiver
-     * and the actual arguments in an Object[], into a new Object[] consisting
-     * of the receiver and the arguments directly. Before the size of args was
-     * always 2, the returned Object[] will have a size of 1+n, where n is the
-     * number arguments.
+     * Experimental, guarded by {@code groovy.indy.cold.reflection}: runs only
+     * the method-selection portion of linking, populating {@link #method}
+     * without constructing any invocation handle, so the cold tier can
+     * dispatch reflectively and defer all MethodHandle building to promotion.
+     * Selector types that do not support this return {@code null}; callers
+     * then continue with the full {@link #setCallSiteTarget()} path (selection
+     * is deterministic, so re-running it there is safe).
+     *
+     * @return the selected meta method, or {@code null} if this call needs the
+     * full handle-building path
      */
-    private static Object[] spread(Object[] args, boolean spreadCall) {
-        if (!spreadCall) return args;
-        Object[] normalArguments = (Object[]) args[1];
-        Object[] ret = new Object[normalArguments.length + 1];
-        ret[0] = args[0];
-        System.arraycopy(normalArguments, 0, ret, 1, ret.length - 1);
-        return ret;
+    MetaMethod selectForColdReflection() {
+        return null;
     }
+
+    /**
+     * Returns the metaclass captured by {@link #selectForColdReflection()}.
+     *
+     * @return the selection metaclass, or {@code null} if selection did not run
+     */
+    MetaClass getSelectionMetaClass() {
+        return null;
+    }
+
+    //--------------------------------------------------------------------------
 
     private static class CastSelector extends MethodSelector {
         private final Class<?> staticSourceType, staticTargetType;
+        private boolean selectedThroughMetaClass;
 
-        public CastSelector(MutableCallSite callSite, Object[] arguments) {
-            super(callSite, Selector.class, "", CallType.CAST, false, false, false, arguments);
+        /**
+         * Creates a selector for cast call sites.
+         *
+         * @param callSite the call site being linked
+         * @param sender the sending class
+         * @param spec the cast specifier name
+         * @param args the invocation arguments
+         */
+        CastSelector(final CacheableCallSite callSite, final Class<?> sender, final String spec, final Object[] args) {
+            super(callSite, sender, spec, CallType.CAST, Boolean.FALSE, Boolean.FALSE, Boolean.FALSE, args);
             this.staticSourceType = callSite.type().parameterType(0);
             this.staticTargetType = callSite.type().returnType();
         }
 
+        /**
+         * Builds the method handle used to perform the cast.
+         */
         @Override
         public void setCallSiteTarget() {
-            // targetTypes String, Enum and Class are handled 
-            // by the compiler already
-            // Boolean / boolean
-            handleBoolean();
-            handleNullWithoutBoolean();
+            // NOTE: target types String, Class, and Enum are handled by the compiler
 
-            // !! from here on args[0] is always not null !!
-            handleInstanceCase();
+            if (handle == null) handleBoolean();
+            if (handle == null) handleNullWithoutBoolean();
 
-            // targetType is abstract Collection fitting for HashSet or ArrayList
-            // and object is Collection or array
-            handleCollections();
-            handleSAM();
+            // NOTE: !! from here on if handle is null, args[0] is always not null !!
+
+            if (handle == null) handleIsAnInstance();
+            if (handle == null) handleSAM();
 
             // will handle :
-            //      * collection case where argument is an array
+            //      * collection conversion
             //      * array transformation (staticTargetType.isArray())
             //      * constructor invocation
-            //      * final GroovyCastException
-            castToTypeFallBack();
+            //      * throw GroovyCastException
+            if (handle == null) {
+                handle = MethodHandles.insertArguments(DTT_CAST_TO_TYPE, 1, staticTargetType);
+            }
 
-            if (!handle.type().equals(callSite.type())) castAndSetGuards();
+            if (!handle.type().equals(callSite.type())) {
+                castAndSetGuards();
+            }
         }
 
         private void castAndSetGuards() {
-            handle = MethodHandles.explicitCastArguments(handle, targetType);
+            handle = explicitCastToCallSiteType(handle, targetType);
             setGuards(args[0]);
             doCallSiteTargetSet();
         }
 
-        private void handleNullWithoutBoolean() {
-            if (handle != null || args[0] != null) return;
+        /**
+         * A cast depends on the receiver's metaclass only when it selects {@code asBoolean} through it. Every other
+         * cast is decided by the class of the value, which the argument and class switch point guards cover, so
+         * reading the metaclass would only call {@code getMetaClass()} on the value: a class-based proxy forwards
+         * that call to its target.
+         */
+        @Override
+        protected boolean guardsReceiverMetaClass() {
+            return selectedThroughMetaClass;
+        }
 
-            if (staticTargetType.isPrimitive()) {
-                handle = MethodHandles.insertArguments(GROOVY_CAST_EXCEPTION, 1, staticTargetType);
-                // need to call here here because we used the static target type
-                // it won't be done otherwise because handle.type() == callSite.type()
-                castAndSetGuards();
-            } else {
-                handle = MethodHandles.identity(staticSourceType);
+        private void handleNullWithoutBoolean() {
+            if (args[0] == null) {
+                if (staticTargetType.isPrimitive()) {
+                    handle = MethodHandles.insertArguments(GROOVY_CAST_EXCEPTION, 1, staticTargetType);
+                    // need to call here because we used the static target type
+                    // it won't be done otherwise because handle.type() == callSite.type()
+                    castAndSetGuards();
+                } else {
+                    handle = MethodHandles.identity(staticSourceType);
+                }
             }
         }
 
-        private void handleInstanceCase() {
-            if (handle != null) return;
-
+        private void handleIsAnInstance() {
             if (staticTargetType.isAssignableFrom(args[0].getClass())) {
                 handle = MethodHandles.identity(staticSourceType);
             }
         }
 
-        private static boolean isAbstractClassOf(Class<?> toTest, Class<?> givenOnCallSite) {
-            if (!toTest.isAssignableFrom(givenOnCallSite)) return false;
-            if (givenOnCallSite.isInterface()) return true;
-            return Modifier.isAbstract(givenOnCallSite.getModifiers());
-        }
-
-        private void handleCollections() {
-            if (handle != null) return;
-
-            if (!(args[0] instanceof Collection)) return;
-            if (isAbstractClassOf(HashSet.class, staticTargetType)) {
-                handle = HASHSET_CONSTRUCTOR;
-            } else if (isAbstractClassOf(ArrayList.class, staticTargetType)) {
-                handle = ARRAYLIST_CONSTRUCTOR;
-            }
-        }
-
         private void handleSAM() {
-            if (handle != null) return;
-
-            if (!(args[0] instanceof Closure)) return;
-            Method m = CachedSAMClass.getSAMMethod(staticTargetType);
-            if (m == null) return;
-            //TODO: optimize: add guard based on type Closure
-            handle = MethodHandles.insertArguments(SAM_CONVERSION, 1, m, staticTargetType);
-        }
-
-        private void castToTypeFallBack() {
-            if (handle != null) return;
-
-            // generic fallback to castToType
-            handle = MethodHandles.insertArguments(DTT_CAST_TO_TYPE, 1, staticTargetType);
+            if (args[0] instanceof Closure) {
+                Method m = CachedSAMClass.getSAMMethod(staticTargetType);
+                if (m == null) return;
+                // TODO: optimize: add guard based on type Closure
+                handle = MethodHandles.insertArguments(SAM_CONVERSION, 1, m, staticTargetType);
+            }
         }
 
         private void handleBoolean() {
-            if (handle != null) return;
-
-            // boolean->boolean, Boolean->boolean, boolean->Boolean
-            // is handled by compiler
-            // that leaves (T)Z and (T)Boolean, where T is the static type
-            // but runtime type of T might be Boolean
-
-            boolean primitive = staticTargetType == boolean.class;
+            boolean primitive = (staticTargetType == boolean.class);
             if (!primitive && staticTargetType != Boolean.class) return;
-            if (args[0] == null) {
-                if (primitive) {
-                    handle = MethodHandles.constant(boolean.class, false);
-                    handle = MethodHandles.dropArguments(handle, 0, staticSourceType);
-                } else {
-                    handle = BOOLEAN_IDENTITY;
-                }
-            } else if (args[0] instanceof Boolean) {
-                // give value through or unbox
-                handle = BOOLEAN_IDENTITY;
-            } else {
-                //call asBoolean
-                name = "asBoolean";
-                super.setCallSiteTarget();
+            // boolean->boolean, Boolean->boolean, boolean->Boolean are handled by the compiler
+            // which leaves (T)Z and (T)Boolean, where T is the static type but runtime type of T might be Boolean
+
+            MethodHandle ifNull = asCallSiteType(IS_NULL, MethodType.methodType(boolean.class, staticSourceType));
+
+            MethodHandle thenZero;
+            if (primitive) { // false
+                thenZero = MethodHandles.dropArguments(MethodHandles.constant(boolean.class, Boolean.FALSE), 0, staticSourceType);
+            } else { // (Boolean)null
+                thenZero = MethodHandles.identity(staticSourceType).asType(MethodType.methodType(Boolean.class, staticSourceType));
             }
+
+            name = "asBoolean";
+            selectedThroughMetaClass = true;
+            super.setCallSiteTarget();
+            MethodHandle elseCallAsBoolean = handle;
+
+            handle = MethodHandles.guardWithTest(ifNull, thenZero, elseCallAsBoolean);
         }
     }
 
     private static class PropertySelector extends MethodSelector {
-        private boolean insertName = false;
+        private boolean insertName;
 
-        public PropertySelector(MutableCallSite callSite, Class<?> sender, String methodName, CallType callType, boolean safeNavigation, boolean thisCall, boolean spreadCall, Object[] arguments) {
-            super(callSite, sender, methodName, callType, safeNavigation, thisCall, spreadCall, arguments);
+        /**
+         * Creates a selector for property-get call sites.
+         *
+         * @param callSite the call site being linked
+         * @param sender the sending class
+         * @param propertyName the property name
+         * @param callType the call-site category
+         * @param safeNavigation whether safe navigation is enabled
+         * @param thisCall whether the invocation is a {@code this} call
+         * @param spreadCall whether spread-call semantics are active
+         * @param arguments the invocation arguments
+         */
+        public PropertySelector(CacheableCallSite callSite, Class<?> sender, String propertyName, CallType callType, boolean safeNavigation, boolean thisCall, boolean spreadCall, Object[] arguments) {
+            super(callSite, sender, propertyName, callType, safeNavigation, thisCall, spreadCall, arguments);
         }
 
         /**
@@ -298,20 +396,21 @@ public abstract class Selector {
         }
 
         /**
-         * this method chooses a property from the meta class.
+         * Chooses a property from the metaclass.
          */
         @Override
         public void chooseMeta(MetaClassImpl mci) {
-            Object receiver = getCorrectedReceiver();
+            var receiver = getCorrectedReceiver();
             if (receiver instanceof GroovyObject) {
-                Class<?> aClass = receiver.getClass();
-                try {
-                    Method reflectionMethod = aClass.getMethod("getProperty", String.class);
-                    if (!reflectionMethod.isSynthetic() && !isMarkedInternal(reflectionMethod)) {
-                        handle = MethodHandles.insertArguments(GROOVY_OBJECT_GET_PROPERTY, 1, name);
-                        return;
-                    }
-                } catch (ReflectiveOperationException ignored) {
+                // hasCustomGetProperty, the criterion of the classic call sites too, not the
+                // overridesGetProperty of ScriptBytecodeAdapter.getProperty; the two differ on
+                // purpose (see GroovyObjectOverrides). A getProperty that is neither the GroovyObject
+                // default nor synthetic or @Internal answers every read; a class that cannot be
+                // inspected counts as having one, so that the read reaches its getProperty
+                // rather than going around it to the metaclass
+                if (GroovyObjectOverrides.hasCustomGetProperty(receiver.getClass())) {
+                    handle = MethodHandles.insertArguments(GROOVY_OBJECT_GET_PROPERTY, 1, name);
+                    return;
                 }
             } else if (receiver instanceof Class) {
                 handle = MOP_GET;
@@ -321,43 +420,44 @@ public abstract class Selector {
             }
 
             if (method != null || mci == null) return;
-            Class<?> chosenSender = this.sender;
-            if (mci.getTheClass() != chosenSender && GroovyCategorySupport.hasCategoryInCurrentThread()) {
-                chosenSender = mci.getTheClass();
+
+            selectionBase = sender;
+            if (sender != mci.getTheClass()) {
+                final Class<?> thisType;
+                if (GroovyCategorySupport.hasCategoryInCurrentThread()) { // slow path for category property
+                    selectionBase = mci.getTheClass();
+                } else if ((thisType = getThisType(sender)).isInstance(receiver)) { // GROOVY-5438 for private property
+                    selectionBase = thisType;
+                }
             }
-            MetaProperty res = mci.getEffectiveGetMetaProperty(chosenSender, receiver, name, false);
-            if (res instanceof MethodMetaProperty) {
-                MethodMetaProperty mmp = (MethodMetaProperty) res;
-                method = mmp.getMetaMethod();
-                insertName = true;
-            } else if (res instanceof CachedField) {
-                CachedField cf = (CachedField) res;
-                Field f = cf.getCachedField();
+            if (LOG_ENABLED) LOG.info("selectionBase set to " + selectionBase);
+
+            var mp = mci.getEffectiveGetMetaProperty(selectionBase, receiver, name, false);
+            if (mp instanceof MethodMetaProperty) {
+                method = ((MethodMetaProperty) mp).getMetaMethod();
+                insertName = true; // pass "name" field as argument
+            } else if (mp instanceof CachedField && !mp.isStatic()) {
                 try {
-                    handle = LOOKUP.unreflectGetter(f);
-                    if (Modifier.isStatic(f.getModifiers())) {
-                        // normally we would do the following
-                        // handle = MethodHandles.dropArguments(handle,0,Class.class);
-                        // but because there is a bug in invokedynamic in all jdk7 versions 
-                        // maybe use Unsafe.ensureClassInitialized
-                        handle = META_PROPERTY_GETTER.bindTo(res);
-                    }
-                } catch (IllegalAccessException iae) {
-                    throw new GroovyBugError(iae);
+                    // GROOVY-9144, GROOVY-9596: unreflect against the call-site lookup before
+                    // forcing access; the lookup carries the caller's own access rights, exactly
+                    // as the bytecode a Java compiler would emit, so it may still reach e.g. an
+                    // inherited protected field (FilterReader#in from a subclass)
+                    handle = ((CachedField) mp).asAccessMethod(callSite.getLookup());
+                } catch (IllegalAccessException e) {
+                    // GROOVY-12314: refusal is an access-control outcome, not an internal
+                    // error; leave the handle unset so the full MOP path applies -- it
+                    // retries the reflective route and converts a reflective failure
+                    // into the normal missing-member handling
                 }
             } else {
-                handle = META_PROPERTY_GETTER.bindTo(res);
+                handle = META_PROPERTY_GETTER.bindTo(mp);
             }
-        }
-
-        private boolean isMarkedInternal(Method reflectionMethod) {
-            return reflectionMethod.getAnnotation(Internal.class) != null;
         }
 
         /**
          * Additionally to the normal {@link MethodSelector#setHandleForMetaMethod()}
-         * task we have to also take care of generic getter methods, that depend
-         * one the name.
+         * task we have to also take care of generic getter methods, that depends
+         * on the name.
          */
         @Override
         public void setHandleForMetaMethod() {
@@ -383,10 +483,183 @@ public abstract class Selector {
         }
     }
 
+    /**
+     * Property-write based {@link Selector} (GROOVY-12138). Call sites have the
+     * shape {@code (receiver, value)void}; {@code args[0]} is the receiver and
+     * {@code args[1]} the value being assigned, so the standard guard machinery
+     * (receiver metaclass identity, switch point, argument classes) applies
+     * unchanged — the value-class guard triggers re-selection when the assigned
+     * type changes.
+     * <p>
+     * The fast path covers the plain cases only: a non-static
+     * {@link MetaBeanProperty} whose setter accepts the runtime value type
+     * directly, or a writable field of matching type. Everything else — type
+     * coercion, {@code propertyMissing}, maps, static and expando properties —
+     * falls through to {@link MetaObjectProtocol#setProperty}, which is exactly
+     * the path all writes took before this selector existed.
+     */
+    private static class SetPropertySelector extends MethodSelector {
+
+        private static final Class<?>[] SET_PROPERTY_PARAMS = {String.class, Object.class};
+
+        /**
+         * Forwards the arguments to {@link MethodSelector}.
+         * {@code propertyName} is stored as the selected name. The original
+         * {@code safeNavigation} flag is kept, and null-safe dispatch is enabled
+         * only when that flag is true and {@code arguments[0]} is null. When {@code spreadCall} is true,
+         * {@code arguments[1]} is expanded after the receiver and a primitive array
+         * in that expansion is boxed.
+         *
+         * @param callSite the call site being linked
+         * @param sender the class that contains the call
+         * @param propertyName the property being written
+         * @param callType the call kind
+         * @param safeNavigation whether the call was written with {@code ?.}
+         * @param thisCall whether the receiver is {@code this}
+         * @param spreadCall whether the argument list is spread
+         * @param arguments receiver at index 0 and the assigned value at index 1,
+         *                  or the spread array at index 1 when {@code spreadCall} is true
+         */
+        public SetPropertySelector(CacheableCallSite callSite, Class<?> sender, String propertyName, CallType callType, boolean safeNavigation, boolean thisCall, boolean spreadCall, Object[] arguments) {
+            super(callSite, sender, propertyName, callType, safeNavigation, thisCall, spreadCall, arguments);
+        }
+
+        /**
+         * Property writes are not routed through {@code invokeMethod}, thus always returns false.
+         */
+        @Override
+        public boolean setInterceptor() {
+            return false;
+        }
+
+        /**
+         * Chooses the setter or field for a property write from the metaclass.
+         * The fast path is restricted to shapes whose resolution provably does
+         * not depend on the sender (see {@code MetaClassImpl#setProperty}'s
+         * field-vs-setter precedence, GROOVY-8283) or on receiver kind (maps,
+         * GROOVY-8065/GROOVY-11367; overridden {@code setProperty}). Anything
+         * else keeps the exact classic behavior via the adapter fallback in
+         * {@link #setMetaClassCallHandleIfNeeded}.
+         */
+        @Override
+        public void chooseMeta(MetaClassImpl mci) {
+            if (method != null || mci == null) return;
+            // ExpandoMetaClass (also produced by Class.mixin and by changing
+            // the metaClass of a single object) overrides setProperty itself;
+            // only a plain MetaClassImpl resolution is safe to mirror here —
+            // mirroring the GET selector, which also keeps EMC off its fast
+            // metaclass path. This check, not the metaclass probe below, is
+            // what keeps a setProperty from an expando closure or a mixin
+            // receiving writes: for a class with a mixed-in setProperty,
+            // pickMethod returns the GroovyObject default.
+            if (mci.getClass() != MetaClassImpl.class) return;
+            Object receiver = getCorrectedReceiver();
+            if (receiver instanceof Class || receiver instanceof Map) return;
+            if (GroovyCategorySupport.hasCategoryInCurrentThread()) return; // categories can contribute setters
+
+            // a setProperty(String,Object) of the class's own, whether declared,
+            // inherited or a default method of another interface, intercepts
+            // every write; only the GroovyObject default is the benign
+            // non-intercepting case (its behavior is the metaclass path this
+            // selector mirrors). Reflection sees all of those: it is the probe
+            // ScriptBytecodeAdapter#setProperty makes, and a class it cannot
+            // inspect counts as overriding, which keeps the adapter path. The
+            // metaclass probe also turns away any other setProperty the
+            // metaclass picks.
+            if (receiver instanceof GroovyObject && GroovyObjectOverrides.overridesSetProperty(receiver.getClass())) return;
+            MetaMethod customSetProperty = mci.pickMethod("setProperty", SET_PROPERTY_PARAMS);
+            if (customSetProperty != null
+                    && customSetProperty.getDeclaringClass().getTheClass() != GroovyObject.class) {
+                return;
+            }
+
+            MetaProperty mp = mci.getMetaProperty(name);
+            Object value = args[1];
+            if (mp instanceof MetaBeanProperty mbp && !mp.isStatic()) {
+                MetaMethod setter = mbp.getSetter();
+                CachedField field = mbp.getField();
+                if (setter != null) {
+                    // a non-private backing field can take precedence over the
+                    // setter depending on the sender (GROOVY-8283): only the
+                    // private-or-absent-field shape is sender-independent
+                    if ((field == null || field.isPrivate()) && acceptsDirectly(setter, value)) {
+                        method = setter;
+                        if (LOG_ENABLED) LOG.info("direct setter selected for property write: " + setter);
+                    }
+                    return;
+                }
+                if (field != null) {
+                    setFieldWriteHandle(field, value);
+                }
+            } else if (mp instanceof CachedField cf && !mp.isStatic()) {
+                setFieldWriteHandle(cf, value);
+            }
+            // otherwise (no meta property, listeners, expando, propertyMissing, ...): adapter path
+        }
+
+        private boolean acceptsDirectly(MetaMethod setter, Object value) {
+            var parameterTypes = setter.getParameterTypes();
+            if (parameterTypes.length != 1 || setter.isVargsMethod()) return false;
+            if (!Modifier.isPublic(setter.getModifiers())) return false;
+            Class<?> parameterType = parameterTypes[0].getTheClass();
+            if (value == null) return !parameterType.isPrimitive();
+            return TypeHelper.getWrapperClass(parameterType).isInstance(value);
+        }
+
+        private void setFieldWriteHandle(CachedField field, Object value) {
+            // only public fields are sender-independent; the rest go through
+            // the sender-aware adapter path
+            if (!Modifier.isPublic(field.getModifiers()) || Modifier.isFinal(field.getModifiers())) return;
+            Class<?> fieldType = field.getType();
+            boolean accepts = (value == null) ? !fieldType.isPrimitive()
+                                              : TypeHelper.getWrapperClass(fieldType).isInstance(value);
+            if (!accepts) return; // needs coercion: adapter path
+            try {
+                // like the property-get field path: unreflect against the call-site lookup
+                handle = field.asWriteAccessMethod(callSite.getLookup());
+                if (LOG_ENABLED) LOG.info("direct field write handle set for property write");
+            } catch (IllegalAccessException e) {
+                // GROOVY-12314: refusal is an access-control outcome, not an internal
+                // error; leave handle unset so the sender-aware adapter path applies
+                if (LOG_ENABLED) LOG.info("direct field write refused, using adapter path");
+            }
+        }
+
+        /**
+         * All remaining property writes go through the exact classic path:
+         * {@code ScriptBytecodeAdapter.setProperty(value, sender, receiver, name)},
+         * bound with this call site's sender so sender-aware resolution
+         * (private members from inside the declaring class, precedence rules,
+         * maps, closure retry semantics) is preserved byte-for-byte.
+         */
+        @Override
+        public void setMetaClassCallHandleIfNeeded(boolean standardMetaClass) {
+            if (handle != null) return;
+            useMetaClass = true;
+            if (LOG_ENABLED) LOG.info("set adapter invocation path for property set.");
+            // SET_PROPERTY: (String name, Class sender, Object receiver, Object value)void
+            // binding the name/sender prefix leaves the call-site shape (receiver, value)void
+            handle = MethodHandles.insertArguments(SET_PROPERTY, 0, name, sender);
+        }
+    }
+
     private static class InitSelector extends MethodSelector {
+        private static final MethodType MT_OBJECT = MethodType.methodType(Object.class);
         private boolean beanConstructor;
 
-        public InitSelector(MutableCallSite callSite, Class<?> sender, String methodName, CallType callType, boolean safeNavigation, boolean thisCall, boolean spreadCall, Object[] arguments) {
+        /**
+         * Creates a selector for constructor call sites.
+         *
+         * @param callSite the call site being linked
+         * @param sender the sending class
+         * @param methodName the constructor pseudo-name
+         * @param callType the call-site category
+         * @param safeNavigation whether safe navigation is enabled
+         * @param thisCall whether the invocation is a {@code this} call
+         * @param spreadCall whether spread-call semantics are active
+         * @param arguments the invocation arguments
+         */
+        public InitSelector(CacheableCallSite callSite, Class<?> sender, String methodName, CallType callType, boolean safeNavigation, boolean thisCall, boolean spreadCall, Object[] arguments) {
             super(callSite, sender, methodName, callType, safeNavigation, thisCall, spreadCall, arguments);
         }
 
@@ -399,17 +672,17 @@ public abstract class Selector {
         }
 
         /**
-         * For a constructor call we always use the static meta class from the registry
+         * For a constructor call we always use the static metaclass from the registry
          */
         @Override
         public MetaClass getMetaClass() {
-            Object receiver = args[0];
-            mc = GroovySystem.getMetaClassRegistry().getMetaClass((Class<?>) receiver);
+            mc = GroovySystem.getMetaClassRegistry().getMetaClass((Class<?>) args[0]);
+            if (LOG_ENABLED) LOG.info("meta class is " + mc);
             return mc;
         }
 
         /**
-         * This method chooses a constructor from the meta class.
+         * This method chooses a constructor from the metaclass.
          */
         @Override
         public void chooseMeta(MetaClassImpl mci) {
@@ -417,8 +690,7 @@ public abstract class Selector {
             if (LOG_ENABLED) LOG.info("getting constructor");
             Object[] newArgs = removeRealReceiver(args);
             method = mci.retrieveConstructor(newArgs);
-            if (method instanceof MetaConstructor) {
-                MetaConstructor mcon = (MetaConstructor) method;
+            if (method instanceof MetaConstructor mcon) {
                 if (mcon.isBeanConstructor()) {
                     if (LOG_ENABLED) LOG.info("do beans constructor");
                     beanConstructor = true;
@@ -432,13 +704,12 @@ public abstract class Selector {
         @Override
         public void setHandleForMetaMethod() {
             if (method == null) return;
-            if (method instanceof MetaConstructor) {
+            if (method instanceof MetaConstructor mc) {
                 if (LOG_ENABLED) LOG.info("meta method is MetaConstructor instance");
-                MetaConstructor mc = (MetaConstructor) method;
                 isVargs = mc.isVargsMethod();
-                Constructor con = mc.getCachedConstrcutor().getCachedConstructor();
+                Constructor<?> con = mc.getCachedConstrcutor().getCachedConstructor();
                 try {
-                    handle = LOOKUP.unreflectConstructor(con);
+                    handle = this.callSite.getLookup().unreflectConstructor(con);
                     if (LOG_ENABLED) LOG.info("successfully unreflected constructor");
                 } catch (IllegalAccessException e) {
                     throw new GroovyBugError(e);
@@ -447,14 +718,14 @@ public abstract class Selector {
                 super.setHandleForMetaMethod();
             }
             if (beanConstructor) {
-                // we have handle that takes no arguments to create the bean, 
+                // we have handle that takes no arguments to create the bean,
                 // we have to use its return value to call #setBeanProperties with it
-                // and the meta class.
+                // and the metaclass.
 
                 // to do this we first bind the values to #setBeanProperties
                 MethodHandle con = BEAN_CONSTRUCTOR_PROPERTY_SETTER.bindTo(mc);
                 // inner class case
-                MethodType foldTargetType = MethodType.methodType(Object.class);
+                MethodType foldTargetType = MT_OBJECT;
                 if (args.length == 3) {
                     con = MethodHandles.dropArguments(con, 1, targetType.parameterType(1));
                     foldTargetType = foldTargetType.insertParameterTypes(0, targetType.parameterType(1));
@@ -468,7 +739,7 @@ public abstract class Selector {
 
         /**
          * In case of a bean constructor we don't do any varags or implicit null argument
-         * transformations. Otherwise we do the same as for {@link MethodSelector#correctParameterLength()}
+         * transformations. Otherwise, we do the same as for {@link MethodSelector#correctParameterLength()}
          */
         @Override
         public void correctParameterLength() {
@@ -501,17 +772,84 @@ public abstract class Selector {
         }
     }
 
+    private static class InterfaceSelector extends MethodSelector {
+        /**
+         * Creates a selector for interface-default-method call sites.
+         *
+         * @param callSite the call site being linked
+         * @param sender the sending class
+         * @param methodName the method name
+         * @param callType the call-site category
+         * @param safeNavigation whether safe navigation is enabled
+         * @param thisCall whether the invocation is a {@code this} call
+         * @param spreadCall whether spread-call semantics are active
+         * @param arguments the invocation arguments
+         */
+        public InterfaceSelector(CacheableCallSite callSite, Class<?> sender, String methodName, CallType callType, boolean safeNavigation, boolean thisCall, boolean spreadCall, Object[] arguments) {
+            super(callSite, sender, methodName, callType, safeNavigation, thisCall, spreadCall, arguments);
+        }
+
+        /**
+         * Returns the metaclass for the interface receiver type encoded in the call-site signature.
+         *
+         * @return the initialized metaclass
+         */
+        @Override
+        public MetaClass getMetaClass() {
+            mc = GroovySystem.getMetaClassRegistry().getMetaClass(targetType.parameterType(0));
+            mc.initialize();
+            if (LOG_ENABLED) LOG.info("meta class is " + mc);
+            return mc;
+        }
+
+        /**
+         * Uses the interface type as the selection base.
+         */
+        @Override
+        public void setSelectionBase() {
+            selectionBase = mc.getTheClass();
+            if (LOG_ENABLED) LOG.info("selectionBase set to " + selectionBase);
+        }
+
+        /**
+         * Unreflects an interface default method using {@code unreflectSpecial}.
+         *
+         * @param cachedMethod the cached reflective method
+         * @return a special-invocation handle for the method
+         * @throws IllegalAccessException if the sender cannot invoke the method
+         */
+        @Override
+        public MethodHandle unreflect(Method cachedMethod) throws IllegalAccessException {
+            return this.callSite.getLookup().unreflectSpecial(cachedMethod, this.sender); // throws if sender cannot invoke method
+        }
+    }
+
     /**
      * Method invocation based {@link Selector}.
-     * This Selector is called for method invocations and is base for cosntructor
+     * This Selector is called for method invocations and is base for constructor
      * calls as well as getProperty calls.
      */
     private static class MethodSelector extends Selector {
         private static final Object[] SINGLE_NULL_ARRAY = {null};
-        protected MetaClass mc;
         private boolean isCategoryMethod;
+        /**
+         * Metaclass used while selecting and invoking the target.
+         */
+        protected MetaClass mc;
 
-        public MethodSelector(MutableCallSite callSite, Class<?> sender, String methodName, CallType callType, Boolean safeNavigation, Boolean thisCall, Boolean spreadCall, Object[] arguments) {
+        /**
+         * Creates a selector for method-style call sites.
+         *
+         * @param callSite the call site being linked
+         * @param sender the sending class
+         * @param methodName the method name
+         * @param callType the call-site category
+         * @param safeNavigation whether safe navigation is enabled
+         * @param thisCall whether the invocation is a {@code this} call
+         * @param spreadCall whether spread-call semantics are active
+         * @param arguments the invocation arguments
+         */
+        public MethodSelector(CacheableCallSite callSite, Class<?> sender, String methodName, CallType callType, Boolean safeNavigation, Boolean thisCall, Boolean spreadCall, Object[] arguments) {
             this.callType = callType;
             this.targetType = callSite.type();
             this.name = methodName;
@@ -523,7 +861,7 @@ public abstract class Selector {
             this.safeNavigation = safeNavigation && arguments[0] == null;
             this.thisCall = thisCall;
             this.spread = spreadCall;
-            this.cache = !spread;
+            this.cache = !spreadCall;
 
             if (LOG_ENABLED) {
                 StringBuilder msg =
@@ -562,31 +900,59 @@ public abstract class Selector {
         }
 
         /**
-         * Gives the meta class to an Object.
+         * Gives the metaclass to an Object.
          */
         public MetaClass getMetaClass() {
-            Object receiver = args[0];
-            if (receiver == null) {
-                mc = NullObject.getNullObject().getMetaClass();
-            } else if (receiver instanceof GroovyObject) {
+            var receiver = getCorrectedReceiver();
+            if (receiver instanceof GroovyObject) {
                 mc = ((GroovyObject) receiver).getMetaClass();
-            } else if (receiver instanceof Class) {
-                Class<?> c = (Class<?>) receiver;
+            } else if (receiver instanceof Class<?> c) {
                 mc = GroovySystem.getMetaClassRegistry().getMetaClass(c);
-                this.cache &= !ClassInfo.getClassInfo(c).hasPerInstanceMetaClasses();
+                cache &= !ClassInfo.getClassInfo(c).hasPerInstanceMetaClasses();
             } else {
                 mc = ((MetaClassRegistryImpl) GroovySystem.getMetaClassRegistry()).getMetaClass(receiver);
-                this.cache &= !ClassInfo.getClassInfo(receiver.getClass()).hasPerInstanceMetaClasses();
+                cache &= !ClassInfo.getClassInfo(receiver.getClass()).hasPerInstanceMetaClasses();
             }
             mc.initialize();
-
+            if (LOG_ENABLED) LOG.info("meta class is " + mc);
             return mc;
         }
 
         /**
-         * Uses the meta class to get a meta method for a method call.
-         * There will be no meta method selected, if the meta class is no MetaClassImpl
-         * or the meta class is an AdaptingMetaClass.
+         * Captures the receiver's class-domain SwitchPoint into
+         * {@link #mopSwitchPoint} and resolves the metaclass under it,
+         * re-capturing when the token is invalidated by the resolution
+         * itself (lazy MetaClass creation bumps the class generation — the
+         * next pass finds the cached instance and converges) or by a racing
+         * MetaClass change. Selection thus starts with a token that was live
+         * after the metaclass reference was read: a change landing anywhere
+         * after that read invalidates the token, and the guard installed with
+         * it routes to the fallback and re-links, instead of publishing the
+         * stale selection under the post-change SwitchPoint where it would
+         * dispatch until an unrelated future invalidation.
+         * <p>
+         * The retry is bounded: some resolutions re-create the MetaClass on
+         * <em>every</em> lookup (e.g. ClosureMetaClass under
+         * {@code ExpandoMetaClass.enableGlobally()}, which
+         * {@code isValidWeakMetaClass} always rejects), each time bumping the
+         * generation, so no pass can ever end with a live token. Such
+         * selections degrade to uncacheable: no guards are installed and
+         * every call re-selects — always fresh, and free of the link-time
+         * livelock and the fallback recursion a dead-token guard would cause.
+         */
+        final void captureTokenAndGetMetaClass() {
+            for (int attempt = 0; attempt < 3; attempt++) {
+                mopSwitchPoint = IndyInvalidation.classSwitchPointFor(args[0]);
+                getMetaClass();
+                if (!mopSwitchPoint.hasBeenInvalidated()) return;
+            }
+            cache = false;
+        }
+
+        /**
+         * Uses the metaclass to get a meta method for a method call.
+         * There will be no meta method selected, if the metaclass is no MetaClassImpl
+         * or the metaclass is an AdaptingMetaClass.
          */
         public void chooseMeta(MetaClassImpl mci) {
             if (mci == null) return;
@@ -594,94 +960,175 @@ public abstract class Selector {
             Object[] newArgs = removeRealReceiver(args);
             if (receiver instanceof Class) {
                 if (LOG_ENABLED) LOG.info("receiver is a class");
-                if (!mci.hasCustomStaticInvokeMethod()) method = mci.retrieveStaticMethod(name, newArgs);
-            } else {
-                String changedName = name;
-                if (receiver instanceof GeneratedClosure && changedName.equals("call")) {
-                    changedName = "doCall";
+                if (!mci.hasCustomStaticInvokeMethod())
+                    method = mci.retrieveStaticMethod(name, newArgs);
+            }
+            else if (!mci.hasCustomInvokeMethod()) {
+                String name = this.name;
+                if ("call".equals(name) && receiver instanceof GeneratedClosure) {
+                    name = "doCall";
                 }
-                if (!mci.hasCustomInvokeMethod())
-                    method = mci.getMethodWithCaching(selectionBase, changedName, newArgs, false);
+                method = mci.getMethodWithCaching(selectionBase, name, newArgs, false);
+            }
+            // a method reference picks among functional-interface overloads by its arity,
+            // which its class does not tell, so such a choice is not cached by class
+            if (cache && method != null && containsMethodClosure(newArgs)) {
+                List<MetaMethod> named = mci.respondsTo(receiver, name);
+                if (named.size() > 1 && MetaClassHelper.dependsOnMethodClosureArity(
+                        new FastArray(named), MetaClassHelper.convertToTypeArray(newArgs), newArgs)) {
+                    cache = false;
+                }
             }
             if (LOG_ENABLED) LOG.info("retrieved method from meta class: " + method);
         }
 
         /**
          * Creates a MethodHandle using a before selected MetaMethod.
-         * If the MetaMethod has reflective information available, then
-         * we will use that information to create the target MethodHandle.
-         * If that is not the case we will produce a handle, which will use the
-         * MetaMethod itself for invocation.
+         * NumberNumberMetaMethod and GeneratedMetaMethod can be handled in a simplified way,
+         * ReflectionMetaMethod will be unwrapped and unreflected for a handle. If
+         * all that does not apply, we will fall back to using the MetaMethod itself.
          */
         public void setHandleForMetaMethod() {
+            isCategoryMethod = (method instanceof GroovyCategorySupport.CategoryMethod);
+            if (setHandleForSimpleCases()) return;
+
             MetaMethod metaMethod = method;
-            isCategoryMethod = method instanceof CategoryMethod;
-
-            if (metaMethod instanceof NumberNumberMetaMethod
-                    || (method instanceof GeneratedMetaMethod && (name.equals("next") || name.equals("previous")))) {
-                if (LOG_ENABLED) LOG.info("meta method is number method");
-                if (IndyMath.chooseMathMethod(this, metaMethod)) {
-                    catchException = false;
-                    if (LOG_ENABLED) LOG.info("indy math successful");
-                    return;
-                }
-            }
-
-            boolean isCategoryTypeMethod = metaMethod instanceof NewInstanceMetaMethod;
-            if (LOG_ENABLED) LOG.info("meta method is category type method: " + isCategoryTypeMethod);
-            boolean isStaticCategoryTypeMethod = metaMethod instanceof NewStaticMetaMethod;
-            if (LOG_ENABLED) LOG.info("meta method is static category type method: " + isCategoryTypeMethod);
-
-            if (metaMethod instanceof ReflectionMetaMethod) {
+            if (metaMethod instanceof ReflectionMetaMethod rmm) {
                 if (LOG_ENABLED) LOG.info("meta method is reflective method");
-                ReflectionMetaMethod rmm = (ReflectionMetaMethod) metaMethod;
                 metaMethod = rmm.getCachedMethod();
             }
 
-            if (metaMethod instanceof CachedMethod) {
-                if (LOG_ENABLED) LOG.info("meta method is CachedMethod instance");
-                CachedMethod cm = (CachedMethod) metaMethod;
-                cm = (CachedMethod) VMPluginFactory.getPlugin().transformMetaMethod(mc, cm);
-                isVargs = cm.isVargsMethod();
-                try {
-                    Method m = cm.getCachedMethod();
-                    handle = correctClassForNameAndUnReflectOtherwise(m);
-                    if (LOG_ENABLED) LOG.info("successfully unreflected method");
-                    if (isStaticCategoryTypeMethod) {
-                        handle = MethodHandles.insertArguments(handle, 0, new Object[]{null});
-                        handle = MethodHandles.dropArguments(handle, 0, targetType.parameterType(0));
-                    } else if (!isCategoryTypeMethod && isStatic(m)) {
-                        // we drop the receiver, which might be a Class (invocation on Class)
-                        // or it might be an object (static method invocation on instance)
-                        // Object.class handles both cases at once
-                        handle = MethodHandles.dropArguments(handle, 0, Object.class);
-                    }
-                } catch (IllegalAccessException e) {
-                    throw new GroovyBugError(e);
-                }
+            if (metaMethod instanceof CachedMethod cm) {
+                setHandleForGeneralCachedMethod(cm, metaMethod);
             } else if (method != null) {
-                if (LOG_ENABLED) LOG.info("meta method is dgm helper");
-                // generic meta method invocation path
-                handle = META_METHOD_INVOKER;
-                handle = handle.bindTo(method);
-                if (spread) {
-                    args = originalArguments;
-                    skipSpreadCollector = true;
-                } else {
-                    // wrap arguments from call site in Object[]
-                    handle = handle.asCollector(Object[].class, targetType.parameterCount() - 1);
-                }
-                currentType = removeWrapper(targetType);
-                if (LOG_ENABLED) LOG.info("bound method name to META_METHOD_INVOKER");
+                setHandleForGenericMetaMethod();
             }
         }
 
-        private MethodHandle correctClassForNameAndUnReflectOtherwise(Method m) throws IllegalAccessException {
-            if (m.getDeclaringClass() == Class.class && m.getName().equals("forName") && m.getParameterTypes().length == 1) {
-                return MethodHandles.insertArguments(CLASS_FOR_NAME, 1, true, sender.getClassLoader());
+        private void setHandleForGenericMetaMethod() {
+            if (LOG_ENABLED) LOG.info("meta method is generic meta method");
+            // generic meta method invocation path
+            handle = META_METHOD_INVOKER;
+            handle = handle.bindTo(method);
+            if (spread) {
+                args = originalArguments;
+                skipSpreadCollector = true;
             } else {
-                return LOOKUP.unreflect(m);
+                // wrap arguments from call site in Object[]
+                handle = handle.asCollector(Object[].class, targetType.parameterCount() - 1);
             }
+            currentType = removeWrapper(targetType);
+            if (LOG_ENABLED) LOG.info("bound method name to META_METHOD_INVOKER");
+        }
+
+        private void setHandleForGeneralCachedMethod(CachedMethod cm, MetaMethod metaMethod) {
+            boolean isCategoryTypeMethod = (method instanceof NewInstanceMetaMethod);
+            if (LOG_ENABLED) LOG.info("meta method is category type method: " + isCategoryTypeMethod);
+            boolean isStaticCategoryTypeMethod = (method instanceof NewStaticMetaMethod);
+            if (LOG_ENABLED) LOG.info("meta method is static category type method: " + isStaticCategoryTypeMethod);
+
+            isVargs = metaMethod.isVargsMethod();
+            VMPlugin vmplugin = VMPluginFactory.getPlugin();
+            cm = (CachedMethod) vmplugin.transformMetaMethod(mc, cm, sender);
+            setBaseHandleForCachedMethod(cm);
+            if (isStaticCategoryTypeMethod) {
+                handle = MethodHandles.insertArguments(handle, 0, SINGLE_NULL_ARRAY);
+                handle = MethodHandles.dropArguments(handle, 0, targetType.parameterType(0));
+            } else if (!isCategoryTypeMethod && cm.isStatic()) {
+                // drop the receiver, which might be a Class (invocation on Class)
+                // or it might be an object (static method invocation on instance)
+                // Object.class handles both cases at once
+                handle = MethodHandles.dropArguments(handle, 0, Object.class);
+            }
+        }
+
+        private void setBaseHandleForCachedMethod(CachedMethod cm) {
+            try {
+                var declaringClass = cm.getDeclaringClass().getTheClass();
+                int parameterCount = cm.getParamsCount();
+                if (parameterCount == 0 && "clone".equals(name) && declaringClass == Object.class) {
+                    var receiverClass = getCorrectedReceiver().getClass();
+                    if (receiverClass.isArray()) { // GROOVY-10733, et al.
+                        handle = MethodHandles.publicLookup().findVirtual(receiverClass, "clone", MethodType.methodType(Object.class));
+                    } else { // GROOVY-10319
+                        handle = MethodHandles.throwException(Object.class, CloneNotSupportedException.class) // prevent illegal access
+                                                                .bindTo(new CloneNotSupportedException());
+                        handle = MethodHandles.dropArguments(handle, 0, Object.class); // discard receiver
+                    }
+                } else if (parameterCount == 1 && "forName".equals(name) && declaringClass == Class.class) {
+                    handle = MethodHandles.insertArguments(CLASS_FOR_NAME, 1, Boolean.TRUE, sender.getClassLoader());
+                } else if (callSite.isAotLinked()
+                        && ColdReflectiveMethodHandleWrapper.isCallerSensitive(cm, getCorrectedReceiver().getClass())) {
+                    // GROOVY-12364: a caller-bound handle from unreflect() is exactly right on
+                    // HotSpot, but GraalVM's MethodHandle interpreter cannot invoke it ("Cannot
+                    // invoke method that has a @CallerSensitiveAdapter without an explicit
+                    // caller", a VM-fatal error) because Groovy builds the handle at run time.
+                    // Reflection works there, so an AOT-linked site invokes such targets
+                    // through Method.invoke; the observed caller is then Groovy's runtime.
+                    handle = reflectiveHandle(cm);
+                    if (LOG_ENABLED) LOG.info("caller-sensitive target on an AOT-linked site dispatched reflectively: " + name);
+                } else {
+                    handle = unreflect(cm.getCachedMethod());
+                }
+            } catch (ReflectiveOperationException e) {
+                throw new GroovyBugError(e);
+            }
+        }
+
+        private boolean setHandleForSimpleCases() {
+            if (method instanceof NumberNumberMetaMethod
+                    || (method instanceof GeneratedMetaMethod && ("next".equals(name) || "previous".equals(name)))) {
+                if (LOG_ENABLED) LOG.info("meta method is number method");
+                if (IndyMath.chooseMathMethod(this, method)) {
+                    catchException = false;
+                    if (LOG_ENABLED) LOG.info("indy math successful");
+                    return true;
+                }
+            }
+            if (method instanceof GeneratedMetaMethod gmm && gmm.getTargetMethodHandle() != null) {
+                if (LOG_ENABLED) LOG.info("meta method is generated method");
+                handle = gmm.getTargetMethodHandle();
+                catchException = false;
+                isVargs = method.isVargsMethod();
+                return true;
+            }
+            return false;
+        }
+
+        /**
+         * Builds a handle with the target method's own type whose leaf is
+         * {@code Method.invoke} rather than the method itself (GROOVY-12364).
+         * Shaped like {@link #unreflect}'s result, including the varargs
+         * collector flag, so the rest of the chain is unaffected.
+         *
+         * @param cm the selected method
+         * @return a handle of the method's natural type dispatching reflectively
+         */
+        private static MethodHandle reflectiveHandle(CachedMethod cm) {
+            Method method = cm.getCachedMethod();
+            MethodType natural = MethodType.methodType(method.getReturnType(), method.getParameterTypes());
+            MethodHandle mh = MethodHandles.insertArguments(INVOKE_REFLECTIVELY, 0, cm); // (Object receiver, Object[] args)Object
+            if (Modifier.isStatic(method.getModifiers())) {
+                mh = MethodHandles.insertArguments(mh, 0, (Object) null);
+            } else {
+                natural = natural.insertParameterTypes(0, method.getDeclaringClass());
+            }
+            mh = mh.asCollector(Object[].class, method.getParameterCount()).asType(natural);
+            if (method.isVarArgs()) {
+                mh = mh.asVarargsCollector(method.getParameterTypes()[method.getParameterCount() - 1]);
+            }
+            return mh;
+        }
+
+        /**
+         * Unreflects a cached reflective method against the call-site lookup.
+         *
+         * @param cachedMethod the reflective method to unreflect
+         * @return the corresponding method handle
+         * @throws IllegalAccessException if the sender cannot invoke the method
+         */
+        protected MethodHandle unreflect(Method cachedMethod) throws IllegalAccessException {
+            return this.callSite.getLookup().unreflect(cachedMethod); // throws if sender cannot invoke method
         }
 
         /**
@@ -697,8 +1144,15 @@ public abstract class Selector {
             return targetType;
         }
 
+        private Method metaClassMethod(String name, Class<?>... signature) {
+            try { return mc.getClass().getMethod(name, signature);
+            } catch (ReflectiveOperationException e) {
+                throw new GroovyBugError(e);
+            }
+        }
+
         /**
-         * Creates a MethodHandle, which will use the meta class path.
+         * Creates a MethodHandle, which will use the metaclass path.
          * This method is called only if no handle has been created before. This
          * is usually the case if the method selection failed.
          */
@@ -711,14 +1165,26 @@ public abstract class Selector {
                 handle = META_CLASS_INVOKE_STATIC_METHOD.bindTo(mc);
                 if (LOG_ENABLED) LOG.info("use invokeStaticMethod with bound meta class");
             } else {
-                handle = MOP_INVOKE_METHOD.bindTo(mc);
-                if (LOG_ENABLED) LOG.info("use invokeMethod with bound meta class");
-
+                if (standardMetaClass
+                    || metaClassMethod("invokeMethod", Object.class, String.class, Object[].class).getDeclaringClass().isAssignableFrom(
+                       metaClassMethod("invokeMethod", Class.class, Object.class, String.class, Object[].class, boolean.class, boolean.class).getDeclaringClass())
+                ) {
+                    // GROOVY-11568: use MetaClass#invokeMethod(Class,Object,Object[],boolean,boolean)
+                    handle = META_CLASS_INVOKE_METHOD;
+                    handle = handle.bindTo(mc).bindTo(sender);
+                    handle = MethodHandles.insertArguments(handle, 3, Boolean.FALSE, Boolean.FALSE);
+                    if (LOG_ENABLED) LOG.info("use invokeMethod with bound meta class and sender class");
+                } else {
+                    handle = MOP_INVOKE_METHOD.bindTo(mc);
+                    if (LOG_ENABLED) LOG.info("use invokeMethod with bound meta class");
+                }
                 if (receiver instanceof GroovyObject) {
-                    // if the meta class call fails we may still want to fall back to call
+                    // if the metaclass call fails we may still want to fall back to call
                     // GroovyObject#invokeMethod if the receiver is a GroovyObject
-                    if (LOG_ENABLED) LOG.info("add MissingMethod handler for GrooObject#invokeMethod fallback path");
-                    handle = MethodHandles.catchException(handle, MissingMethodException.class, GROOVY_OBJECT_INVOKER);
+                    if (LOG_ENABLED) LOG.info("add MissingMethod handler for GroovyObject#invokeMethod fallback path");
+                    handle = AndroidSupport.isRunningAndroid()
+                            ? IndyCatchCompat.withGroovyObjectFallback(handle) // GROOVY-12387
+                            : MethodHandles.catchException(handle, MissingMethodException.class, GROOVY_OBJECT_INVOKER);
                 }
             }
             handle = MethodHandles.insertArguments(handle, 1, name);
@@ -740,7 +1206,7 @@ public abstract class Selector {
                 if (args[i] instanceof Wrapper) {
                     Class<?> type = pt[i];
                     MethodType mt = MethodType.methodType(type, Wrapper.class);
-                    handle = MethodHandles.filterArguments(handle, i, UNWRAP_METHOD.asType(mt));
+                    handle = MethodHandles.filterArguments(handle, i, asCallSiteType(UNWRAP_METHOD, mt));
                     if (LOG_ENABLED) LOG.info("added filter for Wrapper for argument at pos " + i);
                 }
             }
@@ -757,38 +1223,37 @@ public abstract class Selector {
             Class<?>[] params = handle.type().parameterArray();
             if (currentType != null) params = currentType.parameterArray();
             if (!isVargs) {
-                if (spread && useMetaClass) return;
-                if (params.length == 2 && args.length == 1) {
+                if (!(spread && useMetaClass) && params.length == 2 && args.length == 1) {
                     handle = MethodHandles.insertArguments(handle, 1, SINGLE_NULL_ARRAY);
                 }
                 return;
             }
 
-            Class<?> lastParam = params[params.length - 1];
-            Object lastArg = unwrapIfWrapped(args[args.length - 1]);
-            if (params.length == args.length) {
-                // may need rewrap
-                if (lastArg == null) return;
-                if (lastParam.isInstance(lastArg)) return;
-                if (lastArg.getClass().isArray()) return;
-                // arg is not null and not assignment compatible
-                // so we really need to rewrap
-                handle = handle.asCollector(lastParam, 1);
-            } else if (params.length > args.length) {
-                // we depend on the method selection having done a good 
+            int aCount = args.length;
+            int pCount = params.length;
+            var vaType = params[pCount-1];
+            if (aCount == pCount) {
+                var lastArg = MetaClassHelper.convertToTypeArray(args)[aCount-1]; // GROOVY-6146
+                if (lastArg != null && (!lastArg.isArray() || (ArrayTypeUtils.dimension(lastArg)
+                            != ArrayTypeUtils.dimension(vaType) && vaType != Object[].class))) {
+                    // we depend on the method selection having done a good job previously
+                    // arg is null with cast or not assignment compatible; wrap with array
+                    handle = handle.asCollector(vaType, 1);
+                    if (LOG_ENABLED) LOG.info("changed last argument to be collected for variadic parameter");
+                }
+            } else if (aCount < pCount) {
+                // we depend on the method selection having done a good
                 // job before already, so the only case for this here is, that
                 // we have no argument for the array, meaning params.length is
                 // args.length+1. In that case we have to fill in an empty array
-                handle = MethodHandles.insertArguments(handle, params.length - 1, Array.newInstance(lastParam.getComponentType(), 0));
-                if (LOG_ENABLED) LOG.info("added empty array for missing vargs part");
-            } else { //params.length < args.length
-                // we depend on the method selection having done a good 
+                handle = MethodHandles.insertArguments(handle, pCount - 1, Array.newInstance(vaType.getComponentType(), 0));
+                if (LOG_ENABLED) LOG.info("added empty array for variadic parameter");
+            } else { // aCount > pCount
+                // we depend on the method selection having done a good
                 // job before already, so the only case for this here is, that
                 // all trailing arguments belong into the vargs array
-                handle = handle.asCollector(
-                        lastParam,
-                        args.length - params.length + 1);
-                if (LOG_ENABLED) LOG.info("changed surplus arguments to be collected for vargs call");
+                handle = handle.asCollector(vaType, aCount - pCount + 1);
+                if (LOG_ENABLED) LOG.info("changed surplus arguments to be collected for variadic parameter");
             }
         }
 
@@ -800,13 +1265,14 @@ public abstract class Selector {
         public void correctCoerce() {
             if (useMetaClass) return;
 
-            Class<?>[] parameters = handle.type().parameterArray();
-            if (currentType != null) parameters = currentType.parameterArray();
-            if (args.length != parameters.length) {
+            Class<?>[] parameterTypes = handle.type().parameterArray();
+            if (currentType != null) parameterTypes = currentType.parameterArray();
+            if (args.length != parameterTypes.length) {
                 throw new GroovyBugError("At this point argument array length and parameter array length should be the same");
             }
             for (int i = 0; i < args.length; i++) {
-                if (parameters[i] == Object.class) continue;
+                final Class<?> parameterType = parameterTypes[i];
+                if (parameterType == Object.class) continue;
                 Object arg = unwrapIfWrapped(args[i]);
                 // we have to handle here different cases in which we do no
                 // transformations. We depend on our method selection to have
@@ -815,26 +1281,26 @@ public abstract class Selector {
                 // the argument is an instance of the parameter type. We also
                 // exclude boxing, since the MethodHandles will do that part
                 // already for us. Another case is the conversion of a primitive
-                // to another primitive or of the wrappers, or a combination of 
-                // these. This is also handled already. What is left is the 
+                // to another primitive or of the wrappers, or a combination of
+                // these. This is also handled already. What is left is the
                 // GString conversion and the number conversions.
 
                 if (arg == null) continue;
                 Class<?> got = arg.getClass();
 
                 // equal class, nothing to do
-                if (got == parameters[i]) continue;
+                if (got == parameterType) continue;
 
-                Class<?> wrappedPara = TypeHelper.getWrapperClass(parameters[i]);
+                Class<?> wrappedPara = TypeHelper.getWrapperClass(parameterType);
                 // equal class with one maybe a primitive, the later explicitCastArguments will solve this case
                 if (wrappedPara == TypeHelper.getWrapperClass(got)) continue;
 
                 // equal in terms of an assignment in Java. That means according to Java widening rules, or
-                // a subclass, interface, superclass relation, this case then handles also 
-                // primitive to primitive conversion. Those case are also solved by explicitCastArguments.
-                if (parameters[i].isAssignableFrom(got)) continue;
+                // a subclass, interface, superclass relation, this case then handles also
+                // primitive to primitive conversion. Those cases are also solved by explicitCastArguments.
+                if (parameterType.isAssignableFrom(got)) continue;
 
-                // to aid explicitCastArguments we convert to the wrapper type to let is only unbox
+                // to aid explicitCastArguments we convert to the wrapper type to let it only unbox
                 handle = TypeTransformers.addTransformer(handle, i, arg, wrappedPara);
                 if (LOG_ENABLED)
                     LOG.info("added transformer at pos " + i + " for type " + got + " to type " + wrappedPara);
@@ -853,9 +1319,13 @@ public abstract class Selector {
             if (LOG_ENABLED) LOG.info("binding null object receiver and dropping old receiver");
         }
 
+        /**
+         * Adapts the handle for spread-call argument collection when needed.
+         */
         public void correctSpreading() {
-            if (!spread || useMetaClass || skipSpreadCollector) return;
-            handle = handle.asSpreader(Object[].class, args.length - 1);
+            if (spread && !useMetaClass && !skipSpreadCollector) {
+                handle = handle.asSpreader(Object[].class, args.length - 1);
+            }
         }
 
         /**
@@ -863,35 +1333,47 @@ public abstract class Selector {
          */
         public void addExceptionHandler() {
             //TODO: if we would know exactly which paths require the exceptions
-            //      and which paths not, we can sometimes save this guard 
+            //      and which paths not, we can sometimes save this guard
             if (handle == null || !catchException) return;
-            Class<?> returnType = handle.type().returnType();
-            if (returnType != Object.class) {
-                MethodType mtype = MethodType.methodType(returnType, GroovyRuntimeException.class);
-                handle = MethodHandles.catchException(handle, GroovyRuntimeException.class, UNWRAP_EXCEPTION.asType(mtype));
+            if (AndroidSupport.isRunningAndroid()) {
+                handle = IndyCatchCompat.unwrapping(handle); // GROOVY-12387
             } else {
-                handle = MethodHandles.catchException(handle, GroovyRuntimeException.class, UNWRAP_EXCEPTION);
+                // Where asType caches strongly (JDK 17), catchException is applied with the
+                // reference types erased: it converts the JDK's shared argument-array collector to
+                // the type of its target, and a type of some class loader cached there would keep
+                // that loader reachable after it was discarded. The handle is made fixed arity
+                // first, as catchException makes it, so that erasing its trailing array type
+                // does not turn the conversion into collecting arguments.
+                MethodType type = handle.type();
+                MethodType guarded = STRONG_AS_TYPE_CACHE ? type.erase() : type;
+                Class<?> returnType = guarded.returnType();
+                MethodHandle unwrap = returnType != Object.class
+                        ? UNWRAP_EXCEPTION.asType(MethodType.methodType(returnType, GroovyRuntimeException.class))
+                        : UNWRAP_EXCEPTION;
+                MethodHandle target = handle.asFixedArity().asType(guarded);
+                handle = MethodHandles.catchException(target, GroovyRuntimeException.class, unwrap).asType(type);
             }
             if (LOG_ENABLED) LOG.info("added GroovyRuntimeException unwrapper");
+        }
+
+        /**
+         * Whether the selected handle depends on the metaclass of a {@code GroovyObject} receiver, so that
+         * {@link #setGuards(Object)} guards it with the receiver's metaclass.
+         */
+        protected boolean guardsReceiverMetaClass() {
+            return true;
         }
 
         /**
          * Sets all argument and receiver guards.
          */
         public void setGuards(Object receiver) {
-            if (handle == null) return;
-            if (!cache) return;
+            if (!cache || handle == null) return;
 
-            MethodHandle fallback;
-            if (callSite instanceof CacheableCallSite) {
-                fallback = ((CacheableCallSite) callSite).getFallbackTarget();
-            } else {
-                throw new GroovyBugError("CacheableCallSite is expected, but the actual callsite is: " + callSite);
-            }
+            MethodHandle fallback = callSite.getFallbackTarget();
 
             // special guards for receiver
-            if (receiver instanceof GroovyObject) {
-                GroovyObject go = (GroovyObject) receiver;
+            if (receiver instanceof GroovyObject go && guardsReceiverMetaClass()) {
                 MetaClass mc = go.getMetaClass();
                 MethodHandle test = SAME_MC.bindTo(mc);
                 // drop dummy receiver
@@ -905,7 +1387,7 @@ public abstract class Selector {
                 if (LOG_ENABLED) LOG.info("added class equality check");
             }
 
-            if (!useMetaClass && isCategoryMethod) {
+            if (isCategoryMethod && !useMetaClass) {
                 // category method needs Thread check
                 // cases:
                 // (1) method is a category method
@@ -922,71 +1404,81 @@ public abstract class Selector {
                 }
             }
 
-            // handle constant meta class and category changes
-            handle = switchPoint.guardWithTest(handle, fallback);
-            if (LOG_ENABLED) LOG.info("added switch point guard");
+            // Per-class MetaClass SwitchPoint (GROOVY-12191). Category enter/leave
+            // bulk-invalidates class SwitchPoints so sites re-link without a second
+            // hot-path guard. The token is the one captured before selection first
+            // read MOP state; cast paths that consulted none capture lazily here.
+            handle = applyMopSwitchPoints(handle, fallback,
+                    mopSwitchPoint != null ? mopSwitchPoint : IndyInvalidation.classSwitchPointFor(receiver));
+            if (LOG_ENABLED) LOG.info("added class switch point guard");
+
+            Predicate<Class<?>> nonFinalOrNullUnsafe = (t) -> {
+                return !Modifier.isFinal(t.getModifiers())
+                    || TypeHelper.getUnboxedType(t).isPrimitive(); // GROOVY-11782
+            };
 
             // guards for receiver and parameter
             Class<?>[] pt = handle.type().parameterArray();
-            for (int i = 0; i < args.length; i++) {
-                Object arg = args[i];
-                Class<?> paramType = pt[i];
-                MethodHandle test;
-
-                if (arg == null) {
-                    test = IS_NULL.asType(MethodType.methodType(boolean.class, paramType));
-                    if (LOG_ENABLED) LOG.info("added null argument check at pos " + i);
-                } else {
-                    Class<?> argClass = arg.getClass();
-                    if (paramType.isPrimitive()) continue;
-                    //if (Modifier.isFinal(argClass.getModifiers()) && TypeHelper.argumentClassIsParameterClass(argClass,pt[i])) continue;
-                    test = SAME_CLASS.
-                            bindTo(argClass).
-                            asType(MethodType.methodType(boolean.class, paramType));
-                    if (LOG_ENABLED) LOG.info("added same class check at pos " + i);
+            if (Arrays.stream(args).anyMatch(Objects::isNull)) {
+                for (int i = 0; i < args.length; i++) {
+                    MethodHandle test;
+                    var arg = args[i];
+                    if (arg == null) {
+                        test = asCallSiteType(IS_NULL, MethodType.methodType(boolean.class, pt[i]));
+                        if (LOG_ENABLED) LOG.info("added null argument check at pos " + i);
+                    } else {
+                        if (nonFinalOrNullUnsafe.negate().test(pt[i])) continue; // null-safe type that cannot change
+                        test = SAME_CLASS.bindTo(arg.getClass()).asType(MethodType.methodType(boolean.class, pt[i]));
+                        if (LOG_ENABLED) LOG.info("added same-class argument check at pos " + i);
+                    }
+                    Class<?>[] drops = new Class[i];
+                    System.arraycopy(pt, 0, drops, 0, drops.length);
+                    test = MethodHandles.dropArguments(test, 0, drops);
+                    handle = MethodHandles.guardWithTest(test, handle, fallback);
                 }
-                Class<?>[] drops = new Class[i];
-                System.arraycopy(pt, 0, drops, 0, drops.length);
-                test = MethodHandles.dropArguments(test, 0, drops);
+            } else if (Arrays.stream(pt).anyMatch(nonFinalOrNullUnsafe)) {
+                // Arity 0 never reaches here: anyMatch on an empty pt is false,
+                // and a receiver is always present. No same-class combinator is
+                // installed for a parameterless handle.
+                handle = MethodHandles.guardWithTest(
+                        Selector.sameClassesGuard(args, handle.type()), handle, fallback);
+                if (LOG_ENABLED) LOG.info("added same-class argument check");
+            } else if (safeNavigationOrig) { // GROOVY-11126
+                MethodHandle test = asCallSiteType(NON_NULL, MethodType.methodType(boolean.class, pt[0]));
                 handle = MethodHandles.guardWithTest(test, handle, fallback);
+                if (LOG_ENABLED) LOG.info("added null receiver check");
             }
         }
 
         /**
-         * do the actual call site target set, if the call is supposed to be cached
+         * Marks the end of selection. The selector does not set the call site target itself:
+         * {@link IndyInterface} installs the selected handle once the site is hot enough.
          */
         public void doCallSiteTargetSet() {
-            if (LOG_ENABLED) LOG.info("call site stays uncached");
-            /*
-            if (!cache) {
-                if (LOG_ENABLED) LOG.info("call site stays uncached");
-            } else {
-                callSite.setTarget(handle);
-                if (LOG_ENABLED) LOG.info("call site target set, preparing outside invocation");
-            }
-            */
+            if (LOG_ENABLED) LOG.info("selection done, call site target left to IndyInterface");
         }
 
         /**
-         * Sets the selection base.
+         * Chooses the class passed to {@link MetaClassImpl#getMethodWithCaching}.
+         *
+         * @see #chooseMeta(MetaClassImpl)
          */
         public void setSelectionBase() {
-            if (thisCall) {
+            Class<?> sender = getThisType(this.sender);
+            if (thisCall || sender.isInstance(args[0])) { // GROOVY-2433
                 selectionBase = sender;
-            } else if (args[0] == null) {
-                selectionBase = NullObject.class;
             } else {
                 selectionBase = mc.getTheClass();
             }
-            if (LOG_ENABLED) LOG.info("selection base set to " + selectionBase);
+            if (LOG_ENABLED) LOG.info("selectionBase set to " + selectionBase);
         }
 
         /**
-         * Sets a handle to call {@link GroovyInterceptable#invokeMethod(String, Object)}
+         * Sets a handle to call {@link GroovyObject#invokeMethod(String,Object)}
          */
         public boolean setInterceptor() {
-            if (!(this.args[0] instanceof GroovyInterceptable)) return false;
-            handle = MethodHandles.insertArguments(INTERCEPTABLE_INVOKER, 1, this.name);
+            if (!(args[0] instanceof GroovyInterceptable)) return false;
+            handle = MethodHandles.insertArguments(INTERCEPTABLE_INVOKER, 1, name);
             handle = handle.asCollector(Object[].class, targetType.parameterCount() - 1);
             handle = handle.asType(targetType);
             return true;
@@ -994,17 +1486,32 @@ public abstract class Selector {
 
         /**
          * setting a call site target consists of the following steps:
-         * # get the meta class
+         * # get the metaclass
          * # select a method/constructor/property from it, if it is a MetaClassImpl
          * # make a handle out of the selection
-         * # if nothing could be selected select a path through the given MetaClass or the GroovyObject
+         * # if nothing could be selected, select a path through the given MetaClass or the GroovyObject
          * # apply transformations for vargs, implicit null argument, coercion, wrapping, null receiver and spreading
          */
         @Override
         public void setCallSiteTarget() {
+            buildInvokeHandle();
+            setGuards(args[0]);
+            doCallSiteTargetSet();
+        }
+
+        /**
+         * Builds the (unguarded) invocation handle into {@link #handle}: select the
+         * metaclass and target method, make a handle, and apply the vargs/coercion/
+         * wrapping/null-receiver/spreading/exception transformations. This is the
+         * portion of {@link #setCallSiteTarget()} before guard installation; it is
+         * factored out so the GEP-15 compound-assignment path can reuse Selector's
+         * real method selection while managing its own guarding and caching shell.
+         *
+         * @see #selectInvokeHandle(CacheableCallSite, Class, String, Object[])
+         */
+        void buildInvokeHandle() {
             if (!setNullForSafeNavigation() && !setInterceptor()) {
-                getMetaClass();
-                if (LOG_ENABLED) LOG.info("meta class is " + mc);
+                captureTokenAndGetMetaClass();
                 setSelectionBase();
                 MetaClassImpl mci = getMetaClassImpl(mc, callType != CallType.GET);
                 chooseMeta(mci);
@@ -1017,60 +1524,81 @@ public abstract class Selector {
                 correctSpreading();
 
                 if (LOG_ENABLED) LOG.info("casting explicit from " + handle.type() + " to " + targetType);
-                handle = MethodHandles.explicitCastArguments(handle, targetType);
+                handle = explicitCastToCallSiteType(handle, targetType);
 
                 addExceptionHandler();
             }
-            setGuards(args[0]);
-            doCallSiteTargetSet();
+        }
+
+        @Override
+        MetaMethod selectForColdReflection() {
+            // the cold tier is only for plain method calls; the fallback gates
+            // on CallType.METHOD, so any other call type reaching this method
+            // indicates a broken invariant rather than an unsupported case
+            if (callType != CallType.METHOD) {
+                throw new GroovyBugError("selectForColdReflection called for call type " + callType);
+            }
+            // these all need the full handle path: spread and safe-null have
+            // their own adaptation/constant handles; a Class receiver is a
+            // static-method style call, which promotes on its first hit anyway
+            // (GROOVY-11935); GroovyInterceptable routes via invokeMethod.
+            // TODO: a null receiver dispatches to NullObject, whose methods are
+            // ordinary methods on a singleton receiver — investigate serving
+            // them from the reflective tier instead of the full handle path
+            if (safeNavigation || spread || args[0] == null
+                    || args[0] instanceof Class || args[0] instanceof GroovyInterceptable) {
+                return null;
+            }
+            captureTokenAndGetMetaClass();
+            if (!cache) return null; // e.g. per-instance metaclasses in play
+            setSelectionBase();
+            MetaClassImpl mci = getMetaClassImpl(mc, true);
+            if (mci == null) return null;
+            chooseMeta(mci);
+            return method;
+        }
+
+        @Override
+        MetaClass getSelectionMetaClass() {
+            return mc;
         }
     }
 
     /**
-     * Unwraps the given object from a {@link Wrapper}. If not
-     * wrapped, the given object is returned.
+     * GEP-15 support: builds the <em>unguarded</em> invocation handle that a normal
+     * method call site would use for {@code methodName} on the given receiver/args
+     * ({@code arguments[0]} is the receiver). The result has type
+     * {@code callSite.type()}. Guard and switch-point wrapping are intentionally
+     * omitted — the caller (compound-assignment) applies its own per-shape guard
+     * and the scoped per-class MOP SwitchPoint (see
+     * {@link IndyInvalidation}). The caller must
+     * have already established that {@code methodName} resolves for this receiver
+     * (e.g. via {@code respondsTo}); this routes the actual invocation through the
+     * same selection, coercion and wrapping path as a normal call.
+     *
+     * @param callSite a call site supplying the desired {@code (receiver,arg)->Object} type
+     * @param sender the sending class for visibility/MOP decisions
+     * @param methodName the resolved method name (the chosen {@code *Assign} or base operator)
+     * @param arguments the runtime arguments, receiver first
+     * @return the unguarded invocation handle of type {@code callSite.type()}
      */
-    private static Object unwrapIfWrapped(Object object) {
-        if (object instanceof Wrapper) return unwrap(object);
-        return object;
+    static MethodHandle selectInvokeHandle(CacheableCallSite callSite, Class<?> sender, String methodName, Object[] arguments) {
+        MethodSelector selector = new MethodSelector(callSite, sender, methodName, CallType.METHOD, Boolean.FALSE, Boolean.FALSE, Boolean.FALSE, arguments);
+        selector.buildInvokeHandle();
+        return selector.handle;
     }
 
-    /**
-     * Returns {@link NullObject#getNullObject()} if the receiver
-     * (args[0]) is null. If it is not null, the recevier itself
-     * is returned.
-     */
-    public Object getCorrectedReceiver() {
-        Object receiver = args[0];
-        if (receiver == null) {
-            if (LOG_ENABLED) LOG.info("receiver is null");
-            receiver = NullObject.getNullObject();
-        }
-        return receiver;
-    }
+    //--------------------------------------------------------------------------
 
     /**
-     * Returns if a method is static
+     * @return {@code mc} if {@code ClosureMetaClass}, {@code ExpandoMetaClass} or not {@code ProxyMetaClass}; otherwise null
      */
-    private static boolean isStatic(Method m) {
-        int mods = m.getModifiers();
-        return (mods & Modifier.STATIC) != 0;
-    }
-
-    /**
-     * Returns the MetaClassImpl if the given MetaClass is one of
-     * MetaClassImpl, AdaptingMetaClass or ClosureMetaClass. If
-     * none of these cases matches, this method returns null.
-     */
-    private static MetaClassImpl getMetaClassImpl(MetaClass mc, boolean includeEMC) {
-        Class<?> mcc = mc.getClass();
-        boolean valid = mcc == MetaClassImpl.class ||
-                mcc == AdaptingMetaClass.class ||
-                mcc == ClosureMetaClass.class ||
-                (includeEMC && mcc == ExpandoMetaClass.class);
+    private static MetaClassImpl getMetaClassImpl(final MetaClass mc, final boolean includeEMC) {
+        boolean valid = (mc.getClass() == ClosureMetaClass.class)
+                || (includeEMC && mc instanceof ExpandoMetaClass)
+                || (mc instanceof MetaClassImpl && !(mc instanceof ExpandoMetaClass || mc instanceof ProxyMetaClass)); // GROOVY-11813
         if (!valid) {
-            if (LOG_ENABLED)
-                LOG.info("meta class is neither MetaClassImpl, nor AdoptingMetaClass, nor ClosureMetaClass, normal method selection path disabled.");
+            if (LOG_ENABLED) LOG.info("meta class isn't a ClosureMetaClass, ExpandoMetaClass, or non-proxy MetaClassImpl; normal method selection path disabled.");
             return null;
         }
         if (LOG_ENABLED) LOG.info("meta class is a recognized MetaClassImpl");
@@ -1078,12 +1606,104 @@ public abstract class Selector {
     }
 
     /**
+     * Helper method to transform the given arguments, consisting of the receiver
+     * and the actual arguments in an Object[], into a new Object[] consisting
+     * of the receiver and the arguments directly. Before the size of args was
+     * always 2, the returned Object[] will have a size of 1+n, where n is the
+     * number arguments.
+     */
+    private static Object[] spread(final Object[] args, final boolean spreadCall) {
+        Object[] result = args;
+        if (spreadCall) {
+            Object[] arguments = (Object[]) args[1];
+            final int nArguments = arguments.length;
+
+            result = new Object[nArguments + 1];
+            result[0] = args[0]; // the receiver
+            System.arraycopy(arguments, 0, result, 1, nArguments);
+
+            // accommodate Object[] spreader m. handle
+            for (int i = 1; i <= nArguments; i += 1) {
+                var argumentType = result[i] != null ? result[i].getClass() : Object.class;
+                if (argumentType.isArray() && argumentType.getComponentType().isPrimitive()) {
+                    result[i] = DefaultTypeTransformation.primitiveArrayBox(result[i]); // GROOVY-4843, GROOVY-8560
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
      * Helper method to remove the receiver from the argument array
      * by producing a new array.
      */
-    private static Object[] removeRealReceiver(Object[] args) {
+    private static Object[] removeRealReceiver(final Object[] args) {
         Object[] ar = new Object[args.length - 1];
         System.arraycopy(args, 1, ar, 0, args.length - 1);
         return ar;
+    }
+
+    /**
+     * Unwraps the given object from a {@link Wrapper}. If not
+     * wrapped, the given object is returned.
+     */
+    private static Object unwrapIfWrapped(final Object object) {
+        return object instanceof Wrapper ? unwrap(object) : object;
+    }
+
+    private static Class<?> getThisType(Class<?> sender) {
+        while (GeneratedClosure.class.isAssignableFrom(sender)) {
+            sender = sender.getEnclosingClass();
+        }
+        return sender;
+    }
+
+    /**
+     * Specialised same-class guards for arities 1–4, stored at {@code [n - 1]}.
+     */
+    private static final MethodHandle[] SAME_CLASS_GUARDS = {
+            SAME_CLASS,
+            SAME_CLASSES_2,
+            SAME_CLASSES_3,
+            SAME_CLASSES_4
+    };
+
+    /**
+     * Builds a same-class guard that avoids {@code asCollector(Object[].class, n)}
+     * for the common 1–4 argument shapes (receiver plus 0–3 parameters).
+     * Expected classes are bound with a single {@link MethodHandles#insertArguments}
+     * (one adapter, not a chain of {@code bindTo}). The produced handle has type
+     * {@code callType.changeReturnType(boolean.class)} and returns {@code false}
+     * if any argument is {@code null} or has a different runtime class.
+     * <p>
+     * Arity 0 is not specialised; the caller does not install a guard in that
+     * case. If this helper is invoked with no parameters it falls through to
+     * the collector of an empty array, which returns {@code true}.
+     *
+     * @param args     non-null arguments captured at link time; length matches {@code callType}
+     * @param callType the invocation handle type whose parameters the guard must accept
+     */
+    static MethodHandle sameClassesGuard(final Object[] args, final MethodType callType) {
+        int n = callType.parameterCount();
+        MethodType booleanType = callType.changeReturnType(boolean.class);
+        if (n >= 1 && n <= SAME_CLASS_GUARDS.length) {
+            Object[] classes = new Object[n];
+            for (int i = 0; i < n; i++) {
+                classes[i] = args[i].getClass();
+            }
+            return MethodHandles.insertArguments(SAME_CLASS_GUARDS[n - 1], 0, classes).asType(booleanType);
+        }
+        Class<?>[] classes = new Class<?>[n];
+        for (int i = 0; i < n; i++) {
+            classes[i] = args[i].getClass();
+        }
+        return SAME_CLASSES.bindTo(classes).asCollector(Object[].class, n).asType(booleanType);
+    }
+
+    private static boolean containsMethodClosure(final Object[] arguments) {
+        for (Object argument : arguments) {
+            if (argument instanceof MethodClosure) return true;
+        }
+        return false;
     }
 }

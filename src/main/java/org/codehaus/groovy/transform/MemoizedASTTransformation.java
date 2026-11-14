@@ -25,7 +25,6 @@ import org.codehaus.groovy.ast.AnnotationNode;
 import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.FieldNode;
-import org.codehaus.groovy.ast.InnerClassNode;
 import org.codehaus.groovy.ast.MethodNode;
 import org.codehaus.groovy.ast.Parameter;
 import org.codehaus.groovy.ast.expr.ClosureExpression;
@@ -71,15 +70,14 @@ public class MemoizedASTTransformation extends AbstractASTTransformation {
     private static final String MAX_CACHE_SIZE_NAME = "maxCacheSize";
     private static final String CLOSURE_LABEL = "Closure";
     private static final String METHOD_LABEL = "Priv";
-    private static final ClassNode OVERRIDE_CLASSNODE = make(Override.class);
+    private static final ClassNode OVERRIDE_CLASSNODE = ClassHelper.OVERRIDE_TYPE;
 
     @Override
     public void visit(ASTNode[] nodes, final SourceUnit source) {
         init(nodes, source);
         AnnotationNode annotationNode = (AnnotationNode) nodes[0];
         AnnotatedNode annotatedNode = (AnnotatedNode) nodes[1];
-        if (MY_TYPE.equals(annotationNode.getClassNode()) && annotatedNode instanceof MethodNode) {
-            MethodNode methodNode = (MethodNode) annotatedNode;
+        if (MY_TYPE.equals(annotationNode.getClassNode()) && annotatedNode instanceof MethodNode methodNode) {
             if (methodNode.isAbstract()) {
                 addError("Annotation " + MY_TYPE_NAME + " cannot be used for abstract methods.", methodNode);
                 return;
@@ -89,9 +87,9 @@ public class MemoizedASTTransformation extends AbstractASTTransformation {
                 return;
             }
 
-            ClassNode ownerClassNode = methodNode.getDeclaringClass();
-            MethodNode delegatingMethod = buildDelegatingMethod(methodNode, ownerClassNode);
-            addGeneratedMethod(ownerClassNode, delegatingMethod);
+            ClassNode ownerClass = methodNode.getDeclaringClass();
+            MethodNode delegatingMethod = buildDelegatingMethod(methodNode, ownerClass);
+            addGeneratedMethod(ownerClass, delegatingMethod);
 
             int modifiers = ACC_PRIVATE | ACC_FINAL;
             if (methodNode.isStatic()) {
@@ -103,10 +101,10 @@ public class MemoizedASTTransformation extends AbstractASTTransformation {
             MethodCallExpression memoizeClosureCallExpression =
                     buildMemoizeClosureCallExpression(delegatingMethod, protectedCacheSize, maxCacheSize);
 
-            String memoizedClosureFieldName = buildUniqueName(ownerClassNode, CLOSURE_LABEL, methodNode);
+            String memoizedClosureFieldName = buildUniqueName(ownerClass, CLOSURE_LABEL, methodNode);
             FieldNode memoizedClosureField = new FieldNode(memoizedClosureFieldName, modifiers,
                     newClass(ClassHelper.CLOSURE_TYPE), null, memoizeClosureCallExpression);
-            ownerClassNode.addField(memoizedClosureField);
+            ownerClass.addField(memoizedClosureField);
 
             BlockStatement newCode = new BlockStatement();
             MethodCallExpression closureCallExpression = callX(
@@ -114,12 +112,12 @@ public class MemoizedASTTransformation extends AbstractASTTransformation {
             closureCallExpression.setImplicitThis(false);
             newCode.addStatement(returnS(closureCallExpression));
             methodNode.setCode(newCode);
-            VariableScopeVisitor visitor = new VariableScopeVisitor(source, ownerClassNode instanceof InnerClassNode);
-            if (ownerClassNode instanceof InnerClassNode) {
-                visitor.visitClass(((InnerClassNode) ownerClassNode).getOuterMostClass());
-            } else {
-                visitor.visitClass(ownerClassNode);
+
+            var visitor = new VariableScopeVisitor(source, ownerClass.getOuterClass() != null);
+            while (ownerClass.getOuterClass() != null) {
+                ownerClass = ownerClass.getOuterClass();
             }
+            visitor.visitClass(ownerClass);
         }
     }
 

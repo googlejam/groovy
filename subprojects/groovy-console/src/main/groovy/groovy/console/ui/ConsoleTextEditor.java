@@ -30,6 +30,7 @@ import javax.swing.AbstractAction;
 import javax.swing.Action;
 import javax.swing.ActionMap;
 import javax.swing.InputMap;
+import javax.swing.text.DefaultEditorKit;
 import javax.swing.JComponent;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
@@ -54,29 +55,59 @@ import java.awt.event.KeyEvent;
 import java.awt.print.PrinterJob;
 import java.beans.PropertyChangeEvent;
 import java.beans.PropertyChangeListener;
+import java.io.Serial;
+import java.util.Locale;
 import java.util.prefs.Preferences;
+
+import static java.lang.System.Logger.Level.WARNING;
 
 /**
  * Component which provides a styled editor for the console.
  */
 public class ConsoleTextEditor extends JScrollPane {
+    private static final System.Logger LOGGER = System.getLogger(ConsoleTextEditor.class.getName());
+    @Serial private static final long serialVersionUID = -3582625263676326887L;
+    private static final Preferences PREFERENCES = Preferences.userNodeForPackage(Console.class);
+    private static final String PREFERENCE_FONT_SIZE = "fontSize";
+    private static final int DEFAULT_FONT_SIZE = 12;
+
+    /**
+     * Returns the preferred monospaced font family for the editor.
+     *
+     * @return the default font family name
+     */
     public String getDefaultFamily() {
         return defaultFamily;
     }
 
+    /**
+     * Sets the preferred monospaced font family for the editor.
+     *
+     * @param defaultFamily the font family name to use
+     */
     public void setDefaultFamily(String defaultFamily) {
         this.defaultFamily = defaultFamily;
     }
 
     private class LineNumbersPanel extends JPanel {
 
-        public LineNumbersPanel() {
-            int initialSize = 3 * Preferences.userNodeForPackage(Console.class).getInt("fontSize", 12);
+        /**
+         * Sizes the gutter to three times the font size stored in the console preferences.
+         */
+        LineNumbersPanel() {
+            int initialSize = 3 * PREFERENCES.getInt(PREFERENCE_FONT_SIZE, DEFAULT_FONT_SIZE);
             setMinimumSize(new Dimension(initialSize, initialSize));
             setPreferredSize(new Dimension(initialSize, initialSize));
         }
 
+        /**
+         * Draws the visible line numbers in the gutter, left-padded to four characters,
+         * using the editor font. A failure to map the first visible offset is logged.
+         *
+         * @param g the gutter graphics
+         */
         @Override
+        @SuppressWarnings("deprecation") // TODO switch viewToModel/modelToView once minimum JDK version for Groovy >= 9
         public void paintComponent(Graphics g) {
             super.paintComponent(g);
             // starting position in document
@@ -99,7 +130,7 @@ public class ConsoleTextEditor extends JScrollPane {
             try {
                 startingY = textEditor.modelToView(start).y + fontHeight - fontDesc;
             } catch (BadLocationException e1) {
-                System.err.println(e1.getMessage());
+                LOGGER.log(WARNING, e1.getMessage());
             }
             g.setFont(f);
             for (int line = startline, y = startingY; line <= endline; y += fontHeight, line++) {
@@ -119,6 +150,12 @@ public class ConsoleTextEditor extends JScrollPane {
 
     private TextEditor textEditor = new TextEditor(true, true, true) {
 
+        /**
+         * After painting the text, repaints the line-number gutter when the document
+         * has changed since the last paint, then clears that flag.
+         *
+         * @param g the editor graphics
+         */
         @Override
         public void paintComponent(Graphics g) {
             super.paintComponent(g);
@@ -139,18 +176,69 @@ public class ConsoleTextEditor extends JScrollPane {
     private boolean editable = true;
 
     private TextUndoManager undoManager;
+    private int fontSize;
 
     /**
-     * Creates a new instance of ConsoleTextEditor
+     * Returns the undo manager backing this editor.
+     *
+     * @return the editor undo manager
+     * @since 6.0.0
+     */
+    public TextUndoManager getUndoManager() {
+        return undoManager;
+    }
+
+    /**
+     * Re-run the syntax highlighter on the full document so character
+     * attributes match the current theme. Undo recording is suppressed so
+     * this doesn't pollute the undo/redo stack. Used after undo/redo
+     * because UndoableEdits restore attributes captured at edit time,
+     * which may no longer match the active theme.
+     *
+     * @since 6.0.0
+     */
+    public void reapplyHighlighting() {
+        Document doc = textEditor.getDocument();
+        if (!(doc instanceof DefaultStyledDocument)) {
+            return;
+        }
+        DocumentFilter filter = ((DefaultStyledDocument) doc).getDocumentFilter();
+        if (filter instanceof SmartDocumentFilter) {
+            undoManager.setRecording(false);
+            try {
+                ((SmartDocumentFilter) filter).reparseDocument();
+            } finally {
+                undoManager.setRecording(true);
+            }
+        }
+    }
+
+    /**
+     * Creates a styled text editor with line numbers, undo/redo support,
+     * printing support, and syntax highlighting.
      */
     public ConsoleTextEditor() {
-        textEditor.setFont(new Font(defaultFamily, Font.PLAIN,
-		        Preferences.userNodeForPackage(Console.class).getInt("fontSize", 12)));
+        fontSize = PREFERENCES.getInt(PREFERENCE_FONT_SIZE, DEFAULT_FONT_SIZE);
+        PREFERENCES.addPreferenceChangeListener(evt -> {
+            if (PREFERENCE_FONT_SIZE.equals(evt.getKey())) {
+                int fs;
+                try {
+                    fs = Integer.parseInt(evt.getNewValue());
+                } catch (NumberFormatException e) {
+                    fs = DEFAULT_FONT_SIZE;
+                }
+                fontSize = fs;
 
-        setViewportView(new JPanel(new BorderLayout()) {{
-            add(numbersPanel, BorderLayout.WEST);
-            add(textEditor, BorderLayout.CENTER);
-        }});
+                int width = 3 * fontSize;
+                numbersPanel.setPreferredSize(new Dimension(width, width));
+            }
+        });
+        textEditor.setFont(new Font(defaultFamily, Font.PLAIN, fontSize));
+
+        JPanel view = new JPanel(new BorderLayout());
+        view.add(numbersPanel, BorderLayout.WEST);
+        view.add(textEditor, BorderLayout.CENTER);
+        setViewportView(view);
 
         textEditor.setDragEnabled(editable);
 
@@ -159,27 +247,40 @@ public class ConsoleTextEditor extends JScrollPane {
         initActions();
 
         DefaultStyledDocument doc = new DefaultStyledDocument();
-        doc.setDocumentFilter(new GroovyFilter(doc));
+        doc.setDocumentFilter(highlightingFilter(doc));
         textEditor.setDocument(doc);
 
         // add a document listener, to hint whether the line number gutter has to be repainted
         // when the number of lines changes
         doc.addDocumentListener(new DocumentListener() {
+            /**
+             * Marks the line-number gutter for repaint after an insertion.
+             *
+             * @param documentEvent the insertion
+             */
             @Override
             public void insertUpdate(DocumentEvent documentEvent) {
                 documentChangedSinceLastRepaint = true;
             }
 
+            /**
+             * Marks the line-number gutter for repaint after a deletion.
+             *
+             * @param documentEvent the deletion
+             */
             @Override
             public void removeUpdate(DocumentEvent documentEvent) {
                 documentChangedSinceLastRepaint = true;
             }
 
+            /**
+             * Marks the line-number gutter for repaint after an attribute change.
+             *
+             * @param documentEvent the attribute change
+             */
             @Override
             public void changedUpdate(DocumentEvent documentEvent) {
                 documentChangedSinceLastRepaint = true;
-                int width = 3 * Preferences.userNodeForPackage(Console.class).getInt("fontSize", 12);
-                numbersPanel.setPreferredSize(new Dimension(width, width));
             }
         });
 
@@ -195,57 +296,101 @@ public class ConsoleTextEditor extends JScrollPane {
         doc.addDocumentListener(redoAction);
 
         InputMap im = textEditor.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW);
-        KeyStroke ks = KeyStroke.getKeyStroke(KeyEvent.VK_Z, InputEvent.CTRL_MASK, false);
+        KeyStroke ks = KeyStroke.getKeyStroke(KeyEvent.VK_Z, InputEvent.CTRL_DOWN_MASK, false);
         im.put(ks, StructuredSyntaxResources.UNDO);
         ActionMap am = textEditor.getActionMap();
         am.put(StructuredSyntaxResources.UNDO, undoAction);
 
-        ks = KeyStroke.getKeyStroke(KeyEvent.VK_Y, InputEvent.CTRL_MASK, false);
+        ks = KeyStroke.getKeyStroke(KeyEvent.VK_Y, InputEvent.CTRL_DOWN_MASK, false);
         im.put(ks, StructuredSyntaxResources.REDO);
         am.put(StructuredSyntaxResources.REDO, redoAction);
 
-        ks = KeyStroke.getKeyStroke(KeyEvent.VK_P, InputEvent.CTRL_MASK, false);
+        ks = KeyStroke.getKeyStroke(KeyEvent.VK_P, InputEvent.CTRL_DOWN_MASK, false);
         im.put(ks, StructuredSyntaxResources.PRINT);
         am.put(StructuredSyntaxResources.PRINT, printAction);
+
+        // on macOS, remap Home/End to line start/end (Cmd+Home/End for document start/end)
+        if (System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac")) {
+            InputMap editorIm = textEditor.getInputMap(JComponent.WHEN_FOCUSED);
+            int meta = InputEvent.META_DOWN_MASK;
+            editorIm.put(KeyStroke.getKeyStroke(KeyEvent.VK_HOME, 0), DefaultEditorKit.beginLineAction);
+            editorIm.put(KeyStroke.getKeyStroke(KeyEvent.VK_END, 0), DefaultEditorKit.endLineAction);
+            editorIm.put(KeyStroke.getKeyStroke(KeyEvent.VK_HOME, InputEvent.SHIFT_DOWN_MASK), DefaultEditorKit.selectionBeginLineAction);
+            editorIm.put(KeyStroke.getKeyStroke(KeyEvent.VK_END, InputEvent.SHIFT_DOWN_MASK), DefaultEditorKit.selectionEndLineAction);
+            editorIm.put(KeyStroke.getKeyStroke(KeyEvent.VK_HOME, meta), DefaultEditorKit.beginAction);
+            editorIm.put(KeyStroke.getKeyStroke(KeyEvent.VK_END, meta), DefaultEditorKit.endAction);
+            editorIm.put(KeyStroke.getKeyStroke(KeyEvent.VK_HOME, meta | InputEvent.SHIFT_DOWN_MASK), DefaultEditorKit.selectionBeginAction);
+            editorIm.put(KeyStroke.getKeyStroke(KeyEvent.VK_END, meta | InputEvent.SHIFT_DOWN_MASK), DefaultEditorKit.selectionEndAction);
+        }
     }
 
+    /**
+     * Shows or hides the line-number gutter.
+     *
+     * @param showLineNumbers {@code true} to show line numbers
+     */
     public void setShowLineNumbers(boolean showLineNumbers) {
         if (showLineNumbers) {
-            setViewportView(new JPanel(new BorderLayout()) {{
-                add(numbersPanel, BorderLayout.WEST);
-                add(textEditor, BorderLayout.CENTER);
-            }});
+            JPanel view = new JPanel(new BorderLayout());
+            view.add(numbersPanel, BorderLayout.WEST);
+            view.add(textEditor, BorderLayout.CENTER);
+            setViewportView(view);
         } else {
             setViewportView(textEditor);
         }
     }
 
+    /**
+     * Updates whether the text editor accepts user edits.
+     *
+     * @param editable {@code true} if the editor should be editable
+     */
     public void setEditable(boolean editable) {
-        textEditor.setEditable(editable); 
+        textEditor.setEditable(editable);
     }
 
+    /**
+     * Reports whether plain-text clipboard content is currently available.
+     *
+     * @return {@code true} if the clipboard contains a string
+     */
     public boolean clipBoardAvailable() {
         Transferable t = StructuredSyntaxResources.SYSTEM_CLIPBOARD.getContents(this);
         return t.isDataFlavorSupported(DataFlavor.stringFlavor);
     }
 
+    /**
+     * Returns the wrapped text editor component.
+     *
+     * @return the embedded text editor
+     */
     public TextEditor getTextEditor() {
         return textEditor;
     }
 
+    /**
+     * Installs actions exposed by this editor on its action map.
+     */
     protected void initActions() {
         ActionMap map = getActionMap();
-
-        PrintAction printAction = new PrintAction();
-        map.put(StructuredSyntaxResources.PRINT, printAction);
+        map.put(StructuredSyntaxResources.PRINT, new PrintAction());
     }
 
     private class PrintAction extends AbstractAction {
 
-        public PrintAction() {
+        /**
+         * Creates the action already enabled.
+         */
+        PrintAction() {
             setEnabled(true);
         }
 
+        /**
+         * Shows the print dialog for the editor and prints when the user confirms.
+         * A failure from the print job is written to the stack trace.
+         *
+         * @param ae the action event
+         */
         @Override
         public void actionPerformed(ActionEvent ae) {
             PRINTER_JOB.setPageable(textEditor);
@@ -263,18 +408,33 @@ public class ConsoleTextEditor extends JScrollPane {
 
     private class RedoAction extends UpdateCaretListener implements PropertyChangeListener {
 
-        public RedoAction() {
+        /**
+         * Creates the action disabled until a redo is available.
+         */
+        RedoAction() {
             setEnabled(false);
         }
 
+        /**
+         * Redoes one edit, updates whether undo and redo are enabled, reapplies
+         * highlighting, and moves the caret to the last document update.
+         *
+         * @param ae the action event
+         */
         @Override
         public void actionPerformed(ActionEvent ae) {
             undoManager.redo();
             setEnabled(undoManager.canRedo());
             undoAction.setEnabled(undoManager.canUndo());
+            reapplyHighlighting();
             super.actionPerformed(ae);
         }
 
+        /**
+         * Enables this action when the undo manager can redo.
+         *
+         * @param pce the undo-manager property change
+         */
         @Override
         public void propertyChange(PropertyChangeEvent pce) {
             setEnabled(undoManager.canRedo());
@@ -283,22 +443,45 @@ public class ConsoleTextEditor extends JScrollPane {
 
     private abstract class UpdateCaretListener extends AbstractAction implements DocumentListener {
 
+        /**
+         * Document offset where the caret is placed after an undo or redo.
+         */
         protected int lastUpdate;
 
+        /**
+         * Ignores attribute changes, leaving {@link #lastUpdate} unchanged.
+         *
+         * @param de the attribute change
+         */
         @Override
         public void changedUpdate(DocumentEvent de) {
         }
 
+        /**
+         * Records the offset just past the inserted text.
+         *
+         * @param de the insertion
+         */
         @Override
         public void insertUpdate(DocumentEvent de) {
             lastUpdate = de.getOffset() + de.getLength();
         }
 
+        /**
+         * Records the offset where text was removed.
+         *
+         * @param de the deletion
+         */
         @Override
         public void removeUpdate(DocumentEvent de) {
             lastUpdate = de.getOffset();
         }
 
+        /**
+         * Moves the editor caret to {@link #lastUpdate}.
+         *
+         * @param ae the action event
+         */
         @Override
         public void actionPerformed(ActionEvent ae) {
             textEditor.setCaretPosition(lastUpdate);
@@ -307,55 +490,161 @@ public class ConsoleTextEditor extends JScrollPane {
 
     private class UndoAction extends UpdateCaretListener implements PropertyChangeListener {
 
-        public UndoAction() {
+        /**
+         * Creates the action disabled until an undo is available.
+         */
+        UndoAction() {
             setEnabled(false);
         }
 
+        /**
+         * Undoes one edit, updates whether undo and redo are enabled, reapplies
+         * highlighting, and moves the caret to the last document update.
+         *
+         * @param ae the action event
+         */
         @Override
         public void actionPerformed(ActionEvent ae) {
             undoManager.undo();
             setEnabled(undoManager.canUndo());
             redoAction.setEnabled(undoManager.canRedo());
+            reapplyHighlighting();
             super.actionPerformed(ae);
         }
 
+        /**
+         * Enables this action when the undo manager can undo.
+         *
+         * @param pce the undo-manager property change
+         */
         @Override
         public void propertyChange(PropertyChangeEvent pce) {
             setEnabled(undoManager.canUndo());
         }
     }
 
+    /**
+     * Returns the action that undoes the most recent edit.
+     *
+     * @return the undo action
+     */
     public Action getUndoAction() {
         return undoAction;
     }
 
+    /**
+     * Returns the action that redoes the most recently undone edit.
+     *
+     * @return the redo action
+     */
     public Action getRedoAction() {
         return redoAction;
     }
 
+    /**
+     * Returns the action that prints the editor content.
+     *
+     * @return the print action
+     */
     public Action getPrintAction() {
         return printAction;
     }
 
-    public void enableHighLighter(Class clazz) {
+    /**
+     * Semantic highlighter when groovy-lsp (and Gson) can be linked.
+     * A missing jar surfaces as {@link LinkageError} while the filter class
+     * initialises. The editor then uses the regex highlighter and stays open.
+     *
+     * @param doc document to highlight
+     * @return the installed filter
+     */
+    static DocumentFilter highlightingFilter(DefaultStyledDocument doc) {
+        return highlightingFilter(doc, SmartDocumentFilter::new);
+    }
+
+    /**
+     * Same as {@link #highlightingFilter(DefaultStyledDocument)}, with the
+     * semantic filter supplied by the caller so a test can simulate a missing jar.
+     *
+     * @param doc document to highlight
+     * @param semantic opens the semantic filter
+     * @return the installed filter
+     */
+    static DocumentFilter highlightingFilter(DefaultStyledDocument doc, FilterSource semantic) {
+        try {
+            return semantic.open(doc);
+        } catch (LinkageError error) {
+            return regexFilter(doc, error);
+        }
+    }
+
+    /**
+     * Opens a document filter. Production passes the smart-highlighter constructor.
+     */
+    @FunctionalInterface
+    interface FilterSource {
+        /**
+         * @param doc document to highlight
+         * @return the filter
+         */
+        DocumentFilter open(DefaultStyledDocument doc);
+    }
+
+    /**
+     * Replaces the current syntax highlighter document filter.
+     * A missing language-services jar falls back to regex highlighting.
+     *
+     * @param clazz the filter type to instantiate for the current document
+     */
+    public void enableHighLighter(Class<? extends DocumentFilter> clazz) {
         DefaultStyledDocument doc = (DefaultStyledDocument) textEditor.getDocument();
+        closeHighlighter();
 
         try {
-            DocumentFilter documentFilter = (DocumentFilter) clazz.getConstructor(doc.getClass()).newInstance(doc);
-            doc.setDocumentFilter(documentFilter);
-
-            disableMatchingHighlighter();
-            if (documentFilter instanceof SmartDocumentFilter) {
-                final SmartDocumentFilter smartDocumentFilter = (SmartDocumentFilter) documentFilter;
-                enableMatchingHighlighter(smartDocumentFilter);
-            }
+            DocumentFilter documentFilter = clazz == SmartDocumentFilter.class
+                    ? highlightingFilter(doc)
+                    : clazz.getConstructor(doc.getClass()).newInstance(doc);
+            installFilter(doc, documentFilter);
+        } catch (LinkageError error) {
+            installFilter(doc, regexFilter(doc, error));
         } catch (ReflectiveOperationException e) {
-            e.printStackTrace();
+            Throwable cause = e.getCause();
+            if (cause instanceof LinkageError link) {
+                installFilter(doc, regexFilter(doc, link));
+            } else {
+                e.printStackTrace();
+            }
+        }
+    }
+
+    private static DocumentFilter regexFilter(DefaultStyledDocument doc, LinkageError error) {
+        LOGGER.log(WARNING, "Groovy language services are unavailable ({0}); using regex highlighting.",
+                error.getClass().getSimpleName());
+        return new GroovyFilter(doc);
+    }
+
+    private void installFilter(DefaultStyledDocument doc, DocumentFilter documentFilter) {
+        doc.setDocumentFilter(documentFilter);
+        disableMatchingHighlighter();
+        if (documentFilter instanceof SmartDocumentFilter smartDocumentFilter) {
+            enableMatchingHighlighter(smartDocumentFilter);
         }
     }
 
     private void enableMatchingHighlighter(SmartDocumentFilter smartDocumentFilter) {
         textEditor.addCaretListener(new MatchingHighlighter(smartDocumentFilter, textEditor));
+    }
+
+    /**
+     * Closes the smart highlighter's language client, if one is installed.
+     */
+    public void closeHighlighter() {
+        if (textEditor == null || !(textEditor.getDocument() instanceof DefaultStyledDocument doc)) {
+            return;
+        }
+        if (doc.getDocumentFilter() instanceof SmartDocumentFilter smartDocumentFilter) {
+            smartDocumentFilter.close();
+        }
     }
 
     private void disableMatchingHighlighter() {

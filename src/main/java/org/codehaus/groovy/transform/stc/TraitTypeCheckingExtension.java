@@ -18,6 +18,7 @@
  */
 package org.codehaus.groovy.transform.stc;
 
+import groovy.transform.Virtual;
 import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.MethodNode;
@@ -25,124 +26,175 @@ import org.codehaus.groovy.ast.Parameter;
 import org.codehaus.groovy.ast.expr.ArgumentListExpression;
 import org.codehaus.groovy.ast.expr.MethodCall;
 import org.codehaus.groovy.ast.expr.MethodCallExpression;
+import org.codehaus.groovy.ast.expr.PropertyExpression;
 import org.codehaus.groovy.ast.expr.VariableExpression;
 import org.codehaus.groovy.transform.trait.TraitASTTransformation;
 import org.codehaus.groovy.transform.trait.Traits;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
-import java.util.LinkedHashSet;
 import java.util.List;
 
+import static org.codehaus.groovy.transform.stc.StaticTypeCheckingSupport.chooseBestMethod;
 import static org.codehaus.groovy.transform.stc.StaticTypeCheckingSupport.isClassClassNodeWrappingConcreteType;
 
 /**
- * A type checking extension that will take care of handling errors which are specific to traits. In particular, it will
- * handle the "super" method calls within a trait.
+ * An extension that handles field, super and static method calls within a trait.
  *
  * @since 2.3.0
  */
 public class TraitTypeCheckingExtension extends AbstractTypeCheckingExtension {
-    private static final List<MethodNode> NOTFOUND = Collections.emptyList();
+
+    private static final ClassNode VIRTUAL_TYPE = ClassHelper.make(Virtual.class);
 
     /**
-     * Builds a type checking extension relying on a Groovy script (type checking DSL).
-     *
-     * @param typeCheckingVisitor the type checking visitor
+     * Creates the trait-specific type-checking extension.
      */
     public TraitTypeCheckingExtension(final StaticTypeCheckingVisitor typeCheckingVisitor) {
         super(typeCheckingVisitor);
     }
 
-    @Override
-    public void setup() {
-    }
-
+    /**
+     * Resolves trait super calls and helper-backed trait method dispatch.
+     */
     @Override
     public List<MethodNode> handleMissingMethod(final ClassNode receiver, final String name, final ArgumentListExpression argumentList, final ClassNode[] argumentTypes, final MethodCall call) {
         String[] decomposed = Traits.decomposeSuperCallName(name);
         if (decomposed != null) {
-            return convertToDynamicCall(call, receiver, decomposed, argumentTypes);
-        }
-        if (call instanceof MethodCallExpression) {
-            MethodCallExpression mce = (MethodCallExpression) call;
-            if (mce.getReceiver() instanceof VariableExpression) {
-                VariableExpression var = (VariableExpression) mce.getReceiver();
+            String traitName = decomposed[0], methodName = decomposed[1];
+            List<ClassNode> implementedTraits = Traits.findTraits(receiver);
 
-                // GROOVY-7322
-                // static method call in trait?
-                ClassNode type = null;
-                if (isStaticTraitReceiver(receiver, var)) {
-                    type = receiver.getGenericsTypes()[0].getType();
-                } else if (isThisTraitReceiver(var)) {
-                    type = receiver;
+            ClassNode nextTrait = null;
+            for (int i = 0; i < implementedTraits.size() - 1; i += 1) {
+                ClassNode implementedTrait = implementedTraits.get(i);
+                if (implementedTrait.getName().equals(traitName)) {
+                    nextTrait = implementedTraits.get(i + 1);
                 }
-                if (Traits.isTrait(type) && !(type instanceof UnionTypeClassNode)) {
-                    List<ClassNode> candidates = new ArrayList<ClassNode>();
-                    candidates.add(type);
-                    while (!candidates.isEmpty()) {
-                        ClassNode next = candidates.remove(0);
-                        ClassNode helper = Traits.findHelper(next);
-                        Parameter[] params = new Parameter[argumentTypes.length + 1];
-                        params[0] = new Parameter(ClassHelper.CLASS_Type.getPlainNodeReference(), "staticSelf");
-                        for (int i = 1; i < params.length; i++) {
-                            params[i] = new Parameter(argumentTypes[i-1], "p" + i);
+            }
+
+            ClassNode returnType = ClassHelper.OBJECT_TYPE;
+            if (nextTrait != null) {
+                List<MethodNode> candidates = typeCheckingVisitor.findMethod(nextTrait, methodName, argumentTypes);
+                if (candidates.size() == 1) {
+                    returnType = candidates.get(0).getReturnType();
+                }
+            }
+
+            return Collections.singletonList(makeDynamic(call, returnType));
+        }
+
+        if (call instanceof MethodCallExpression mce) {
+            ClassNode returnType = mce.getNodeMetaData(TraitASTTransformation.DO_DYNAMIC);
+            if (returnType != null) return Collections.singletonList(makeDynamic(call, returnType));
+
+            // GROOVY-12112: a qualified `Trait.m(...)` call to a @Virtual trait static cannot
+            // resolve — @Virtual statics are intentionally not promoted onto the trait interface
+            // (they exist to be overridden per implementing class, so a bare Trait.m(...) has no
+            // implementing class to dispatch through). Replace the generic "cannot find method"
+            // with a clear, actionable error pointing at the supported forms.
+            if (isClassClassNodeWrappingConcreteType(receiver)) {
+                ClassNode traitType = receiver.getGenericsTypes()[0].getType();
+                if (Traits.isTrait(traitType)) {
+                    for (ClassNode trait : Traits.findTraits(traitType)) {
+                        ClassNode helper = Traits.findHelper(trait);
+                        if (helper == null) continue;
+                        for (MethodNode m : helper.getDeclaredMethods(name)) {
+                            if (m.isStatic() && !m.getAnnotations(VIRTUAL_TYPE).isEmpty()) {
+                                // The `T.super.m(...)` escape is only valid where `T` is the
+                                // *enclosing* trait (it walks that trait's super chain), so suggest
+                                // the trait the call sits in — not the receiver or declaring trait,
+                                // which need not match (e.g. `P.super.m()` from `Q`'s body is itself
+                                // illegal). Fall back to generic wording outside trait code.
+                                ClassNode enclosingTrait = enclosingTrait(getEnclosingClassNode());
+                                String superHint = enclosingTrait != null
+                                        ? ", or use '" + enclosingTrait.getNameWithoutPackage() + ".super." + name + "(...)' from within trait code for the trait's own definition"
+                                        : "; from within a trait use that trait's 'super' form (e.g. 'EnclosingTrait.super." + name + "(...)') for the trait's own definition";
+                                addStaticTypeError("Cannot call '" + traitType.getNameWithoutPackage() + "." + name + "(...)': '" + name
+                                        + "' is a @Virtual trait static method, which is overridable per implementing class and is not callable through the trait itself. "
+                                        + "Invoke it on an implementing class (e.g. 'SomeImpl." + name + "(...)')" + superHint, mce);
+                                return Collections.singletonList(makeDynamic(call, m.getReturnType()));
+                            }
                         }
-                        MethodNode method = helper.getDeclaredMethod(name, params);
-                        if (method != null) {
-                            return Collections.singletonList(makeDynamic(call, method.getReturnType()));
-                        }
-                        // GROOVY-8272 support inherited static methods
-                        candidates.addAll(Arrays.asList(next.getInterfaces()));
                     }
                 }
             }
 
-            ClassNode dynamic = mce.getNodeMetaData(TraitASTTransformation.DO_DYNAMIC);
-            if (dynamic!=null) {
-                return Collections.singletonList(makeDynamic(call, dynamic));
+            // GROOVY-7322, GROOVY-8272, GROOVY-8587, GROOVY-8854, GROOVY-10312, GROOVY-12106: trait: this.m($static$self)
+            ClassNode targetClass = isClassClassNodeWrappingConcreteType(receiver)? receiver.getGenericsTypes()[0].getType(): receiver;
+            if (Traits.isTrait(targetClass.getOuterClass()) && argumentTypes.length > 0 && ClassHelper.isClassType(argumentTypes[0])) {
+                List<ClassNode> traits = Traits.findTraits(targetClass.getOuterClass());
+                traits.remove(targetClass.getOuterClass());
+
+                for (ClassNode trait : traits) { // check super trait for static method
+                    // GROOVY-12106: select over the super-trait helper's OWN declared statics
+                    // with subtype-aware overload resolution, so an argument whose static type
+                    // is a subtype of the declared parameter still resolves (matching plain-class
+                    // static inheritance). chooseBestMethod (not findMethod) is used deliberately:
+                    // it avoids folding in DGM/extension methods that could collide by name, and
+                    // it makes the chosen candidate deterministic.
+                    ClassNode helper = Traits.findHelper(trait);
+                    List<MethodNode> candidates = new ArrayList<>();
+                    for (MethodNode m : helper.getDeclaredMethods(name)) {
+                        if (m.isStatic()) candidates.add(m);
+                    }
+                    if (!candidates.isEmpty()) {
+                        List<MethodNode> best = chooseBestMethod(helper, candidates, argumentTypes);
+                        if (!best.isEmpty()) { // one match -> its type; a tie -> Object (ambiguity-safe)
+                            return Collections.singletonList(makeDynamic(call,
+                                    best.size() == 1 ? best.get(0).getReturnType() : ClassHelper.OBJECT_TYPE));
+                        }
+                    }
+                }
             }
         }
-        return NOTFOUND;
+
+        return Collections.emptyList();
     }
 
-    private static boolean isStaticTraitReceiver(final ClassNode receiver, final VariableExpression var) {
-        return Traits.STATIC_THIS_OBJECT.equals(var.getName()) && isClassClassNodeWrappingConcreteType(receiver);
+    /**
+     * Returns the trait whose body the currently type-checked code belongs to, or
+     * {@code null} when not in trait code. At type-check time a trait's methods have
+     * been moved to its {@code $Trait$Helper}, so the enclosing class is normally that
+     * helper, whose outer class is the trait.
+     */
+    private static ClassNode enclosingTrait(final ClassNode enclosing) {
+        if (enclosing == null) return null;
+        if (Traits.isTrait(enclosing)) return enclosing;
+        ClassNode outer = enclosing.getOuterClass();
+        if (outer != null && enclosing.getName().endsWith("$Helper") && Traits.isTrait(outer)) return outer;
+        return null;
     }
 
-    private static boolean isThisTraitReceiver(final VariableExpression var) {
-        return Traits.THIS_OBJECT.equals(var.getName());
-    }
-
-    private List<MethodNode> convertToDynamicCall(MethodCall call, ClassNode receiver, String[] decomposed, ClassNode[] argumentTypes) {
-        String traitName = decomposed[0];
-        String name = decomposed[1];
-        LinkedHashSet<ClassNode> traitsAsList = Traits.collectAllInterfacesReverseOrder(receiver, new LinkedHashSet<ClassNode>());
-        ClassNode[] implementedTraits = traitsAsList.toArray(ClassNode.EMPTY_ARRAY);
-        ClassNode nextTrait = null;
-        for (int i = 0; i < implementedTraits.length - 1; i++) {
-            ClassNode implementedTrait = implementedTraits[i];
-            if (implementedTrait.getName().equals(traitName)) {
-                nextTrait = implementedTraits[i + 1];
+    /**
+     * Resolves synthetic trait static-field accessor properties.
+     */
+    @Override
+    public boolean handleUnresolvedProperty(final PropertyExpression pexp) {
+        var objectExpression = pexp.getObjectExpression();
+        if (objectExpression instanceof VariableExpression
+                && objectExpression.getText().endsWith(Traits.THIS_OBJECT)) {
+            String propertyName = pexp.getPropertyAsString();
+            if (propertyName != null) {
+                ClassNode objectExpressionType = getType(objectExpression);
+                if (isClassClassNodeWrappingConcreteType(objectExpressionType)) {
+                    objectExpressionType = objectExpressionType.getGenericsTypes()[0].getType();
+                }
+                for (ClassNode trait : Traits.findTraits(objectExpressionType)) {
+                    if (propertyName.startsWith(trait.getName().replace('.', '_') + "__")) {
+                        ClassNode staticFieldHelper = Traits.findStaticFieldHelper(trait);
+                        if (staticFieldHelper != null) {
+                            MethodNode getter = staticFieldHelper.getDeclaredMethod(propertyName + "$get", Parameter.EMPTY_ARRAY);
+                            if (getter != null) { // GROOVY-11663: resolve "$self.pack_Type__name" to a static field access method
+                                ClassNode returnType = typeCheckingVisitor.inferReturnTypeGenerics(objectExpressionType, getter, ArgumentListExpression.EMPTY_ARGUMENTS);
+                                pexp.putNodeMetaData(StaticTypesMarker.DYNAMIC_RESOLUTION, returnType);
+                                storeType(pexp, returnType);
+                                return true;
+                            }
+                        }
+                    }
+                }
             }
         }
-        ClassNode[] newArgs = new ClassNode[argumentTypes.length];
-        System.arraycopy(argumentTypes, 0, newArgs, 0, newArgs.length);
-        ClassNode inferredReturnType = inferTraitMethodReturnType(nextTrait, name, newArgs);
-
-        return Collections.singletonList(makeDynamic(call, inferredReturnType));
+        return false;
     }
-
-    private ClassNode inferTraitMethodReturnType(ClassNode nextTrait, String methodName, ClassNode[] paramTypes) {
-        ClassNode result = ClassHelper.OBJECT_TYPE;
-        if (nextTrait != null) {
-            List<MethodNode> candidates = typeCheckingVisitor.findMethod(nextTrait, methodName, paramTypes);
-            if (candidates.size() == 1) {
-                result = candidates.get(0).getReturnType();
-            }
-        }
-        return result;
-    }
-
 }

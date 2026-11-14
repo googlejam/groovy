@@ -18,6 +18,7 @@
  */
 package org.codehaus.groovy.transform
 
+import groovy.transform.CompileStatic
 import groovy.transform.ConditionalInterrupt
 import org.codehaus.groovy.ast.AnnotatedNode
 import org.codehaus.groovy.ast.AnnotationNode
@@ -27,12 +28,10 @@ import org.codehaus.groovy.ast.FieldNode
 import org.codehaus.groovy.ast.MethodNode
 import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.PropertyNode
-import org.codehaus.groovy.ast.expr.ArgumentListExpression
 import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.expr.Expression
-import org.codehaus.groovy.ast.expr.MethodCallExpression
-import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.tools.ClosureUtils
+import org.codehaus.groovy.ast.tools.GeneralUtils
 import org.codehaus.groovy.control.CompilePhase
 
 /**
@@ -40,55 +39,87 @@ import org.codehaus.groovy.control.CompilePhase
  * check on loops (for, while, do) and first statement of closures. By default, also adds an interrupt check
  * statement on the beginning of method calls.
  *
- * @see groovy.transform.ConditionalInterrupt* @since 1.8.0
+ * @see groovy.transform.ConditionalInterrupt
+ * @since 1.8.0
  */
+@CompileStatic
 @GroovyASTTransformation(phase = CompilePhase.CANONICALIZATION)
 class ConditionalInterruptibleASTTransformation extends AbstractInterruptibleASTTransformation {
 
-    private static final ClassNode MY_TYPE = ClassHelper.make(ConditionalInterrupt)
-
     private ClosureExpression conditionNode
     private String conditionMethod
-    private MethodCallExpression conditionCallExpression
     private ClassNode currentClass
 
+    /**
+     * Returns the annotation type handled by this transformation.
+     *
+     * @return the handled annotation type
+     */
     protected ClassNode type() {
-        MY_TYPE
+        ClassHelper.make(ConditionalInterrupt)
     }
 
-    @SuppressWarnings('Instanceof')
+    /**
+     * Initializes the transformation state from the annotation node.
+     *
+     * @param node the transformation annotation
+     */
     protected void setupTransform(AnnotationNode node) {
         super.setupTransform(node)
         def member = node.getMember('value')
-        if (!member || !(member instanceof ClosureExpression)) internalError("Expected closure value for annotation parameter 'value'. Found $member")
-        conditionNode = member
+        if (member !instanceof ClosureExpression)
+            internalError("Expected closure value for annotation parameter 'value'. Found $member")
+        conditionNode = (ClosureExpression) member
         conditionMethod = 'conditionalTransform' + node.hashCode() + '$condition'
-        conditionCallExpression = new MethodCallExpression(new VariableExpression('this'), conditionMethod, new ArgumentListExpression())
     }
 
+    /**
+     * Returns the message used when the interrupt condition evaluates to {@code true}.
+     *
+     * @return the failure message
+     */
     protected String getErrorMessage() {
         'Execution interrupted. The following condition failed: ' + convertClosureToSource(conditionNode)
     }
 
+    /**
+     * Adds the synthetic condition method and visits eligible class members.
+     *
+     * @param type the class being transformed
+     */
     void visitClass(ClassNode type) {
         currentClass = type
-        def method = type.addMethod(conditionMethod, ACC_PRIVATE | ACC_SYNTHETIC, ClassHelper.OBJECT_TYPE, Parameter.EMPTY_ARRAY, ClassNode.EMPTY_ARRAY, conditionNode.code)
-        method.synthetic = true
+        type.addSyntheticMethod(conditionMethod, ACC_PRIVATE, ClassHelper.OBJECT_TYPE, Parameter.EMPTY_ARRAY, ClassNode.EMPTY_ARRAY, conditionNode.code)
         if (applyToAllMembers) {
             super.visitClass(type)
         }
     }
 
+    /**
+     * Builds the expression that calls the generated condition method.
+     *
+     * @return the interrupt condition expression
+     */
     protected Expression createCondition() {
-        conditionCallExpression
+        GeneralUtils.callThisX(conditionMethod)
     }
 
+    /**
+     * Skips annotation visitation to avoid re-entering the transformation.
+     *
+     * @param node the annotated node, ignored by this transformation
+     */
     @Override
     void visitAnnotations(AnnotatedNode node) {
         // this transformation does not apply on annotation nodes
         // visiting could lead to stack overflows
     }
 
+    /**
+     * Visits eligible instance fields.
+     *
+     * @param node the field being visited
+     */
     @Override
     void visitField(FieldNode node) {
         if (!node.isStatic() && !node.isSynthetic()) {
@@ -96,6 +127,11 @@ class ConditionalInterruptibleASTTransformation extends AbstractInterruptibleAST
         }
     }
 
+    /**
+     * Visits eligible instance properties.
+     *
+     * @param node the property being visited
+     */
     @Override
     void visitProperty(PropertyNode node) {
         if (!node.isStatic() && !node.isSynthetic()) {
@@ -103,6 +139,11 @@ class ConditionalInterruptibleASTTransformation extends AbstractInterruptibleAST
         }
     }
 
+    /**
+     * Wraps closure bodies with the interrupt check, excluding the annotation closure itself.
+     *
+     * @param closureExpr the closure being visited
+     */
     @Override
     void visitClosureExpression(ClosureExpression closureExpr) {
         if (closureExpr == conditionNode) return // do not visit the closure from the annotation itself
@@ -111,6 +152,11 @@ class ConditionalInterruptibleASTTransformation extends AbstractInterruptibleAST
         super.visitClosureExpression closureExpr
     }
 
+    /**
+     * Wraps eligible methods with the interrupt check while preserving script bootstrap behavior.
+     *
+     * @param node the method being visited
+     */
     @Override
     void visitMethod(MethodNode node) {
         if (node.name == conditionMethod && !node.isSynthetic()) return // do not visit the generated method

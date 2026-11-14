@@ -22,6 +22,7 @@ import groovy.json.JsonException;
 
 import java.io.Reader;
 import java.io.StringReader;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -34,11 +35,23 @@ public class JsonParserUsingCharacterSource extends BaseJsonParser {
 
     private CharacterSource characterSource;
 
+    /**
+     * Builds an error message using the current character source state.
+     *
+     * @param message parser-specific message
+     * @return formatted error details
+     */
     protected String exceptionDetails(String message) {
         return characterSource.errorDetails(message);
     }
 
+    /**
+     * Decodes a JSON object from the current character source position.
+     *
+     * @return parsed object as a {@link LazyMap}
+     */
     protected final Object decodeJsonObject() {
+        enterNesting();
         LazyMap map = new LazyMap();
 
         try {
@@ -96,87 +109,74 @@ public class JsonParserUsingCharacterSource extends BaseJsonParser {
             }
         } catch (Exception ex) {
             throw new JsonException(exceptionDetails("Unable to parse JSON object"), ex);
+        } finally {
+            exitNesting();
         }
 
         return map;
     }
 
+    /**
+     * Throws a {@link JsonException} for the current source location.
+     *
+     * @param complaint message describing the parse failure
+     */
     protected final void complain(String complaint) {
         throw new JsonException(exceptionDetails(complaint));
     }
 
     private Object decodeValue() {
         CharacterSource characterSource = this.characterSource;
-        Object value = null;
         characterSource.skipWhiteSpace();
 
-        switch (characterSource.currentChar()) {
-            case '"':
-                value = decodeString();
-                break;
-
-            case 't':
-                value = decodeTrue();
-                break;
-
-            case 'f':
-                value = decodeFalse();
-                break;
-
-            case 'n':
-                value = decodeNull();
-                break;
-
-            case '[':
-                value = decodeJsonArray();
-                break;
-
-            case '{':
-                value = decodeJsonObject();
-                break;
-
-            case '0':
-            case '1':
-            case '2':
-            case '3':
-            case '4':
-            case '5':
-            case '6':
-            case '7':
-            case '8':
-            case '9':
-                value = decodeNumber(false);
-                break;
-
-            case '-':
-                value = decodeNumber(true);
-                break;
-
-            default:
-                throw new JsonException(exceptionDetails("Unable to determine the " +
-                        "current character, it is not a string, number, array, or object"));
-        }
+        Object value = switch (characterSource.currentChar()) {
+            case '"' -> decodeString();
+            case 't' -> decodeTrue();
+            case 'f' -> decodeFalse();
+            case 'n' -> decodeNull();
+            case '[' -> decodeJsonArray();
+            case '{' -> decodeJsonObject();
+            case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' -> decodeNumber(false);
+            case '-' -> decodeNumber(true);
+            default -> throw new JsonException(exceptionDetails("Unable to determine the " +
+                "current character, it is not a string, number, array, or object"));
+        };
 
         return value;
     }
 
     private Object decodeNumber(boolean negative) {
         char[] chars = characterSource.readNumber();
-        Object value = null;
+        checkNumberLength(chars.length);
+        Object value;
 
-        if (CharScanner.hasDecimalChar(chars, negative)) {
-            value = CharScanner.parseBigDecimal(chars);
-        } else if (CharScanner.isInteger(chars)) {
-            value = CharScanner.parseInt(chars);
-        } else if (CharScanner.isLong(chars)) {
-            value = CharScanner.parseLong(chars);
+        try {
+            if (CharScanner.hasDecimalChar(chars, negative)) {
+                value = CharScanner.parseBigDecimal(chars);
+            } else if (CharScanner.isInteger(chars)) {
+                value = CharScanner.parseInt(chars);
+            } else if (CharScanner.isLong(chars)) {
+                value = CharScanner.parseLong(chars);
+            } else {
+                value = new BigInteger(new String(chars));
+            }
+        } catch (NumberFormatException e) {
+            throw new JsonException(exceptionDetails("unable to parse number: " + new String(chars)), e);
         }
 
         return value;
     }
 
+    /**
+     * Character buffer for the {@code null} literal.
+     */
     protected static final char[] NULL = Chr.chars("null");
 
+    /**
+     * Consumes the {@code null} literal.
+     *
+     * @return {@code null}
+     */
     protected final Object decodeNull() {
         if (!characterSource.consumeIfMatch(NULL)) {
             throw new JsonException(exceptionDetails("null not parse properly"));
@@ -184,8 +184,16 @@ public class JsonParserUsingCharacterSource extends BaseJsonParser {
         return null;
     }
 
+    /**
+     * Character buffer for the {@code true} literal.
+     */
     protected static final char[] TRUE = Chr.chars("true");
 
+    /**
+     * Consumes the {@code true} literal.
+     *
+     * @return {@code true}
+     */
     protected final boolean decodeTrue() {
         if (characterSource.consumeIfMatch(TRUE)) {
             return true;
@@ -194,8 +202,16 @@ public class JsonParserUsingCharacterSource extends BaseJsonParser {
         }
     }
 
+    /**
+     * Character buffer for the {@code false} literal.
+     */
     protected static char[] FALSE = Chr.chars("false");
 
+    /**
+     * Consumes the {@code false} literal.
+     *
+     * @return {@code false}
+     */
     protected final boolean decodeFalse() {
         if (characterSource.consumeIfMatch(FALSE)) {
             return false;
@@ -224,7 +240,13 @@ public class JsonParserUsingCharacterSource extends BaseJsonParser {
         return value;
     }
 
+    /**
+     * Decodes a JSON array from the current character source position.
+     *
+     * @return parsed array contents
+     */
     protected final List decodeJsonArray() {
+        enterNesting();
         ArrayList<Object> list = null;
 
         boolean foundEnd = false;
@@ -240,10 +262,10 @@ public class JsonParserUsingCharacterSource extends BaseJsonParser {
         /* the list might be empty  */
             if (this.characterSource.currentChar() == ']') {
                 characterSource.nextChar();
-                return new ArrayList();
+                return new ArrayList<>();
             }
 
-            list = new ArrayList();
+            list = new ArrayList<>();
 
             do {
                 characterSource.skipWhiteSpace();
@@ -276,6 +298,8 @@ public class JsonParserUsingCharacterSource extends BaseJsonParser {
             } while (characterSource.hasChar());
         } catch (Exception ex) {
             throw new JsonException(exceptionDetails("Unexpected issue"), ex);
+        } finally {
+            exitNesting();
         }
 
         if (!foundEnd) {
@@ -284,12 +308,25 @@ public class JsonParserUsingCharacterSource extends BaseJsonParser {
         return list;
     }
 
+    /**
+     * Parses JSON from a reader-backed character source.
+     *
+     * @param reader reader supplying JSON content
+     * @return parsed Groovy JSON value
+     */
     @Override
     public Object parse(Reader reader) {
         characterSource = new ReaderCharacterSource(reader);
+        resetNesting();
         return this.decodeValue();
     }
 
+    /**
+     * Parses JSON from a character array.
+     *
+     * @param chars JSON content to parse
+     * @return parsed Groovy JSON value
+     */
     @Override
     public Object parse(char[] chars) {
         return parse(new StringReader(new String(chars)));

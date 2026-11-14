@@ -24,62 +24,102 @@ import org.codehaus.groovy.ast.VariableScope;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.StringJoiner;
 
 /**
- * A list of statements and a scope. 
+ * Represents a compound statement consisting of an ordered sequence of {@link Statement}s
+ * within a specific {@link VariableScope}. A block statement is the fundamental grouping
+ * mechanism in the Groovy AST and is used to represent the body of methods, classes, loops, conditionals,
+ * try-catch blocks, and any other scoped code region.
+ *
+ * @see Statement
+ * @see VariableScope
  */
 public class BlockStatement extends Statement {
 
-    private List<Statement> statements = new ArrayList<Statement>();
+    private List<Statement> statements;
     private VariableScope scope;
-    
+
+    /**
+     * Constructs an empty BlockStatement with a new default scope.
+     */
     public BlockStatement() {
-        this(new ArrayList<Statement>(), new VariableScope());
+        this(new ArrayList<>(), new VariableScope());
     }
 
     /**
-     * Creates a BlockStatement with a scope and children statements.
+     * Constructs a BlockStatement with an array of statements and a variable scope.
+     * The provided array is copied internally; subsequent modifications to the array
+     * will not affect this BlockStatement.
+     *
      * @param statements
-     *      the statements. Do not pass null. If you do, no exception will occur,
-     *      but a NullPointerException will eventually occur later. Also, a reference
-     *      to the list is kept, so modifying the List later does effect this class.
+     *      an array of {@link Statement}s to include in this block; must not be null
+     *      or a NullPointerException will be raised
      * @param scope
-     *      the scope
+     *      the {@link VariableScope} for this block, typically containing local variable
+     *      declarations and type information
      */
-    public BlockStatement(List<Statement> statements, VariableScope scope) {
-        this.statements = statements;
-        this.scope = scope;
+    public BlockStatement(final Statement[] statements, final VariableScope scope) {
+        this(new ArrayList<>(Arrays.asList(statements)), scope);
     }
-    
+
     /**
-     * Creates a BlockStatement with a scope and children statements.
+     * Constructs a BlockStatement with a list of statements and a variable scope.
+     * A reference to the provided list is maintained; modifications to the list after
+     * construction will be reflected in this BlockStatement.
+     *
      * @param statements
-     *      the statements, which cannot be null or an exception occurs. No reference
-     *      to the array is held, so modifying the array later has no effect on this
-     *      class.
+     *      a {@link List} of {@link Statement}s to include in this block; pass an empty list,
+     *      not null, to avoid NullPointerException later
      * @param scope
-     *      the scope
+     *      the {@link VariableScope} for this block, containing variable binding and type metadata
      */
-    public BlockStatement(Statement[] statements, VariableScope scope) {
-        this.statements.addAll(Arrays.asList(statements));
+    public BlockStatement(final List<Statement> statements, final VariableScope scope) {
+        this.statements = statements;
         this.scope = scope;
     }
 
     @Override
-    public void visit(GroovyCodeVisitor visitor) {
+    public void visit(final GroovyCodeVisitor visitor) {
         visitor.visitBlockStatement(this);
     }
 
+    /**
+     * Returns the list of {@link Statement}s in this block.
+     *
+     * @return an unmodifiable view or direct reference to the statements list
+     */
     public List<Statement> getStatements() {
         return statements;
     }
 
-    public void addStatement(Statement statement) {
+    /**
+     * Appends a {@link Statement} to this block.
+     *
+     * @param statement
+     *      the {@link Statement} to add; must not be null
+     */
+    public void addStatement(final Statement statement) {
         statements.add(statement);
     }
 
-    public void addStatements(List<Statement> listOfStatements) {
+    /**
+     * Appends all {@link Statement}s from the provided list to this block.
+     *
+     * @param listOfStatements
+     *      a {@link List} of {@link Statement}s to append; must not be null
+     */
+    public void addStatements(final List<Statement> listOfStatements) {
         statements.addAll(listOfStatements);
+    }
+
+    @Override
+    public String getText() {
+        StringJoiner text = new StringJoiner("; ", "{ ", " }");
+        for (Statement statement : statements) {
+            text.add(statement.getText());
+        }
+        return text.toString();
     }
 
     @Override
@@ -87,33 +127,33 @@ public class BlockStatement extends Statement {
         return super.toString() + statements;
     }
 
-    @Override
-    public String getText() {
-        StringBuilder buffer = new StringBuilder("{ ");
-        boolean first = true;
-        for (Statement statement : statements) {
-            if (first) {
-                first = false;
-            }
-            else {
-                buffer.append("; ");
-            }
-            buffer.append(statement.getText());
-        }
-        buffer.append(" }");
-        return buffer.toString();
-    }
-
+    /**
+     * Checks whether this block contains no statements.
+     *
+     * @return true if the statement list is empty, false otherwise
+     */
     @Override
     public boolean isEmpty() {
         return statements.isEmpty();
     }
 
-    public void setVariableScope(VariableScope scope) {
-        this.scope = scope;
-    }
-    
+    /**
+     * Returns the {@link VariableScope} associated with this block, which contains
+     * variable declarations, type information, and scope metadata.
+     *
+     * @return the {@link VariableScope} for this block
+     */
     public VariableScope getVariableScope() {
         return scope;
+    }
+
+    /**
+     * Sets the {@link VariableScope} for this block.
+     *
+     * @param scope
+     *      the {@link VariableScope} to associate with this block
+     */
+    public void setVariableScope(final VariableScope scope) {
+        this.scope = scope;
     }
 }

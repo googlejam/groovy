@@ -20,17 +20,25 @@ package org.codehaus.groovy.runtime;
 
 import groovy.lang.Closure;
 import groovy.lang.GroovyRuntimeException;
+import groovy.transform.NamedParam;
+import groovy.transform.NamedParams;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.Writer;
+import java.nio.charset.Charset;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.StringTokenizer;
+import java.util.concurrent.TimeUnit;
 
 /**
  * This class defines new groovy methods which appear on normal JDK
@@ -51,6 +59,49 @@ import java.util.List;
 public class ProcessGroovyMethods extends DefaultGroovyMethodsSupport {
 
     /**
+     * The system property naming the charset used for process streams when no explicit
+     * charset is supplied. It overrides the native encoding and is useful for a child
+     * known to emit (or expect) something other than the platform's native encoding,
+     * e.g. a UTF-8 child on a Windows host.
+     *
+     * @since 6.0.0
+     */
+    public static final String PROCESS_ENCODING_PROPERTY = "groovy.process.encoding";
+
+    /**
+     * The operating system's native encoding, as named by the {@code native.encoding}
+     * system property (JDK 17+), falling back to {@link Charset#defaultCharset()} when
+     * that property is absent or names an unsupported charset. This cannot change during
+     * the life of the JVM, so it is resolved once.
+     */
+    private static final Charset NATIVE_ENCODING =
+            charsetOrDefault(System.getProperty("native.encoding"), Charset.defaultCharset());
+
+    /**
+     * The charset used for a process's streams when no explicit charset is supplied.
+     * A child process reads and writes text in the operating system's native encoding,
+     * whereas {@link Charset#defaultCharset()} has been UTF-8 on every platform since
+     * JEP 400, so on a non-UTF-8 host the default charset no longer describes what the
+     * child emits or expects. The native encoding is used instead, matching the charset
+     * selection of {@link Process#inputReader()} and {@link Process#outputWriter()}.
+     * Setting {@value #PROCESS_ENCODING_PROPERTY} overrides it.
+     */
+    private static Charset processEncoding() {
+        return charsetOrDefault(System.getProperty(PROCESS_ENCODING_PROPERTY), NATIVE_ENCODING);
+    }
+
+    private static Charset charsetOrDefault(String name, Charset fallback) {
+        if (name != null && !name.isEmpty()) {
+            try {
+                return Charset.forName(name);
+            } catch (IllegalArgumentException ignore) {
+                // unknown or unsupported charset name
+            }
+        }
+        return fallback;
+    }
+
+    /**
      * An alias method so that a process appears similar to System.out, System.in, System.err;
      * you can use process.in, process.out, process.err in a similar fashion.
      *
@@ -63,7 +114,8 @@ public class ProcessGroovyMethods extends DefaultGroovyMethodsSupport {
     }
 
     /**
-     * Read the text of the output stream of the Process.
+     * Read the text of the output stream of the Process, decoding using the operating
+     * system's native encoding (or {@value #PROCESS_ENCODING_PROPERTY} when set).
      * Closes all the streams associated with the process after retrieving the text.
      *
      * @param self a Process instance
@@ -72,9 +124,26 @@ public class ProcessGroovyMethods extends DefaultGroovyMethodsSupport {
      * @since 1.0
      */
     public static String getText(Process self) throws IOException {
-        String text = IOGroovyMethods.getText(new BufferedReader(new InputStreamReader(self.getInputStream())));
-        closeStreams(self);
-        return text;
+        return getText(self, processEncoding());
+    }
+
+    /**
+     * Read the text of the output stream of the Process using the given charset.
+     * Closes all the streams associated with the process after retrieving the text.
+     *
+     * @param self a Process instance
+     * @param charset the charset the process writes its output in, or null to use the process encoding
+     * @return the text of the output
+     * @throws java.io.IOException if an IOException occurs.
+     * @since 6.0.0
+     */
+    public static String getText(Process self, Charset charset) throws IOException {
+        if (charset == null) charset = processEncoding();
+        try {
+            return IOGroovyMethods.getText(new BufferedReader(new InputStreamReader(self.getInputStream(), charset)));
+        } finally {
+            closeStreams(self);
+        }
     }
 
     /**
@@ -103,7 +172,9 @@ public class ProcessGroovyMethods extends DefaultGroovyMethodsSupport {
 
     /**
      * Overloads the left shift operator (&lt;&lt;) to provide an append mechanism
-     * to pipe data to a Process.
+     * to pipe data to a Process. The value is encoded using the operating system's
+     * native encoding (or {@value #PROCESS_ENCODING_PROPERTY} when set), which is what
+     * the child process expects to read.
      *
      * @param self  a Process instance
      * @param value a value to append
@@ -112,7 +183,7 @@ public class ProcessGroovyMethods extends DefaultGroovyMethodsSupport {
      * @since 1.0
      */
     public static Writer leftShift(Process self, Object value) throws IOException {
-        return IOGroovyMethods.leftShift(self.getOutputStream(), value);
+        return IOGroovyMethods.leftShift(new FlushingStreamWriter(self.getOutputStream(), processEncoding()), value);
     }
 
     /**
@@ -185,8 +256,27 @@ public class ProcessGroovyMethods extends DefaultGroovyMethodsSupport {
      * @since 1.7.5
      */
     public static void consumeProcessOutput(Process self, Appendable output, Appendable error) {
-        consumeProcessOutputStream(self, output);
-        consumeProcessErrorStream(self, error);
+        consumeProcessOutput(self, output, error, processEncoding());
+    }
+
+    /**
+     * Gets the output and error streams from a process and reads them
+     * to keep the process from blocking due to a full output buffer.
+     * The processed stream data is decoded using the given charset and appended
+     * to the supplied Appendable.
+     * For this, two Threads are started, so this method will return immediately.
+     * The threads will not be join()ed, even if waitFor() is called. To wait
+     * for the output to be fully consumed call waitForProcessOutput().
+     *
+     * @param self a Process
+     * @param output an Appendable to capture the process stdout
+     * @param error an Appendable to capture the process stderr
+     * @param charset the charset the process writes its output in
+     * @since 6.0.0
+     */
+    public static void consumeProcessOutput(Process self, Appendable output, Appendable error, Charset charset) {
+        consumeProcessOutputStream(self, output, charset);
+        consumeProcessErrorStream(self, error, charset);
     }
 
     /**
@@ -239,8 +329,27 @@ public class ProcessGroovyMethods extends DefaultGroovyMethodsSupport {
      * @since 1.7.5
      */
     public static void waitForProcessOutput(Process self, Appendable output, Appendable error) {
-        Thread tout = consumeProcessOutputStream(self, output);
-        Thread terr = consumeProcessErrorStream(self, error);
+        waitForProcessOutput(self, output, error, processEncoding());
+    }
+
+    /**
+     * Gets the output and error streams from a process and reads them
+     * to keep the process from blocking due to a full output buffer.
+     * The processed stream data is decoded using the given charset and appended
+     * to the supplied Appendable.
+     * For this, two Threads are started, but join()ed, so we wait.
+     * As implied by the waitFor... name, we also wait until we finish
+     * as well. Finally, the input, output and error streams are closed.
+     *
+     * @param self a Process
+     * @param output an Appendable to capture the process stdout
+     * @param error an Appendable to capture the process stderr
+     * @param charset the charset the process writes its output in
+     * @since 6.0.0
+     */
+    public static void waitForProcessOutput(Process self, Appendable output, Appendable error, Charset charset) {
+        Thread tout = consumeProcessOutputStream(self, output, charset);
+        Thread terr = consumeProcessErrorStream(self, error, charset);
         boolean interrupted = false;
         try {
             try { tout.join(); } catch (InterruptedException ignore) { interrupted = true; }
@@ -280,6 +389,136 @@ public class ProcessGroovyMethods extends DefaultGroovyMethodsSupport {
     }
 
     /**
+     * Executes the process and waits for it to complete, capturing
+     * the standard output, standard error, and exit code into a
+     * {@link ProcessResult}.
+     *
+     * <pre>
+     * def result = "ls -la".execute().waitForResult()
+     * if (result.ok) println result.out
+     * else System.err.println result.err
+     * </pre>
+     *
+     * @param self a Process
+     * @return a ProcessResult containing stdout, stderr, and exit code
+     * @throws InterruptedException if the current thread is interrupted.
+     * @since 6.0.0
+     */
+    public static ProcessResult waitForResult(Process self) throws InterruptedException {
+        return waitForResult(self, processEncoding());
+    }
+
+    /**
+     * Executes the process and waits for it to complete, capturing
+     * the standard output and standard error decoded using the given charset,
+     * plus the exit code, into a {@link ProcessResult}.
+     *
+     * @param self a Process
+     * @param charset the charset the process writes its output in
+     * @return a ProcessResult containing stdout, stderr, and exit code
+     * @throws InterruptedException if the current thread is interrupted.
+     * @since 6.0.0
+     */
+    public static ProcessResult waitForResult(Process self, Charset charset) throws InterruptedException {
+        StringBuilder sout = new StringBuilder();
+        StringBuilder serr = new StringBuilder();
+        Thread tout = consumeProcessOutputStream(self, sout, charset);
+        Thread terr = consumeProcessErrorStream(self, serr, charset);
+        boolean interrupted = false;
+        try {
+            try { tout.join(); } catch (InterruptedException ignore) { interrupted = true; }
+            try { terr.join(); } catch (InterruptedException ignore) { interrupted = true; }
+            try { self.waitFor(); } catch (InterruptedException ignore) { interrupted = true; }
+            closeStreams(self);
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+        return new ProcessResult(sout.toString(), serr.toString(), self.exitValue());
+    }
+
+    /**
+     * Executes the process and waits for it to complete within the given timeout,
+     * capturing the standard output, standard error, and exit code into a
+     * {@link ProcessResult}. If the process does not complete within the timeout,
+     * it is forcibly destroyed.
+     *
+     * <pre>
+     * def result = "cmd".execute().waitForResult(30, TimeUnit.SECONDS)
+     * </pre>
+     *
+     * @param self a Process
+     * @param timeout the maximum time to wait
+     * @param unit the time unit of the timeout argument
+     * @return a ProcessResult containing stdout, stderr, and exit code
+     * @throws InterruptedException if the current thread is interrupted.
+     * @since 6.0.0
+     */
+    public static ProcessResult waitForResult(Process self, long timeout, TimeUnit unit) throws InterruptedException {
+        return waitForResult(self, timeout, unit, processEncoding());
+    }
+
+    /**
+     * Executes the process and waits for it to complete within the given timeout,
+     * capturing the standard output and standard error decoded using the given charset,
+     * plus the exit code, into a {@link ProcessResult}. If the process does not complete
+     * within the timeout, it is forcibly destroyed.
+     *
+     * @param self a Process
+     * @param timeout the maximum time to wait
+     * @param unit the time unit of the timeout argument
+     * @param charset the charset the process writes its output in
+     * @return a ProcessResult containing stdout, stderr, and exit code
+     * @throws InterruptedException if the current thread is interrupted.
+     * @since 6.0.0
+     */
+    public static ProcessResult waitForResult(Process self, long timeout, TimeUnit unit, Charset charset) throws InterruptedException {
+        StringBuilder sout = new StringBuilder();
+        StringBuilder serr = new StringBuilder();
+        Thread tout = consumeProcessOutputStream(self, sout, charset);
+        Thread terr = consumeProcessErrorStream(self, serr, charset);
+        boolean interrupted = false;
+        try {
+            try {
+                boolean finished = self.waitFor(timeout, unit);
+                if (!finished) {
+                    self.destroyForcibly();
+                    self.waitFor();
+                }
+            } catch (InterruptedException ignore) {
+                interrupted = true;
+                self.destroyForcibly();
+                try { self.waitFor(); } catch (InterruptedException ie) { /* best effort */ }
+            }
+            try { tout.join(); } catch (InterruptedException ignore) { interrupted = true; }
+            try { terr.join(); } catch (InterruptedException ignore) { interrupted = true; }
+            closeStreams(self);
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
+        }
+        return new ProcessResult(sout.toString(), serr.toString(), self.exitValue());
+    }
+
+    /**
+     * Registers a closure to be called when the process terminates.
+     * Uses {@link Process#onExit()} to asynchronously notify completion.
+     *
+     * <pre>
+     * "cmd".execute().onExit { proc -&gt;
+     *     println "Exited with code: ${proc.exitValue()}"
+     * }
+     * </pre>
+     *
+     * @param self a Process
+     * @param action a closure to call with the completed Process
+     * @return the Process to allow chaining
+     * @since 6.0.0
+     */
+    public static Process onExit(final Process self, final Closure action) {
+        self.onExit().thenAccept(action::call);
+        return self;
+    }
+
+    /**
      * Gets the error stream from a process and reads it
      * to keep the process from blocking due to a full buffer.
      * The processed stream data is appended to the supplied OutputStream.
@@ -308,7 +547,24 @@ public class ProcessGroovyMethods extends DefaultGroovyMethodsSupport {
      * @since 1.7.5
      */
     public static Thread consumeProcessErrorStream(Process self, Appendable error) {
-        Thread thread = new Thread(new TextDumper(self.getErrorStream(), error));
+        return consumeProcessErrorStream(self, error, processEncoding());
+    }
+
+    /**
+     * Gets the error stream from a process and reads it
+     * to keep the process from blocking due to a full buffer.
+     * The stream data is decoded using the given charset and appended
+     * to the supplied Appendable.
+     * A new Thread is started, so this method will return immediately.
+     *
+     * @param self a Process
+     * @param error an Appendable to capture the process stderr
+     * @param charset the charset the process writes its error output in
+     * @return the Thread
+     * @since 6.0.0
+     */
+    public static Thread consumeProcessErrorStream(Process self, Appendable error, Charset charset) {
+        Thread thread = new Thread(new TextDumper(self.getErrorStream(), error, charset));
         thread.start();
         return thread;
     }
@@ -325,7 +581,24 @@ public class ProcessGroovyMethods extends DefaultGroovyMethodsSupport {
      * @since 1.7.5
      */
     public static Thread consumeProcessOutputStream(Process self, Appendable output) {
-        Thread thread = new Thread(new TextDumper(self.getInputStream(), output));
+        return consumeProcessOutputStream(self, output, processEncoding());
+    }
+
+    /**
+     * Gets the output stream from a process and reads it
+     * to keep the process from blocking due to a full output buffer.
+     * The stream data is decoded using the given charset and appended
+     * to the supplied Appendable.
+     * A new Thread is started, so this method will return immediately.
+     *
+     * @param self a Process
+     * @param output an Appendable to capture the process stdout
+     * @param charset the charset the process writes its output in
+     * @return the Thread
+     * @since 6.0.0
+     */
+    public static Thread consumeProcessOutputStream(Process self, Appendable output, Charset charset) {
+        Thread thread = new Thread(new TextDumper(self.getInputStream(), output, charset));
         thread.start();
         return thread;
     }
@@ -351,6 +624,8 @@ public class ProcessGroovyMethods extends DefaultGroovyMethodsSupport {
      * Creates a new BufferedWriter as stdin for this process,
      * passes it to the closure, and ensures the stream is flushed
      * and closed after the closure returns.
+     * Text is encoded using the operating system's native encoding
+     * (or {@value #PROCESS_ENCODING_PROPERTY} when set).
      * A new Thread is started, so this method will return immediately.
      *
      * @param self a Process
@@ -358,9 +633,24 @@ public class ProcessGroovyMethods extends DefaultGroovyMethodsSupport {
      * @since 1.5.2
      */
     public static void withWriter(final Process self, final Closure closure) {
+        withWriter(self, processEncoding(), closure);
+    }
+
+    /**
+     * Creates a new BufferedWriter as stdin for this process using the given charset,
+     * passes it to the closure, and ensures the stream is flushed
+     * and closed after the closure returns.
+     * A new Thread is started, so this method will return immediately.
+     *
+     * @param self a Process
+     * @param charset the charset the process expects to read its input in
+     * @param closure a closure
+     * @since 6.0.0
+     */
+    public static void withWriter(final Process self, final Charset charset, final Closure closure) {
         new Thread(() -> {
             try {
-                IOGroovyMethods.withWriter(new BufferedOutputStream(getOut(self)), closure);
+                IOGroovyMethods.withWriter(new BufferedOutputStream(getOut(self)), charset.name(), closure);
             } catch (IOException e) {
                 throw new GroovyRuntimeException("exception while reading process stream", e);
             }
@@ -431,6 +721,43 @@ public class ProcessGroovyMethods extends DefaultGroovyMethodsSupport {
     }
 
     /**
+     * Creates a native OS pipeline from a list of commands, using
+     * {@link ProcessBuilder#startPipeline(List)}. Each element in the list
+     * can be a String (tokenized on whitespace), a List (elements converted
+     * to Strings via {@code toString()}), a String array, or a {@link ProcessBuilder}
+     * for full control.
+     *
+     * <pre>
+     * def procs = ["ps aux", "grep java", "wc -l"].pipeline()
+     * println procs.last().text
+     * </pre>
+     *
+     * @param commands a list of commands, each a String, List, String[], or ProcessBuilder
+     * @return the list of started {@link Process} instances
+     * @throws IOException if an IOException occurs.
+     * @since 6.0.0
+     */
+    public static List<Process> pipeline(final List<?> commands) throws IOException {
+        List<ProcessBuilder> builders = new ArrayList<>();
+        for (Object cmd : commands) {
+            if (cmd instanceof ProcessBuilder) {
+                builders.add((ProcessBuilder) cmd);
+            } else if (cmd instanceof String) {
+                builders.add(toProcessBuilder((String) cmd));
+            } else if (cmd instanceof String[]) {
+                builders.add(toProcessBuilder((String[]) cmd));
+            } else if (cmd instanceof List) {
+                builders.add(toProcessBuilder((List) cmd));
+            } else {
+                throw new IllegalArgumentException(
+                        "pipeline() elements must be String, List, String[], or ProcessBuilder; got: "
+                                + (cmd == null ? "null" : cmd.getClass().getName()));
+            }
+        }
+        return ProcessBuilder.startPipeline(builders);
+    }
+
+    /**
      * A Runnable which waits for a process to complete together with a notification scheme
      * allowing another thread to wait a maximum number of seconds for the process to complete
      * before killing it.
@@ -441,6 +768,11 @@ public class ProcessGroovyMethods extends DefaultGroovyMethodsSupport {
         Process process;
         private boolean finished;
 
+        /**
+         * Binds this runner to {@code process}.
+         *
+         * @param process the process {@link #run()} waits for and {@link #waitForOrKill(long)} may destroy
+         */
         public ProcessRunner(Process process) {
             this.process = process;
         }
@@ -462,6 +794,14 @@ public class ProcessGroovyMethods extends DefaultGroovyMethodsSupport {
             }
         }
 
+        /**
+         * Waits up to {@code millis} milliseconds for {@link #run()} to finish. If the
+         * process is still running, {@link Process#destroy()} is called and this method
+         * waits for the process to exit. An interrupt during the timed wait restores the
+         * interrupt status and then still destroys the process when it has not finished.
+         *
+         * @param millis maximum wait before the process is destroyed, in milliseconds
+         */
         public synchronized void waitForOrKill(long millis) {
             if (!finished) {
                 try {
@@ -480,15 +820,25 @@ public class ProcessGroovyMethods extends DefaultGroovyMethodsSupport {
     private static class TextDumper implements Runnable {
         final InputStream in;
         final Appendable app;
+        final Charset charset;
 
-        public TextDumper(InputStream in, Appendable app) {
+        /**
+         * Reads {@code in} as text in {@code charset}. {@link #run()} appends each line,
+         * plus a newline, to {@code app} when {@code app} is non-null.
+         *
+         * @param in the process stream to read
+         * @param app where lines are appended; {@code null} discards them
+         * @param charset charset used to decode {@code in}
+         */
+        public TextDumper(InputStream in, Appendable app, Charset charset) {
             this.in = in;
             this.app = app;
+            this.charset = charset;
         }
 
         @Override
         public void run() {
-            InputStreamReader isr = new InputStreamReader(in);
+            InputStreamReader isr = new InputStreamReader(in, charset);
             BufferedReader br = new BufferedReader(isr);
             String next;
             try {
@@ -508,6 +858,13 @@ public class ProcessGroovyMethods extends DefaultGroovyMethodsSupport {
         final InputStream in;
         final OutputStream out;
 
+        /**
+         * Wraps {@code in} in a {@link BufferedInputStream}. {@link #run()} copies bytes
+         * to {@code out} when {@code out} is non-null.
+         *
+         * @param in the process stream to read
+         * @param out where bytes are written; {@code null} discards them
+         */
         public ByteDumper(InputStream in, OutputStream out) {
             this.in = new BufferedInputStream(in);
             this.out = out;
@@ -528,9 +885,52 @@ public class ProcessGroovyMethods extends DefaultGroovyMethodsSupport {
     }
 
     /**
+     * Creates a {@link ProcessBuilder} from a command line String,
+     * tokenized on whitespace. This bridges Groovy's convenient string
+     * syntax with ProcessBuilder's full feature set.
+     *
+     * <pre>
+     * def pb = "find . -name '*.groovy'".toProcessBuilder()
+     * pb.directory(new File("/project"))
+     * pb.redirectErrorStream(true)
+     * def proc = pb.start()
+     * </pre>
+     *
+     * @param self a command line String
+     * @return a ProcessBuilder ready to be configured further or started
+     * @since 6.0.0
+     */
+    public static ProcessBuilder toProcessBuilder(final String self) {
+        return new ProcessBuilder(tokenize(self));
+    }
+
+    /**
+     * Creates a {@link ProcessBuilder} from a command array.
+     *
+     * @param commandArray an array of Strings containing the command name and parameters
+     * @return a ProcessBuilder ready to be configured further or started
+     * @since 6.0.0
+     */
+    public static ProcessBuilder toProcessBuilder(final String[] commandArray) {
+        return new ProcessBuilder(commandArray);
+    }
+
+    /**
+     * Creates a {@link ProcessBuilder} from a command list. The toString() method
+     * is called for each item in the list to convert into a resulting String.
+     *
+     * @param commands a list containing the command name and parameters
+     * @return a ProcessBuilder ready to be configured further or started
+     * @since 6.0.0
+     */
+    public static ProcessBuilder toProcessBuilder(final List commands) {
+        return new ProcessBuilder(stringify(commands));
+    }
+
+    /**
      * Executes the command specified by <code>self</code> as a command-line process.
      * <p>For more control over Process construction you can use
-     * <code>java.lang.ProcessBuilder</code>.
+     * <code>java.lang.ProcessBuilder</code> or {@link #toProcessBuilder(String)}.
      *
      * @param self a command line String
      * @return the Process which has just started for this command line representation
@@ -538,7 +938,7 @@ public class ProcessGroovyMethods extends DefaultGroovyMethodsSupport {
      * @since 1.0
      */
     public static Process execute(final String self) throws IOException {
-        return Runtime.getRuntime().exec(self);
+        return new ProcessBuilder(tokenize(self)).start();
     }
 
     /**
@@ -561,7 +961,17 @@ public class ProcessGroovyMethods extends DefaultGroovyMethodsSupport {
      * @since 1.0
      */
     public static Process execute(final String self, final String[] envp, final File dir) throws IOException {
-        return Runtime.getRuntime().exec(self, envp, dir);
+        ProcessBuilder pb = new ProcessBuilder(tokenize(self));
+        if (dir != null) pb.directory(dir);
+        if (envp != null) {
+            Map<String, String> env = pb.environment();
+            env.clear();
+            for (String e : envp) {
+                int idx = e.indexOf('=');
+                if (idx >= 0) env.put(e.substring(0, idx), e.substring(idx + 1));
+            }
+        }
+        return pb.start();
     }
 
     /**
@@ -722,6 +1132,106 @@ public class ProcessGroovyMethods extends DefaultGroovyMethodsSupport {
         return Runtime.getRuntime().exec(stringify(commands), stringify(envp), dir);
     }
 
+    /**
+     * Executes the command specified by <code>self</code> with options provided
+     * as named parameters. Supported options:
+     * <ul>
+     *   <li><b>dir</b>: (File, Path, or String) the working directory</li>
+     *   <li><b>env</b>: (Map) environment variables to add (merged with inherited environment)</li>
+     *   <li><b>redirectErrorStream</b>: (boolean) merge stderr into stdout</li>
+     *   <li><b>inheritIO</b>: (boolean) inherit the parent process I/O streams</li>
+     *   <li><b>outputFile</b>: (File, Path, or String) redirect stdout to a file</li>
+     *   <li><b>errorFile</b>: (File, Path, or String) redirect stderr to a file</li>
+     *   <li><b>inputFile</b>: (File, Path, or String) redirect stdin from a file</li>
+     *   <li><b>appendOutput</b>: (File, Path, or String) append stdout to a file</li>
+     *   <li><b>appendError</b>: (File, Path, or String) append stderr to a file</li>
+     * </ul>
+     *
+     * <pre>
+     * "make test".execute(dir: new File("/project"), env: [CI: "true"])
+     * "cmd".execute(redirectErrorStream: true)
+     * </pre>
+     *
+     * @param self a command line String
+     * @param options a Map of options to configure the process
+     * @return the Process which has just started
+     * @throws IOException if an IOException occurs.
+     * @since 6.0.0
+     */
+    public static Process execute(final String self, @NamedParams({
+            @NamedParam(value = "dir"),
+            @NamedParam(value = "env", type = Map.class),
+            @NamedParam(value = "redirectErrorStream", type = Boolean.class),
+            @NamedParam(value = "inheritIO", type = Boolean.class),
+            @NamedParam(value = "outputFile"),
+            @NamedParam(value = "errorFile"),
+            @NamedParam(value = "inputFile"),
+            @NamedParam(value = "appendOutput"),
+            @NamedParam(value = "appendError")
+    }) Map<String, Object> options) throws IOException {
+        return configureProcessBuilder(toProcessBuilder(self), options).start();
+    }
+
+    /**
+     * Executes the command specified by the given <code>String</code> array with options
+     * provided as named parameters.
+     *
+     * @param commandArray an array of Strings containing the command name and parameters
+     * @param options a Map of options to configure the process (see {@link #execute(String, Map)})
+     * @return the Process which has just started
+     * @throws IOException if an IOException occurs.
+     * @since 6.0.0
+     * @see #execute(String, Map)
+     */
+    public static Process execute(final String[] commandArray, @NamedParams({
+            @NamedParam(value = "dir"),
+            @NamedParam(value = "env", type = Map.class),
+            @NamedParam(value = "redirectErrorStream", type = Boolean.class),
+            @NamedParam(value = "inheritIO", type = Boolean.class),
+            @NamedParam(value = "outputFile"),
+            @NamedParam(value = "errorFile"),
+            @NamedParam(value = "inputFile"),
+            @NamedParam(value = "appendOutput"),
+            @NamedParam(value = "appendError")
+    }) Map<String, Object> options) throws IOException {
+        return configureProcessBuilder(toProcessBuilder(commandArray), options).start();
+    }
+
+    /**
+     * Executes the command specified by the given list with options
+     * provided as named parameters.
+     *
+     * @param commands a list containing the command name and parameters
+     * @param options a Map of options to configure the process (see {@link #execute(String, Map)})
+     * @return the Process which has just started
+     * @throws IOException if an IOException occurs.
+     * @since 6.0.0
+     * @see #execute(String, Map)
+     */
+    public static Process execute(final List commands, @NamedParams({
+            @NamedParam(value = "dir"),
+            @NamedParam(value = "env", type = Map.class),
+            @NamedParam(value = "redirectErrorStream", type = Boolean.class),
+            @NamedParam(value = "inheritIO", type = Boolean.class),
+            @NamedParam(value = "outputFile"),
+            @NamedParam(value = "errorFile"),
+            @NamedParam(value = "inputFile"),
+            @NamedParam(value = "appendOutput"),
+            @NamedParam(value = "appendError")
+    }) Map<String, Object> options) throws IOException {
+        return configureProcessBuilder(toProcessBuilder(commands), options).start();
+    }
+
+    // just simple parsing otherwise use ProcessBuilder directly
+    private static List<String> tokenize(final String command) {
+        StringTokenizer st = new StringTokenizer(command);
+        List<String> tokens = new ArrayList<>();
+        while (st.hasMoreTokens()) {
+            tokens.add(st.nextToken());
+        }
+        return tokens;
+    }
+
     private static String[] stringify(final List orig) {
         if (orig == null) return null;
         String[] result = new String[orig.size()];
@@ -729,6 +1239,62 @@ public class ProcessGroovyMethods extends DefaultGroovyMethodsSupport {
             result[i] = orig.get(i).toString();
         }
         return result;
+    }
+
+    private static File toFile(Object obj) {
+        if (obj instanceof File) return (File) obj;
+        if (obj instanceof Path) return ((Path) obj).toFile();
+        return new File(obj.toString());
+    }
+
+    private static ProcessBuilder configureProcessBuilder(ProcessBuilder pb, Map<String, Object> options) {
+        if (options == null || options.isEmpty()) return pb;
+
+        Object dir = options.get("dir");
+        if (dir != null) {
+            pb.directory(toFile(dir));
+        }
+
+        Object env = options.get("env");
+        if (env instanceof Map) {
+            Map<String, String> pbEnv = pb.environment();
+            ((Map<?, ?>) env).forEach((k, v) -> pbEnv.put(String.valueOf(k), String.valueOf(v)));
+        }
+
+        if (Boolean.TRUE.equals(options.get("redirectErrorStream"))) {
+            pb.redirectErrorStream(true);
+        }
+
+        if (Boolean.TRUE.equals(options.get("inheritIO"))) {
+            pb.inheritIO();
+        }
+
+        Object outputFile = options.get("outputFile");
+        if (outputFile != null) {
+            pb.redirectOutput(toFile(outputFile));
+        }
+
+        Object appendOutput = options.get("appendOutput");
+        if (appendOutput != null) {
+            pb.redirectOutput(ProcessBuilder.Redirect.appendTo(toFile(appendOutput)));
+        }
+
+        Object errorFile = options.get("errorFile");
+        if (errorFile != null) {
+            pb.redirectError(toFile(errorFile));
+        }
+
+        Object appendError = options.get("appendError");
+        if (appendError != null) {
+            pb.redirectError(ProcessBuilder.Redirect.appendTo(toFile(appendError)));
+        }
+
+        Object inputFile = options.get("inputFile");
+        if (inputFile != null) {
+            pb.redirectInput(toFile(inputFile));
+        }
+
+        return pb;
     }
 
 }

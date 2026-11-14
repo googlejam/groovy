@@ -19,92 +19,123 @@
 package org.codehaus.groovy.ast;
 
 import java.lang.reflect.Modifier;
+import java.util.StringJoiner;
 
 /**
  * Helper class for converting AST into text.
  */
 public class AstToTextHelper {
 
-    public static String getClassText(ClassNode node) {
+    /**
+     * Renders {@code node} without generics. A null node is rendered as
+     * {@literal <unknown>}.
+     *
+     * @param node class to render, or null
+     * @return {@code node.toString(false)}, or {@literal <unknown>}
+     */
+    public static String getClassText(final ClassNode node) {
         if (node == null) return "<unknown>";
-        if (node.getName() == null) return "<unknown>";
-        return node.getName();
+        return node.toString(false);
     }
 
-    public static String getParameterText(Parameter node) {
+    /**
+     * Renders {@code node} as {@code type name}, plus {@code =} and the
+     * initial expression when one is present. A null parameter, or a
+     * parameter with a null name, uses {@literal <unknown>} for that part.
+     *
+     * @param node parameter to render, or null
+     * @return that declaration text
+     */
+    public static String getParameterText(final Parameter node) {
         if (node == null) return "<unknown>";
 
-        String name = node.getName() == null ? "<unknown>" : node.getName();
+        String name = node.getName();
+        if (name == null) name = "<unknown>";
         String type = getClassText(node.getType());
-        if (node.getInitialExpression() != null) {
-            return type + " " + name + " = " + node.getInitialExpression().getText();
+
+        String text = type + " " + name;
+        if (node.hasInitialExpression()) {
+            text += " = " + node.getInitialExpression().getText();
         }
-        return type + " " + name;
+        return text;
     }
 
-    public static String getParametersText(Parameter[] parameters) {
-        if (parameters == null) return "";
-        if (parameters.length == 0) return "";
-        StringBuilder result = new StringBuilder();
-        int max = parameters.length;
-        for (int x = 0; x < max; x++) {
-            result.append(getParameterText(parameters[x]));
-            if (x < (max - 1)) {
-                result.append(", ");
-            }
+    /**
+     * Joins {@link #getParameterText} for each parameter with {@code ", "}.
+     * A null or empty array is an empty string.
+     *
+     * @param parameters parameters to render, or null
+     * @return the joined parameter list, without parentheses
+     */
+    public static String getParametersText(final Parameter[] parameters) {
+        if (parameters == null || parameters.length == 0) return "";
+        StringJoiner result = new StringJoiner(", ");
+        for (Parameter parameter : parameters) {
+            result.add(getParameterText(parameter));
         }
         return result.toString();
     }
 
-    public static String getThrowsClauseText(ClassNode[] exceptions) {
-        if (exceptions == null) return "";
-        if (exceptions.length == 0) return "";
-        StringBuilder result = new StringBuilder("throws ");
-        int max = exceptions.length;
-        for (int x = 0; x < max; x++) {
-            result.append(getClassText(exceptions[x]));
-            if (x < (max - 1)) {
-                result.append(", "); 
-            }
+    /**
+     * Renders a throws clause, including the leading space. A null or empty
+     * array is an empty string.
+     *
+     * @param exceptions checked exception types, or null
+     * @return a leading space, {@code throws}, the joined type names, or empty
+     */
+    public static String getThrowsClauseText(final ClassNode[] exceptions) {
+        if (exceptions == null || exceptions.length == 0) return "";
+        StringJoiner result = new StringJoiner(", ");
+        for (ClassNode exception : exceptions) {
+            result.add(getClassText(exception));
         }
-        return result.toString(); 
+        return " throws " + result.toString();
     }
 
-    public static String getModifiersText(int modifiers) {
-        StringBuilder result = new StringBuilder();
+    /**
+     * Renders the modifier bits of {@code modifiers} as keywords, in this
+     * order: private, protected, public, static, abstract, final,
+     * interface, native, synchronized, transient, volatile. Bits outside
+     * that set are ignored.
+     *
+     * @param modifiers JVM access flags
+     * @return the keywords separated by spaces, or empty when none apply
+     */
+    public static String getModifiersText(final int modifiers) {
+        StringJoiner result = new StringJoiner(" ");
         if (Modifier.isPrivate(modifiers)) {
-            result.append("private ");
+            result.add("private");
         }
         if (Modifier.isProtected(modifiers)) {
-            result.append("protected ");
+            result.add("protected");
         }
         if (Modifier.isPublic(modifiers)) {
-            result.append("public ");
+            result.add("public");
         }
         if (Modifier.isStatic(modifiers)) {
-            result.append("static ");
+            result.add("static");
         }
         if (Modifier.isAbstract(modifiers)) {
-            result.append("abstract ");
+            result.add("abstract");
         }
         if (Modifier.isFinal(modifiers)) {
-            result.append("final ");
+            result.add("final");
         }
         if (Modifier.isInterface(modifiers)) {
-            result.append("interface ");
+            result.add("interface");
         }
         if (Modifier.isNative(modifiers)) {
-            result.append("native ");
+            result.add("native");
         }
         if (Modifier.isSynchronized(modifiers)) {
-            result.append("synchronized ");
+            result.add("synchronized");
         }
         if (Modifier.isTransient(modifiers)) {
-            result.append("transient ");
+            result.add("transient");
         }
         if (Modifier.isVolatile(modifiers)) {
-            result.append("volatile ");
+            result.add("volatile");
         }
-        return result.toString().trim();
+        return result.toString();
     }
 }

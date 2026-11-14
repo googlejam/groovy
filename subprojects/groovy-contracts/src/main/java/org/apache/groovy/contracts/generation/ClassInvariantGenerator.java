@@ -29,25 +29,19 @@ import org.codehaus.groovy.ast.ConstructorNode;
 import org.codehaus.groovy.ast.MethodNode;
 import org.codehaus.groovy.ast.Parameter;
 import org.codehaus.groovy.ast.expr.BooleanExpression;
-import org.codehaus.groovy.ast.expr.ClassExpression;
-import org.codehaus.groovy.ast.expr.MethodCallExpression;
-import org.codehaus.groovy.ast.expr.VariableExpression;
 import org.codehaus.groovy.ast.stmt.BlockStatement;
 import org.codehaus.groovy.ast.stmt.ReturnStatement;
 import org.codehaus.groovy.ast.stmt.Statement;
 import org.codehaus.groovy.control.io.ReaderSource;
 import org.objectweb.asm.Opcodes;
 
-import java.lang.annotation.Annotation;
 import java.util.List;
 
-import static org.codehaus.groovy.ast.tools.GeneralUtils.AND;
-import static org.codehaus.groovy.ast.tools.GeneralUtils.args;
-import static org.codehaus.groovy.ast.tools.GeneralUtils.binX;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveVoid;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.andX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.block;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.boolX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.callThisX;
-import static org.codehaus.groovy.ast.tools.GeneralUtils.callX;
-import static org.codehaus.groovy.ast.tools.GeneralUtils.ctorX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.stmt;
 
 /**
@@ -57,6 +51,13 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.stmt;
  */
 public class ClassInvariantGenerator extends BaseGenerator {
 
+    private static final ClassNode CLASS_INVARIANT_TYPE = ClassHelper.makeWithoutCaching(ClassInvariant.class);
+
+    /**
+     * Creates a generator for class-invariant support code.
+     *
+     * @param source the reader source backing the current source unit
+     */
     public ClassInvariantGenerator(final ReaderSource source) {
         super(source);
     }
@@ -66,14 +67,14 @@ public class ClassInvariantGenerator extends BaseGenerator {
      * method holding this class invariant. This is used for heir calls to find out about inherited class
      * invariants.
      *
-     * @param type           the current {@link org.codehaus.groovy.ast.ClassNode}
+     * @param type           the current {@link ClassNode}
      * @param classInvariant the {@link org.apache.groovy.contracts.domain.ClassInvariant} the assertion statement should be generated from
      */
     public void generateInvariantAssertionStatement(final ClassNode type, final org.apache.groovy.contracts.domain.ClassInvariant classInvariant) {
 
-        BooleanExpression classInvariantExpression = addCallsToSuperAnnotationClosure(type, ClassInvariant.class, classInvariant.booleanExpression());
+        BooleanExpression classInvariantExpression = addCallsToSuperAnnotationClosure(type, classInvariant.booleanExpression());
 
-        final BlockStatement blockStatement = new BlockStatement();
+        final BlockStatement blockStatement = block();
 
         // add a local protected method with the invariant closure - this is needed for invariant checks in inheritance lines
         MethodNode methodNode = type.addMethod(getInvariantMethodName(type), Opcodes.ACC_PROTECTED | Opcodes.ACC_SYNTHETIC, ClassHelper.VOID_TYPE, Parameter.EMPTY_ARRAY, ClassNode.EMPTY_ARRAY, blockStatement);
@@ -82,34 +83,19 @@ public class ClassInvariantGenerator extends BaseGenerator {
         blockStatement.addStatements(wrapAssertionBooleanExpression(type, methodNode, classInvariantExpression, "invariant").getStatements());
     }
 
-    private BooleanExpression addCallsToSuperAnnotationClosure(final ClassNode type, final Class<? extends Annotation> annotationType, BooleanExpression booleanExpression) {
-
-        final List<AnnotationNode> nextContractElementAnnotations = AnnotationUtils.getAnnotationNodeInHierarchyWithMetaAnnotation(type.getSuperClass(), ClassHelper.makeWithoutCaching(annotationType));
-        if (nextContractElementAnnotations.isEmpty()) return booleanExpression;
-
-        for (AnnotationNode nextContractElementAnnotation : nextContractElementAnnotations) {
-            ClassExpression classExpression = (ClassExpression) nextContractElementAnnotation.getMember(BaseVisitor.CLOSURE_ATTRIBUTE_NAME);
-            if (classExpression == null) continue;
-
-            MethodCallExpression doCall = callX(
-                    ctorX(classExpression.getType(), args(VariableExpression.THIS_EXPRESSION, VariableExpression.THIS_EXPRESSION)),
-                    "doCall"
-            );
-            doCall.setMethodTarget(classExpression.getType().getMethods("doCall").get(0));
-
-            final BooleanExpression rightExpression = boolX(doCall);
-            booleanExpression.setSourcePosition(nextContractElementAnnotation);
-            booleanExpression = boolX(binX(booleanExpression, AND, rightExpression));
+    private BooleanExpression addCallsToSuperAnnotationClosure(final ClassNode type, BooleanExpression booleanExpression) {
+        List<AnnotationNode> contractElementAnnotations = AnnotationUtils.getAnnotationNodeInHierarchyWithMetaAnnotation(type.getSuperClass(), CLASS_INVARIANT_TYPE);
+        for (AnnotationNode contractElementAnnotation : contractElementAnnotations) {
+            booleanExpression = boolX(andX(booleanExpression, BaseVisitor.asConditionExecution(contractElementAnnotation)));
         }
-
         return booleanExpression;
     }
 
     /**
      * Adds the current class-invariant to the given <tt>method</tt>.
      *
-     * @param type   the {@link org.codehaus.groovy.ast.ClassNode} which declared the given {@link org.codehaus.groovy.ast.MethodNode}
-     * @param method the current {@link org.codehaus.groovy.ast.MethodNode}
+     * @param type   the {@link ClassNode} which declared the given {@link MethodNode}
+     * @param method the current {@link MethodNode}
      */
     public void addInvariantAssertionStatement(final ClassNode type, final MethodNode method) {
 
@@ -120,8 +106,7 @@ public class ClassInvariantGenerator extends BaseGenerator {
         Statement invariantMethodCall = stmt(callThisX(invariantMethod.getName()));
 
         final Statement statement = method.getCode();
-        if (statement instanceof BlockStatement && method.getReturnType() != ClassHelper.VOID_TYPE && !(method instanceof ConstructorNode)) {
-            final BlockStatement blockStatement = (BlockStatement) statement;
+        if (statement instanceof BlockStatement blockStatement && !isPrimitiveVoid(method.getReturnType()) && !(method instanceof ConstructorNode)) {
 
             final List<ReturnStatement> returnStatements = AssertStatementCreationUtility.getReturnStatements(method);
             for (ReturnStatement returnStatement : returnStatements) {
@@ -130,13 +115,14 @@ public class ClassInvariantGenerator extends BaseGenerator {
 
             if (returnStatements.isEmpty()) blockStatement.addStatement(invariantMethodCall);
 
-        } else if (statement instanceof BlockStatement) {
-            final BlockStatement blockStatement = (BlockStatement) statement;
+        } else if (statement instanceof BlockStatement blockStatement) {
             blockStatement.addStatement(invariantMethodCall);
         } else {
-            final BlockStatement assertionBlock = new BlockStatement();
-            assertionBlock.addStatement(statement);
-            assertionBlock.addStatement(invariantMethodCall);
+            // statement may be null, e.g. the synthetic default constructor of a
+            // static nested class still has a null body at this phase (GROOVY-12066)
+            final BlockStatement assertionBlock = statement == null
+                    ? block(invariantMethodCall)
+                    : block(statement, invariantMethodCall);
             method.setCode(assertionBlock);
         }
     }

@@ -19,6 +19,7 @@
 
 package org.codehaus.groovy.runtime.memoize;
 
+import java.io.Serial;
 import java.lang.ref.SoftReference;
 import java.util.Map;
 
@@ -29,7 +30,7 @@ import java.util.Map;
  * @param <V> real value type
  */
 public class ConcurrentSoftCache<K, V> extends ConcurrentCommonCache<K, SoftReference<V>> {
-    private static final long serialVersionUID = 5646536868666351819L;
+    @Serial private static final long serialVersionUID = 5646536868666351819L;
 
 
     /**
@@ -44,14 +45,14 @@ public class ConcurrentSoftCache<K, V> extends ConcurrentCommonCache<K, SoftRefe
      *
      * @param initialCapacity  initial capacity of the cache
      * @param maxSize          max size of the cache
-     * @param evictionStrategy LRU or FIFO, see {@link org.codehaus.groovy.runtime.memoize.EvictableCache.EvictionStrategy}
+     * @param evictionStrategy LRU or FIFO, see {@link EvictableCache.EvictionStrategy}
      */
     public ConcurrentSoftCache(int initialCapacity, int maxSize, EvictionStrategy evictionStrategy) {
         super(initialCapacity, maxSize, evictionStrategy);
     }
 
     /**
-     * Constructs a LRU cache with the specified initial capacity and max size.
+     * Constructs an LRU cache with the specified initial capacity and max size.
      * The LRU cache is slower than {@link LRUCache}
      *
      * @param initialCapacity initial capacity of the LRU cache
@@ -62,7 +63,7 @@ public class ConcurrentSoftCache<K, V> extends ConcurrentCommonCache<K, SoftRefe
     }
 
     /**
-     * Constructs a LRU cache with the default initial capacity(16)
+     * Constructs an LRU cache with the default initial capacity(16)
      *
      * @param maxSize max size of the LRU cache
      * @see #ConcurrentSoftCache(int, int)
@@ -72,9 +73,9 @@ public class ConcurrentSoftCache<K, V> extends ConcurrentCommonCache<K, SoftRefe
     }
 
     /**
-     * Constructs a cache backed by the specified {@link java.util.Map} instance
+     * Constructs a cache backed by the specified {@link Map} instance
      *
-     * @param map the {@link java.util.Map} instance
+     * @param map the {@link Map} instance
      */
     public ConcurrentSoftCache(Map<K, SoftReference<V>> map) {
         super(map);

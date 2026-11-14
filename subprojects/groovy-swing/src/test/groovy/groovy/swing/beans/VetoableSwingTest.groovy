@@ -18,27 +18,34 @@
  */
 package groovy.swing.beans
 
-import groovy.swing.GroovySwingTestCase
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
 
-class VetoableSwingTest extends GroovySwingTestCase {
+import static groovy.test.GroovyAssert.assertScript
+import static groovy.util.HeadlessTestSupport.isHeadless
+import static org.junit.jupiter.api.Assumptions.assumeFalse
+
+final class VetoableSwingTest {
+
+    @BeforeEach
+    void setUp() {
+        assumeFalse(isHeadless())
+    }
+
+    // GROOVY-8339, GROOVY-10070
+    @Test
     void testExtendsComponent() {
-        testInEDT {
-            GroovyShell shell = new GroovyShell()
-            shell.evaluate("""
-                import groovy.beans.Vetoable
-                import javax.swing.JPanel
+        assertScript '''
+            class VetoableTestBean extends javax.swing.JPanel {
+                @groovy.beans.Vetoable String testValue
+            }
 
-                class VetoableTestBean7 extends JPanel {
-                    @Vetoable String testField
-                }
+            changed = false
 
-                sb = new VetoableTestBean7()
-                sb.testField = "bar"
-                changed = false
-                sb.vetoableChange = {changed = true}
-                sb.testField = "foo"
-                assert changed
-            """)
-        }
+            def bean = new VetoableTestBean(testValue: 'foo')
+            bean.vetoableChange = {changed = true}
+            bean.testValue = 'bar'
+            assert changed
+        '''
     }
 }

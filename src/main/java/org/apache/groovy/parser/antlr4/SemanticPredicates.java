@@ -21,49 +21,95 @@ package org.apache.groovy.parser.antlr4;
 import org.antlr.v4.runtime.CharStream;
 import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.TokenStream;
-import org.antlr.v4.runtime.tree.ParseTree;
+import org.antlr.v4.runtime.atn.ATN;
+import org.antlr.v4.runtime.atn.LL1Analyzer;
+import org.antlr.v4.runtime.atn.PredictionContext;
+import org.antlr.v4.runtime.misc.IntervalSet;
 import org.codehaus.groovy.GroovyBugError;
 import org.codehaus.groovy.ast.ModifierNode;
 
-import java.util.Arrays;
-import java.util.List;
-import java.util.regex.Pattern;
+import java.util.BitSet;
 
 import static org.apache.groovy.parser.antlr4.GroovyParser.ASSIGN;
+import static org.apache.groovy.parser.antlr4.GroovyParser.AT;
 import static org.apache.groovy.parser.antlr4.GroovyParser.BuiltInPrimitiveType;
 import static org.apache.groovy.parser.antlr4.GroovyParser.CapitalizedIdentifier;
+import static org.apache.groovy.parser.antlr4.GroovyParser.DO;
 import static org.apache.groovy.parser.antlr4.GroovyParser.DOT;
 import static org.apache.groovy.parser.antlr4.GroovyParser.ExpressionContext;
+import static org.apache.groovy.parser.antlr4.GroovyParser.FOR;
 import static org.apache.groovy.parser.antlr4.GroovyParser.Identifier;
 import static org.apache.groovy.parser.antlr4.GroovyParser.LBRACK;
 import static org.apache.groovy.parser.antlr4.GroovyParser.LPAREN;
 import static org.apache.groovy.parser.antlr4.GroovyParser.LT;
-import static org.apache.groovy.parser.antlr4.GroovyParser.PathExpressionContext;
+import static org.apache.groovy.parser.antlr4.GroovyParser.NL;
 import static org.apache.groovy.parser.antlr4.GroovyParser.PostfixExprAltContext;
-import static org.apache.groovy.parser.antlr4.GroovyParser.PostfixExpressionContext;
+import static org.apache.groovy.parser.antlr4.GroovyParser.RPAREN;
 import static org.apache.groovy.parser.antlr4.GroovyParser.StringLiteral;
-import static org.apache.groovy.parser.antlr4.util.StringUtils.matches;
+import static org.apache.groovy.parser.antlr4.GroovyParser.WHILE;
+import static org.apache.groovy.parser.antlr4.GroovyParser.YIELD;
 
 /**
- * Some semantic predicates for altering the behaviour of the lexer and parser
+ * Semantic predicates for the lexer and parser.
+ * <p>
+ * Lexer helpers on this class run on the tokenisation hot path (GString
+ * {@code $}, slashy strings, newline-as-separator). They use direct character
+ * tests, not regular expressions. Parser helpers such as
+ * {@link #isIdentifierAssign(TokenStream)} are O(1) bitset lookups so
+ * {@code AdaptivePredict} can skip exploring assignment as an annotation
+ * element value (GROOVY-12398).
+ * </p>
  */
 public class SemanticPredicates {
-    private static final Pattern NONSPACES_PATTERN = Pattern.compile("\\S+?");
-    private static final Pattern LETTER_AND_LEFTCURLY_PATTERN = Pattern.compile("[a-zA-Z_{]");
-    private static final Pattern NONSURROGATE_PATTERN = Pattern.compile("[^\u0000-\u007F\uD800-\uDBFF]");
-    private static final Pattern SURROGATE_PAIR1_PATTERN = Pattern.compile("[\uD800-\uDBFF]");
-    private static final Pattern SURROGATE_PAIR2_PATTERN = Pattern.compile("[\uDC00-\uDFFF]");
+    private static final int PATH_EXPRESSION_ARGUMENTS = 2;
+    private static final int PATH_EXPRESSION_CLOSURE_OR_LAMBDA = 3;
 
+    /**
+     * FIRST({@code elementValuePairName}), taken from the generated ATN so a
+     * new token alternative on {@code identifier} or {@code keywords} is picked
+     * up without a parallel Java list. Used to distinguish {@code @Foo(a = 1)}
+     * (named pairs) from a single element value.
+     */
+    private static final BitSet ELEMENT_VALUE_PAIR_NAME_TYPES =
+            firstTokens(GroovyParser.RULE_elementValuePairName);
+
+    /**
+     * Tokens that can appear first in {@code ruleIndex}. {@code EPSILON}/{@code EOF}
+     * are dropped; an empty result means the ATN shape is not what the gate
+     * assumes and the grammar change needs a look.
+     */
+    private static BitSet firstTokens(final int ruleIndex) {
+        ATN atn = GroovyParser._ATN;
+        IntervalSet look = new LL1Analyzer(atn).LOOK(
+                atn.ruleToStartState[ruleIndex], PredictionContext.EMPTY_LOCAL);
+        BitSet bits = new BitSet();
+        for (int t : look.toList()) {
+            if (t >= Token.MIN_USER_TOKEN_TYPE) {
+                bits.set(t);
+            }
+        }
+        if (bits.isEmpty()) {
+            throw new GroovyBugError("FIRST set of parser rule " + ruleIndex + " is empty");
+        }
+        return bits;
+    }
+
+    /**
+     * Check whether the next characters are only white spaces until the end of line or end of file.
+     * Matches Java regex {@code \s} minus the newlines the loop already stops at: space, tab, VT, FF.
+     */
     public static boolean isFollowedByWhiteSpaces(CharStream cs) {
-        for (int index = 1, c = cs.LA(index); !('\r' == c || '\n' == c || CharStream.EOF == c); index++, c = cs.LA(index)) {
-            if (matches(String.valueOf((char) c), NONSPACES_PATTERN)) {
+        for (int index = 1, c = cs.LA(index); c != '\r' && c != '\n' && c != CharStream.EOF; index++, c = cs.LA(index)) {
+            if (c != ' ' && c != '\t' && c != '\f' && c != '\u000B') {
                 return false;
             }
         }
-
         return true;
     }
 
+    /**
+     * Check whether the next character is one of the specified characters.
+     */
     public static boolean isFollowedBy(CharStream cs, char... chars) {
         int c1 = cs.LA(1);
 
@@ -76,35 +122,64 @@ public class SemanticPredicates {
         return false;
     }
 
+    /**
+     * Check whether the next character is a valid Java identifier part or a left curly brace (for GString expressions).
+     */
     public static boolean isFollowedByJavaLetterInGString(CharStream cs) {
         int c1 = cs.LA(1);
 
-        if ('$' == c1) { // single $ is not a valid identifier
+        if (c1 == '$' || c1 < 0) { // single $ is not a valid identifier; EOF is not either
             return false;
         }
 
-        String str1 = String.valueOf((char) c1);
-
-        if (matches(str1, LETTER_AND_LEFTCURLY_PATTERN)) {
+        if (c1 == '{' || c1 == '_'
+                || (c1 >= 'A' && c1 <= 'Z')
+                || (c1 >= 'a' && c1 <= 'z')) {
             return true;
         }
 
-        if (matches(str1, NONSURROGATE_PATTERN)
-                && Character.isJavaIdentifierPart(c1)) {
-            return true;
+        if (c1 <= 0x7F) {
+            return false;
         }
 
-        int c2 = cs.LA(2);
-        String str2 = String.valueOf((char) c2);
-
-        if (matches(str1, SURROGATE_PAIR1_PATTERN)
-                && matches(str2, SURROGATE_PAIR2_PATTERN)
-                && Character.isJavaIdentifierPart(Character.toCodePoint((char) c1, (char) c2))) {
-
-            return true;
+        if (c1 >= 0xD800 && c1 <= 0xDBFF) {
+            int c2 = cs.LA(2);
+            return c2 >= 0xDC00 && c2 <= 0xDFFF
+                    && Character.isJavaIdentifierPart(Character.toCodePoint((char) c1, (char) c2));
         }
 
-        return false;
+        return Character.isJavaIdentifierPart(c1);
+    }
+
+    /**
+     * {@code true} when the upcoming tokens are {@code name '=' ...}, i.e. a named
+     * annotation element-value pair rather than a single element value. Inside
+     * annotation parentheses newlines are already hidden, so {@code LT(2)} is the
+     * token after the name.
+     */
+    public static boolean isIdentifierAssign(TokenStream ts) {
+        int t1 = ts.LT(1).getType();
+        return t1 >= 0 && ELEMENT_VALUE_PAIR_NAME_TYPES.get(t1) && ASSIGN == ts.LT(2).getType();
+    }
+
+    /**
+     * Whether the next tokens are a possibly qualified name whose last part is
+     * capitalized, followed by empty parentheses, such as {@code None()} or
+     * {@code Opt.None()}: the shape of a zero-component record pattern (GEP-19).
+     */
+    public static boolean isCapitalizedEmptyCall(TokenStream ts) {
+        int i = 1;
+        int last;
+        while (true) {
+            last = ts.LT(i).getType();
+            if (last != Identifier && last != CapitalizedIdentifier) return false;
+            if (ts.LT(i + 1).getType() != DOT) break;
+            i += 2;
+        }
+        if (last != CapitalizedIdentifier || ts.LT(i + 1).getType() != LPAREN) return false;
+        i += 2;
+        while (ts.LT(i).getType() == NL) i += 1;
+        return ts.LT(i).getType() == RPAREN;
     }
 
     /**
@@ -114,25 +189,14 @@ public class SemanticPredicates {
      * @param context the preceding expression
      */
     public static boolean isFollowingArgumentsOrClosure(ExpressionContext context) {
-        if (context instanceof PostfixExprAltContext) {
-            List<ParseTree> peacChildren = ((PostfixExprAltContext) context).children;
+        if (!(context instanceof PostfixExprAltContext ctx)) return false;
 
-            try {
-                ParseTree peacChild = peacChildren.get(0);
-                List<ParseTree>  pecChildren = ((PostfixExpressionContext) peacChild).children;
-
-                ParseTree pecChild = pecChildren.get(0);
-                PathExpressionContext pec = (PathExpressionContext) pecChild;
-
-                int t = pec.t;
-
-                return (2 == t || 3 == t);
-            } catch (IndexOutOfBoundsException | ClassCastException e) {
-                throw new GroovyBugError("Unexpected structure of expression context: " + context, e);
-            }
+        try {
+            int pathExpressionType = ctx.postfixExpression().pathExpression().t;
+            return PATH_EXPRESSION_ARGUMENTS == pathExpressionType || PATH_EXPRESSION_CLOSURE_OR_LAMBDA == pathExpressionType;
+        } catch (RuntimeException e) {
+            throw new GroovyBugError("Unexpected structure of expression context: " + context, e);
         }
-
-        return false;
     }
 
     /**
@@ -141,13 +205,27 @@ public class SemanticPredicates {
     public static boolean isInvalidMethodDeclaration(TokenStream ts) {
         int tokenType = ts.LT(1).getType();
 
-        return (Identifier == tokenType || CapitalizedIdentifier == tokenType || StringLiteral == tokenType)
+        return (Identifier == tokenType || CapitalizedIdentifier == tokenType || StringLiteral == tokenType || YIELD == tokenType)
                 && LPAREN == (ts.LT(2).getType());
     }
 
-    private static final int[] MODIFIER_ARRAY =
-            ModifierNode.MODIFIER_OPCODE_MAP.keySet().stream()
-                    .mapToInt(Integer::intValue).sorted().toArray();
+    private static final BitSet MODIFIER_TYPES = new BitSet();
+    static {
+        for (Integer tokenType : ModifierNode.MODIFIER_OPCODE_MAP.keySet()) {
+            if (tokenType != null && tokenType >= 0) {
+                MODIFIER_TYPES.set(tokenType);
+            }
+        }
+    }
+
+    /**
+     * O(1) modifier-token membership. Negative types (e.g. {@link Token#EOF}) are never
+     * modifiers
+     */
+    private static boolean isModifierType(final int tokenType) {
+        return tokenType >= 0 && MODIFIER_TYPES.get(tokenType);
+    }
+
     /**
      * Distinguish between local variable declaration and method call, e.g. `a b`
      */
@@ -159,7 +237,7 @@ public class SemanticPredicates {
         int tokenType3;
 
         if (DOT == tokenType2) {
-            int tokeTypeN = tokenType2;
+            int tokeTypeN;
 
             do {
                 index = index + 2;
@@ -182,11 +260,42 @@ public class SemanticPredicates {
         int nextCodePoint = token.getText().codePointAt(0);
 
         return // VOID == tokenType ||
-                !(BuiltInPrimitiveType == tokenType || Arrays.binarySearch(MODIFIER_ARRAY, tokenType) >= 0)
+                !(BuiltInPrimitiveType == tokenType || isModifierType(tokenType))
                         && !Character.isUpperCase(nextCodePoint)
                         && nextCodePoint != '@'
-                        && !(ASSIGN == tokenType3 || (LT == tokenType2 || LBRACK == tokenType2));
+                        && !(ASSIGN == tokenType3 || (LT == tokenType2 || LBRACK == tokenType2))
+                || (nextCodePoint == '@' && isAnnotatedLoopStatement(ts));
 
     }
 
+    /**
+     * When the input starts with one or more annotations, scan past them and check whether
+     * the first non-annotation token is a loop keyword ({@code for}, {@code while}, {@code do}).
+     * If so, the construct is an annotated loop statement, NOT a local variable declaration.
+     *
+     * @param ts the token stream positioned at the first annotation {@code @} token
+     * @return {@code true} if annotations are followed by a loop keyword
+     */
+    static boolean isAnnotatedLoopStatement(TokenStream ts) {
+        int idx = 1; // ts.LT(1) is '@'
+        while (ts.LT(idx).getType() == AT) {
+            idx += 2; // skip AT and annotation name
+            // skip qualifier parts of a fully-qualified annotation name, e.g. @java.lang.Deprecated
+            while (ts.LT(idx).getType() == DOT) {
+                idx += 2; // skip DOT and next name element
+            }
+            // skip annotation arguments (parenthesised), handling nesting
+            if (ts.LT(idx).getType() == LPAREN) {
+                idx++;
+                int depth = 1;
+                while (depth > 0 && ts.LT(idx).getType() != Token.EOF) {
+                    int t = ts.LT(idx++).getType();
+                    if (t == LPAREN) depth++;
+                    else if (t == RPAREN) depth--;
+                }
+            }
+        }
+        int afterAnnotations = ts.LT(idx).getType();
+        return afterAnnotations == FOR || afterAnnotations == WHILE || afterAnnotations == DO;
+    }
 }

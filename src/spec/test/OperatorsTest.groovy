@@ -16,13 +16,19 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-import gls.CompilableTestSupport
+
+import groovy.util.regex.RegexGuard
+import groovy.util.regex.RegexTimeoutException
+import org.junit.jupiter.api.Test
 
 import java.util.regex.Matcher
 import java.util.regex.Pattern
 
-class OperatorsTest extends CompilableTestSupport {
+import static groovy.test.GroovyAssert.assertScript
 
+final class OperatorsTest {
+
+    @Test
     void testArithmeticOperators() {
         // tag::binary_arith_ops[]
         assert  1  + 2 == 3
@@ -63,6 +69,7 @@ class OperatorsTest extends CompilableTestSupport {
         // end::plusplus_minusminus[]
     }
 
+    @Test
     void testArithmeticOperatorsWithAssignment() {
         // tag::binary_assign_operators[]
         def a = 4
@@ -97,6 +104,7 @@ class OperatorsTest extends CompilableTestSupport {
         // end::binary_assign_operators[]
     }
 
+    @Test
     void testSimpleRelationalOperators() {
         // tag::simple_relational_op[]
         assert 1 + 2 == 3
@@ -111,6 +119,7 @@ class OperatorsTest extends CompilableTestSupport {
         // end::simple_relational_op[]
     }
 
+    @Test
     void testLogicalOperators() {
         // tag::logical_op[]
         assert !false           // <1>
@@ -119,6 +128,7 @@ class OperatorsTest extends CompilableTestSupport {
         // end::logical_op[]
     }
 
+    @Test
     void testBitwiseOperators() {
         // tag::bitwise_op[]
         int a = 0b00101010
@@ -137,6 +147,7 @@ class OperatorsTest extends CompilableTestSupport {
         // end::bitwise_op[]
     }
 
+    @Test
     void testBitShiftOperators() {
         // tag::bit_shift_op[]
         assert 12.equals(3 << 2)           // <1>
@@ -150,6 +161,7 @@ class OperatorsTest extends CompilableTestSupport {
         // end::bit_shift_op[]
     }
 
+    @Test
     void testLogicalOperatorPrecedence() {
         // tag::logical_precendence_1[]
         assert (!false && false) == false   // <1>
@@ -160,32 +172,34 @@ class OperatorsTest extends CompilableTestSupport {
         // end::logical_precendence_2[]
     }
 
+    @Test
     void testLogicalShortCircuit() {
         assertScript '''
-	        // tag::logical_shortcircuit[]
-	        boolean checkIfCalled() {   // <1>
-	            called = true
-	        }
+            // tag::logical_shortcircuit[]
+            boolean checkIfCalled() {   // <1>
+                called = true
+            }
 
-	        called = false
-	        true || checkIfCalled()
-	        assert !called              // <2>
+            called = false
+            true || checkIfCalled()
+            assert !called              // <2>
 
-	        called = false
-	        false || checkIfCalled()
-	        assert called               // <3>
+            called = false
+            false || checkIfCalled()
+            assert called               // <3>
 
-	        called = false
-	        false && checkIfCalled()
-	        assert !called              // <4>
+            called = false
+            false && checkIfCalled()
+            assert !called              // <4>
 
-	        called = false
-	        true && checkIfCalled()
-	        assert called               // <5>
-	        // end::logical_shortcircuit[]
+            called = false
+            true && checkIfCalled()
+            assert called               // <5>
+            // end::logical_shortcircuit[]
         '''
     }
 
+    @Test
     void testConditionalOperators() {
         // tag::conditional_op_not[]
         assert (!true)    == false                      // <1>
@@ -219,20 +233,65 @@ class OperatorsTest extends CompilableTestSupport {
         displayName = user.name ? user.name : 'Anonymous'   // <1>
         displayName = user.name ?: 'Anonymous'              // <2>
         // end::conditional_op_elvis[]
-
     }
 
+    @Test
+    void testNullCoalescingOperators() {
+        // tag::null_coalescing[]
+        def config = [retries: 0, name: '', timeout: null]
+        assert (config.retries ?: 3) == 3                   // <1>
+        assert (config.retries ?? 3) == 0                   // <2>
+        assert (config.name ?? 'default') == ''
+        assert (config.timeout ?? 30) == 30                 // <3>
+        // end::null_coalescing[]
+
+        // tag::null_coalescing_precedence[]
+        def a = null, b = 0, c = 3
+        assert (a ?? b ?? c) == 0                           // <1>
+        assert (a ?: b ?? c) == 0                           // <2>
+        assert (0 ?? 1 ? 'yes' : 'no') == 0                 // <3>
+        assert ((0 ?? 1) ? 'yes' : 'no') == 'no'
+        // end::null_coalescing_precedence[]
+
+        // tag::null_coalescing_assign[]
+        def settings = [verbose: false, level: null]
+        settings.verbose ??= true                           // <1>
+        settings.level ??= 'INFO'                           // <2>
+        assert settings == [verbose: false, level: 'INFO']
+        // end::null_coalescing_assign[]
+
+        // tag::null_coalescing_primitive[]
+        int count = 0
+        int calls = 0
+        count ??= ++calls                                   // <1>
+        assert count == 0 && calls == 0
+        // end::null_coalescing_primitive[]
+    }
+
+    private record Person(long id, String name) {
+        static Person find(Closure<?> c) { null }
+    }
+
+    @Test
     void testNullSafeOperator() {
         // tag::nullsafe[]
         def person = Person.find { it.id == 123 }    // <1>
         def name = person?.name                      // <2>
         assert name == null                          // <3>
         // end::nullsafe[]
+
+        // GROOVY-11591
+        boolean called
+        def f = { -> called = true }
+        def obj = null
+        assert !called
+        obj?.grep(f())
+        assert !called
+        obj?[f()]
+        assert !called
     }
 
-    OperatorsTest() {
-    }
-
+    @Test
     void testDirectFieldAccess() {
         assertScript '''
 // tag::direct_field_class[]
@@ -250,6 +309,7 @@ assert user.@name == 'Bob'                   // <1>
 '''
     }
 
+    @Test
     void testMethodPointer() {
         // tag::method_pointer[]
         def str = 'example of method reference'            // <1>
@@ -310,6 +370,7 @@ assert user.@name == 'Bob'                   // <1>
         '''
     }
 
+    @Test
     void testMethodReference() {
         assertScript '''
             // tag::method_refs[]
@@ -332,7 +393,7 @@ assert user.@name == 'Bob'                   // <1>
             // tag::constructor_refs[]
             @CompileStatic
             void constructorRefs() {
-                assert [1, 2, 3] == ['1', '2', '3'].stream().map(Integer::new).collect(toList())  // <1>
+                assert [1, 2, 3] == ['1', '2', '3'].stream().map(Integer::valueOf).collect(toList())  // <1>
 
                 def result = [1, 2, 3].stream().toArray(Integer[]::new)                           // <2>
                 assert result instanceof Integer[]
@@ -344,6 +405,7 @@ assert user.@name == 'Bob'                   // <1>
         '''
     }
 
+    @Test
     void testRegularExpressionOperators() {
         def pattern = 'foo'
         // tag::pattern_op[]
@@ -396,6 +458,36 @@ assert user.@name == 'Bob'                   // <1>
         // end::pattern_find_vs_matcher[]
     }
 
+    @Test
+    void testRegexGuard() {
+        // tag::regex_guard_scope[]
+        def groups = RegexGuard.guard(200) {
+            '6.0.0-beta-2'.findGroups(/(\d+)\.(\d+)\.(\d+)(?:-(.+))?/)
+        }
+        assert groups == ['6.0.0-beta-2', '6', '0', '0', 'beta-2']
+        // end::regex_guard_scope[]
+
+        // tag::regex_guard_scope_timeout[]
+        try {
+            RegexGuard.guard(200) {
+                ('1,' * 40) ==~ /(.*,){16}X/   // catastrophic backtracking
+            }
+            assert false, 'should have timed out'
+        } catch (RegexTimeoutException expected) {
+        }
+        // end::regex_guard_scope_timeout[]
+
+        // tag::regex_guard_input[]
+        def untrusted = RegexGuard.guard('1,' * 40, 200)
+        try {
+            untrusted.findAll(~/(.*,){16}X/)
+            assert false, 'should have timed out'
+        } catch (RegexTimeoutException expected) {
+        }
+        // end::regex_guard_input[]
+    }
+
+    @Test
     void testSpreadDotOperator() {
         assertScript '''
 // tag::spreaddot[]
@@ -418,10 +510,11 @@ assert cars*.make == ['Peugeot', null, 'Renault']     // <2>
 assert null*.make == null                             // <3>
 // end::spreaddot_nullsafe[]
 '''
+
         assertScript '''
 // tag::spreaddot_iterable[]
 class Component {
-    Long id
+    Integer id
     String name
 }
 class CompositeObject implements Iterable<Component> {
@@ -439,6 +532,7 @@ assert composite*.id == [1,2]
 assert composite*.name == ['Foo','Bar']
 // end::spreaddot_iterable[]
 '''
+
         assertScript '''
 import groovy.transform.Canonical
 
@@ -469,6 +563,7 @@ assert models.sum() == ['408', '508', 'Clio', 'Captur'] // flatten one level
 assert models.flatten() == ['408', '508', 'Clio', 'Captur'] // flatten all levels (one in this case)
 // end::spreaddot_multilevel[]
 '''
+
         assertScript '''
 // tag::spreaddot_alternative[]
 class Car {
@@ -490,6 +585,7 @@ assert models == [['408', '508'], ['Clio', 'Captur']]
 '''
     }
 
+    @Test
     void testSpreadMethodArguments() {
         assertScript '''
 // tag::spreadmethodargs_method[]
@@ -510,6 +606,7 @@ assert function(*args,5,6) == 26
 '''
     }
 
+    @Test
     void testSpreadList() {
         // tag::spread_list[]
         def items = [4,5]                      // <1>
@@ -518,6 +615,7 @@ assert function(*args,5,6) == 26
         // end::spread_list[]
     }
 
+    @Test
     void testSpreadMap() {
         assertScript '''
         // tag::spread_map[]
@@ -534,9 +632,9 @@ assert function(*args,5,6) == 26
         assert map == [a:1, b:2, c:3, d:8]    // <3>
         // end::spread_map_position[]
         '''
-
     }
 
+    @Test
     void testRangeOperator() {
         assertScript '''
         // tag::intrange[]
@@ -549,6 +647,7 @@ assert function(*args,5,6) == 26
         assert (0..5).size() == 6                           // <7>
         // end::intrange[]
         '''
+
         assertScript '''
         // tag::charrange[]
         assert ('a'..'d').collect() == ['a','b','c','d']
@@ -556,6 +655,7 @@ assert function(*args,5,6) == 26
         '''
     }
 
+    @Test
     void testSpaceshipOperator() {
         assertScript '''
         // tag::spaceship[]
@@ -564,9 +664,10 @@ assert function(*args,5,6) == 26
         assert (2 <=> 1) == 1
         assert ('a' <=> 'z') == -1
         // end::spaceship[]
-'''
+        '''
     }
 
+    @Test
     void testSubscriptOperator() {
         assertScript '''
         // tag::subscript_op[]
@@ -608,35 +709,43 @@ assert function(*args,5,6) == 26
         '''
     }
 
+    @Test
     void testMembershipOperator() {
         // tag::membership_op[]
         def list = ['Grace','Rob','Emmy']
         assert ('Emmy' in list)                     // <1>
+        assert ('Alex' !in list)                    // <2>
         // end::membership_op[]
     }
 
+    @Test
     void testIdentityOperator() {
         // tag::identity_op[]
         def list1 = ['Groovy 1.8','Groovy 2.0','Groovy 2.3']        // <1>
         def list2 = ['Groovy 1.8','Groovy 2.0','Groovy 2.3']        // <2>
         assert list1 == list2                                       // <3>
         assert !list1.is(list2)                                     // <4>
+        assert list1 !== list2                                      // <5>
         // end::identity_op[]
     }
 
+    @Test
     void testCoercionOperator() {
         try {
             // tag::coerce_op_cast[]
-            Integer x = 123
-            String s = (String) x                                   // <1>
+            String input = '42'
+            Integer num = (Integer) input                      // <1>
             // end::coerce_op_cast[]
+            assert false, 'Should not reach here but instead should have thrown a ClassCastException'
         } catch (ClassCastException e) {
+            assert e.message == "Cannot cast object '42' with class 'java.lang.String' to class 'java.lang.Integer'"
             // tag::coerce_op[]
-            Integer x = 123
-            String s = x as String                                  // <1>
+            String input = '42'
+            Integer num = input as Integer                      // <1>
             // end::coerce_op[]
-            assert s == '123'
+            assert num == 42
         }
+
         assertScript '''
         // tag::coerce_op_custom[]
         class Identifiable {
@@ -660,12 +769,29 @@ assert function(*args,5,6) == 26
         '''
     }
 
+    @Test
     void testDiamondOperator() {
         // tag::diamond_op[]
         List<String> strings = new LinkedList<>()
         // end::diamond_op[]
     }
 
+    @Test
+    void testDiamondOperatorOnAnonymousInnerClass() {
+        assertScript '''
+        // tag::diamond_op_aic[]
+        interface Processor<T> {
+            T process(T val)
+        }
+        Processor<String> p = new Processor<>() {
+            String process(String val) { val.toUpperCase() }
+        }
+        assert p.process('ok') == 'OK'
+        // end::diamond_op_aic[]
+        '''
+    }
+
+    @Test
     void testCallOperator() {
         assertScript '''
         // tag::call_op[]
@@ -682,6 +808,7 @@ assert function(*args,5,6) == 26
         '''
     }
 
+    @Test
     void testOperatorOverloading() {
         assertScript '''
 // tag::operator_overload_class[]
@@ -702,6 +829,8 @@ assert (b1 + b2).size == 15                         // <1>
 // end::operator_overload_op[]
 '''
     }
+
+    @Test
     void testOperatorOverloadingWithDifferentArgumentType() {
         assertScript '''
 class Bucket {
@@ -722,12 +851,7 @@ assert (b1 + 11).size == 15
 '''
     }
 
-    private static class Person {
-        Long id
-        String name
-        static Person find(Closure c) { null }
-    }
-
+    @Test
     void testGStringEquals() {
         assertScript '''
             w = 'world'
@@ -742,6 +866,7 @@ assert (b1 + 11).size == 15
             '''
     }
 
+    @Test
     void testBooleanOr() {
         assertScript '''
 boolean trueValue1 = true, trueValue2 = true, trueValue3 = true
@@ -756,6 +881,7 @@ assert !(falseValue3 |= null)
 '''
     }
 
+    @Test
     void testBooleanAnd() {
         assertScript '''
 boolean trueValue1 = true, trueValue2 = true, trueValue3 = true
@@ -770,6 +896,7 @@ assert !(falseValue3 &= null)
 '''
     }
 
+    @Test
     void testBooleanXor() {
         assertScript '''
 boolean trueValue1 = true, trueValue2 = true, trueValue3 = true

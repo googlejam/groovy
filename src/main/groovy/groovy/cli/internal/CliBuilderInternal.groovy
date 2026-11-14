@@ -66,7 +66,7 @@ class CliBuilderInternal {
      * For backwards compatibility with Apache Commons CLI, set this property to
      * <code>true</code> if the parser should recognize long options with both
      * a single hyphen and a double hyphen prefix. The default is <code>false</code>,
-     * so only long options with a double hypen prefix (<code>--option</code>) are recognized.
+     * so only long options with a double hyphen prefix (<code>--option</code>) are recognized.
      * @since 2.5
      */
     boolean acceptLongOptionsWithSingleHyphen = false
@@ -127,7 +127,7 @@ class CliBuilderInternal {
     final CommandLine.Model.UsageMessageSpec usageMessage = new CommandLine.Model.UsageMessageSpec()
 
     /**
-     * Internal data structure mapping option names to their associated {@link groovy.cli.TypedOption} object.
+     * Internal data structure mapping option names to their associated {@link TypedOption} object.
      */
     Map<String, TypedOption> savedTypeOptions = new HashMap<String, TypedOption>()
 
@@ -232,6 +232,14 @@ class CliBuilderInternal {
         this.errorWriter = writer
     }
 
+    /**
+     * Creates a typed option from a Commons CLI-style option definition.
+     *
+     * @param args the option definition details
+     * @param type the target type for the option value
+     * @param description the option description
+     * @return the created typed option
+     */
     public <T> TypedOption<T> option(Map args, Class<T> type, String description) {
         def name = args.opt ?: '_'
         args.type = type
@@ -241,6 +249,10 @@ class CliBuilderInternal {
 
     /**
      * Internal method: Detect option specification method calls.
+     *
+     * @param name the invoked option name
+     * @param args the invocation arguments
+     * @return the generated option handle, or the delegated meta-class result
      */
     def invokeMethod(String name, Object args) {
         if (args instanceof Object[]) {
@@ -297,6 +309,9 @@ class CliBuilderInternal {
     /**
      * Make options accessible from command line args with parser.
      * Returns null on bad command lines after displaying usage message.
+     *
+     * @param args the command line arguments to parse
+     * @return the parsed option accessor, or {@code null} if parsing fails
      */
     OptionAccessor parse(args) {
         CommandLine commandLine = createCommandLine()
@@ -346,6 +361,11 @@ class CliBuilderInternal {
     // implementation details -------------------------------------
     /**
      * Internal method: How to create an OptionSpec from the specification.
+     *
+     * @param shortname the short option name, or {@code '_'} for long-only options
+     * @param details the option attributes in Commons CLI form
+     * @param description the option description
+     * @return the constructed option specification
      */
     CommandLine.Model.OptionSpec option(shortname, Map details, description) {
         CommandLine.Model.OptionSpec.Builder builder

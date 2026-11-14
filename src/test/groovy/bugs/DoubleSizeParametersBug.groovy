@@ -16,18 +16,23 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-class DoubleSizeParametersBug extends TestSupport {
+import org.junit.jupiter.api.Test
 
+import static groovy.test.GroovyAssert.assertScript
+
+final class DoubleSizeParametersBug {
+
+    @Test
     void testBug() {
-        assertScript """
+        assertScript '''
             def foo(double x, y) {
                 println "x: "+x
                 println "y: "+y
             }
 
             foo(10.0d, 0)
-        """
+        '''
     }
 }

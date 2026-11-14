@@ -16,12 +16,16 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy7995Bug extends GroovyTestCase{
+import static groovy.test.GroovyAssert.assertScript
 
+
+class Groovy7995Bug{
+
+    @Test
     void testClosureShortSyntaxCallFromOtherClosure(){
         assertScript('''
             @groovy.transform.CompileStatic
@@ -30,12 +34,12 @@ class Groovy7995Bug extends GroovyTestCase{
                 Closure wrap = {
                     c()
                 }
-            
+
                 def run() {
                     wrap()
                 }
             }
-            
+
             assert new Foo().run()=='ok'
         ''')
     }

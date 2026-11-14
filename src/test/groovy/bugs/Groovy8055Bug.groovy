@@ -16,28 +16,31 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy8055Bug extends GroovyTestCase {
+import static groovy.test.GroovyAssert.assertScript
+
+class Groovy8055Bug {
+    @Test
     void test1() {
         assertScript '''
         import groovy.transform.CompileStatic
-        
+
         @CompileStatic
         class Foo {
             void isEqualTo(Number number) { println "Number"; assert true }
             void isEqualTo(Object number) { println "Object"; assert false: 'wrong method invoked' }
         }
-        
+
         @CompileStatic
         class Runner {
             void run() {
                 new Foo().isEqualTo(4)
             }
         }
-        
+
         new Runner().run()
         '''
     }

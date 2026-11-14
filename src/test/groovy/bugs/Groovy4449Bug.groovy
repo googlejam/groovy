@@ -16,17 +16,20 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
 import org.codehaus.groovy.control.MultipleCompilationErrorsException
+import org.junit.jupiter.api.Test
 
-class Groovy4449Bug extends GroovyTestCase {
+import static org.junit.jupiter.api.Assertions.fail
+
+class Groovy4449Bug {
+    @Test
     void testVarArgAsNotTheLastParameter() {
         try {
             new GroovyShell().parse """
                 def foo(String... strs, int i) { println i }
-                
+
                 foo("me", "you", 42)
             """
             fail('The compilation should have failed as the var-arg parameter is not the last one.')
@@ -36,10 +39,11 @@ class Groovy4449Bug extends GroovyTestCase {
         }
     }
 
+    @Test
     void testVarArgAsTheLastParameter() {
         new GroovyShell().parse """
             def foo(int i, String... strs) { println i }
-            
+
             foo(42, "me", "you")
         """
     }

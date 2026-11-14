@@ -18,11 +18,6 @@
  */
 package org.codehaus.groovy.control;
 
-//import antlr.CharScanner;
-//import antlr.MismatchedCharException;
-//import antlr.MismatchedTokenException;
-//import antlr.NoViableAltException;
-//import antlr.NoViableAltForCharException;
 import groovy.lang.GroovyClassLoader;
 import org.codehaus.groovy.GroovyBugError;
 import org.codehaus.groovy.ast.ASTNode;
@@ -34,16 +29,16 @@ import org.codehaus.groovy.control.io.URLReaderSource;
 import org.codehaus.groovy.control.messages.Message;
 import org.codehaus.groovy.control.messages.SimpleMessage;
 import org.codehaus.groovy.control.messages.SyntaxErrorMessage;
+import org.codehaus.groovy.control.messages.WarningMessage;
 import org.codehaus.groovy.syntax.Reduction;
 import org.codehaus.groovy.syntax.SyntaxException;
+import org.codehaus.groovy.syntax.Token;
 import org.codehaus.groovy.tools.Utilities;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.Reader;
 import java.net.URL;
-import java.security.AccessController;
-import java.security.PrivilegedAction;
 
 /**
  * Provides an anchor for a single source unit (usually a script file)
@@ -138,47 +133,24 @@ public class SourceUnit extends ProcessingUnit {
     }
 
     /**
-     * Convenience routine, primarily for use by the InteractiveShell,
-     * that returns true if parse() failed with an unexpected EOF.
+     * Legacy Antlr 2 error reporting method no longer in use.
+     * Similar in intent to {@code getErrorCollector().hasErrors()}, which should be used instead.
+     *
+     * @return true if any error was collected while parsing
+     * @deprecated since 6.0.0, use {@link #getErrorCollector()} and
+     *         {@link ErrorCollector#hasErrors()} instead.
      */
+    @Deprecated(since = "6.0.0")
     public boolean failedWithUnexpectedEOF() {
-        // Implementation note - there are several ways for the Groovy compiler
-        // to report an unexpected EOF. Perhaps this implementation misses some.
-        // If you find another way, please add it.
-        if (getErrorCollector().hasErrors()) {
-            Message last = (Message) getErrorCollector().getLastError();
-            Throwable cause = null;
-            if (last instanceof SyntaxErrorMessage) {
-                cause = ((SyntaxErrorMessage) last).getCause().getCause();
-            }
-//            if (cause != null) {
-//                if (cause instanceof NoViableAltException) {
-//                    return isEofToken(((NoViableAltException) cause).token);
-//                } else if (cause instanceof NoViableAltForCharException) {
-//                    char badChar = ((NoViableAltForCharException) cause).foundChar;
-//                    return badChar == CharScanner.EOF_CHAR;
-//                } else if (cause instanceof MismatchedCharException) {
-//                    char badChar = (char) ((MismatchedCharException) cause).foundChar;
-//                    return badChar == CharScanner.EOF_CHAR;
-//                } else if (cause instanceof MismatchedTokenException) {
-//                    return isEofToken(((MismatchedTokenException) cause).token);
-//                }
-//            }
-            return true;
-        }
-        return false;
+        return getErrorCollector().hasErrors();
     }
-
-//    protected boolean isEofToken(antlr.Token token) {
-//        return token.getType() == antlr.Token.EOF_TYPE;
-//    }
 
     //---------------------------------------------------------------------------
     // FACTORIES
 
     /**
      * A convenience routine to create a standalone SourceUnit on a String
-     * with defaults for almost everything that is configurable.
+     * with defaults for almost everything that is configurable but with tolerance set to 1.
      */
     public static SourceUnit create(String name, String source) {
         CompilerConfiguration configuration = new CompilerConfiguration();
@@ -238,37 +210,33 @@ public class SourceUnit extends ProcessingUnit {
             throw new GroovyBugError("SourceUnit not ready for convert()");
         }
 
-        //
-        // Build the AST
         buildAST();
 
-        String property = (String) AccessController.doPrivileged((PrivilegedAction) () -> System.getProperty("groovy.ast"));
-
-        if ("xml".equals(property)) {
+        if ("xml".equals(System.getProperty("groovy.ast"))) {
             XStreamUtils.serialize(name, ast);
         }
     }
 
+    /**
+     * Builds the AST.
+     */
     public ModuleNode buildAST() {
-        if (null != this.ast) {
-            return this.ast;
-        }
-
-        try {
-            this.ast = parserPlugin.buildAST(this, this.classLoader, this.cst);
-            this.ast.setDescription(this.name);
-        } catch (SyntaxException e) {
-            if (this.ast == null) {
-                // Create a dummy ModuleNode to represent a failed parse - in case a later phase attempts to use the ast
-                this.ast = new ModuleNode(this);
+        if (this.ast == null) {
+            try {
+                this.ast = parserPlugin.buildAST(this, this.classLoader, this.cst);
+                this.ast.setDescription(this.name);
+            } catch (SyntaxException e) {
+                if (this.ast == null) {
+                    // create an empty ModuleNode to represent a failed parse, in case a later phase attempts to use the AST
+                    this.ast = new ModuleNode(this);
+                }
+                getErrorCollector().addError(new SyntaxErrorMessage(e, this));
             }
-            getErrorCollector().addError(new SyntaxErrorMessage(e, this));
         }
-
         return this.ast;
     }
 
-    //---------------------------------------------------------------------------
+    //--------------------------------------------------------------------------
     // SOURCE SAMPLING
 
     /**
@@ -283,11 +251,13 @@ public class SourceUnit extends ProcessingUnit {
             if (column > 0) {
                 String marker = Utilities.repeatString(" ", column - 1) + "^";
 
-                if (column > 40) {
-                    int start = column - 30 - 1;
-                    int end = (column + 10 > text.length() ? text.length() : column + 10 - 1);
-                    sample = "   " + text.substring(start, end) + Utilities.eol() + "   " +
-                            marker.substring(start);
+                if (column > 60) {
+                    int start = column - 45 - 1;
+                    int length = text.length();
+                    int end = (column + 25 > length ? length : column + 25 - 1);
+                    if (start >= length || end < start)
+                        return null; // can happen with CR only files GROOVY-10676
+                    sample = "   " + text.substring(start, end) + Utilities.eol() + "   " + marker.substring(start);
                 } else {
                     sample = "   " + text + Utilities.eol() + "   " + marker;
                 }
@@ -307,7 +277,7 @@ public class SourceUnit extends ProcessingUnit {
      * @param e the exception that occurred
      * @throws CompilationFailedException on error
      */
-    public void addException(Exception e) throws CompilationFailedException {
+    public void addException(final Exception e) throws CompilationFailedException {
         getErrorCollector().addException(e, this);
     }
 
@@ -320,41 +290,70 @@ public class SourceUnit extends ProcessingUnit {
      * @param se the exception, which should have line and column information
      * @throws CompilationFailedException on error
      */
-    public void addError(SyntaxException se) throws CompilationFailedException {
+    public void addError(final SyntaxException se) throws CompilationFailedException {
         getErrorCollector().addError(se, this);
     }
 
     /**
      * Convenience wrapper for {@link ErrorCollector#addFatalError(org.codehaus.groovy.control.messages.Message)}.
      *
-     * @param msg the error message
-     * @param node the AST node
+     * @param text the error message
+     * @param node for locating the offending code
      * @throws CompilationFailedException on error
+     *
      * @since 3.0.0
      */
-    public void addFatalError(String msg, ASTNode node) throws CompilationFailedException {
-        getErrorCollector().addFatalError(
-                new SyntaxErrorMessage(
-                        new SyntaxException(
-                                msg,
-                                node.getLineNumber(),
-                                node.getColumnNumber(),
-                                node.getLastLineNumber(),
-                                node.getLastColumnNumber()
-                        ),
-                        this
-                )
-        );
+    public void addFatalError(final String text, final ASTNode node) throws CompilationFailedException {
+        getErrorCollector().addFatalError(Message.create(new SyntaxException(text, node), this));
     }
 
-    public void addErrorAndContinue(SyntaxException se) throws CompilationFailedException {
+    /**
+     * Adds a warning with {@link WarningMessage#POSSIBLE_ERRORS} importance.
+     *
+     * @since 4.0.7
+     */
+    public void addWarning(final String text, final ASTNode node) {
+        addWarning(WarningMessage.POSSIBLE_ERRORS, text, node);
+    }
+
+    /**
+     * Adds a warning at the given importance level. The warning is only retained
+     * if the importance is relevant for the configured warning level.
+     *
+     * @param importance one of the {@link WarningMessage} level constants
+     * @param text the warning text
+     * @param node the AST node the warning relates to (for line/column info)
+     *
+     * @since 6.0.0
+     */
+    public void addWarning(final int importance, final String text, final ASTNode node) {
+        Token token = new Token(0, "", node.getLineNumber(), node.getColumnNumber()); // ASTNode to CSTNode
+        getErrorCollector().addWarning(importance, text, token, this);
+    }
+
+    /**
+     * Adds a non-fatal syntax error to this source unit.
+     *
+     * @param se the syntax error to record
+     */
+    public void addErrorAndContinue(final SyntaxException se) {
         getErrorCollector().addErrorAndContinue(se, this);
     }
 
+    /**
+     * Returns the reader source backing this source unit.
+     *
+     * @return the underlying reader source
+     */
     public ReaderSource getSource() {
         return source;
     }
 
+    /**
+     * Replaces the reader source backing this source unit.
+     *
+     * @param source the new reader source
+     */
     public void setSource(ReaderSource source) {
         this.source = source;
     }

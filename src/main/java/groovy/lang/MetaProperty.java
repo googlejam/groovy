@@ -25,11 +25,21 @@ import static org.apache.groovy.util.BeanUtils.capitalize;
 /**
  * Represents a property on a bean which may have a getter and/or a setter
  */
-public abstract class MetaProperty {
+public abstract class MetaProperty implements MetaMember {
 
-    protected final String name;
-    protected Class type;
+    /**
+     * Prefix used when deriving setter names from Groovy property names.
+     */
     public static final String PROPERTY_SET_PREFIX = "set";
+
+    /**
+     * Property name as exposed through the Groovy MOP.
+     */
+    protected final String name;
+    /**
+     * Declared property type.
+     */
+    protected Class type;
 
     /**
      * Constructor that sets the property name and type (class)
@@ -41,13 +51,13 @@ public abstract class MetaProperty {
 
     /**
      * @return the property of the given object
-     * @throws Exception if the property could not be evaluated
+     * @throws RuntimeException if the property could not be evaluated
      */
     public abstract Object getProperty(Object object);
 
     /**
-     * Sets the property on the given object to the new value
-     * 
+     * Sets the property on the given object to the new value.
+     *
      * @param object on which to set the property
      * @param newValue the new value of the property
      * @throws RuntimeException if the property could not be set
@@ -55,25 +65,30 @@ public abstract class MetaProperty {
     public abstract void setProperty(Object object, Object newValue);
 
     /**
-     * Return the name of the property
+     * Returns the name of the property.
      *
      * @return the name of the property
      */
+    @Override
     public String getName() {
         return name;
     }
 
     /**
+     * Returns the ntypeame of the property.
+     *
      * @return the type of the property
      */
     public Class getType() {
         return type;
     }
-    
+
     /**
-     * Returns the access modifier.
-     * @return Modifier.PUBLIC
+     * Returns the access modifiers.
+     *
+     * @return {@link Modifier#PUBLIC}
      */
+    @Override
     public int getModifiers() {
         return Modifier.PUBLIC;
     }
@@ -84,8 +99,8 @@ public abstract class MetaProperty {
      * @return The name of the property. The name is "get" + the capitalized propertyName
      *         or, in the case of boolean values, "is" + the capitalized propertyName
      */
-    public static String getGetterName(String propertyName, Class type) {
-        String prefix = type == boolean.class || type == Boolean.class ? "is" : "get";
+    public static String getGetterName(final String propertyName, final Class type) {
+        String prefix = type == Boolean.TYPE ? "is" : "get";
         return prefix + capitalize(propertyName);
     }
 
@@ -94,7 +109,7 @@ public abstract class MetaProperty {
      *
      * @return The name of the property. The name is "set"+ the capitalized propertyName.
      */
-    public static String getSetterName(String propertyName) {
+    public static String getSetterName(final String propertyName) {
         return PROPERTY_SET_PREFIX + capitalize(propertyName);
     }
 }

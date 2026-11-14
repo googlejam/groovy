@@ -16,13 +16,15 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs.groovy8953;
+package bugs.groovy8953;
 
 public enum Enum8953 {
-    A("value");
-    public String value;
 
-    Enum8953(@Deprecated final String value) {
+    A("value");
+
+    public final String value;
+
+    Enum8953(@Anno8953 final String value) {
         this.value = value;
     }
 }

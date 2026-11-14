@@ -28,9 +28,21 @@ import java.io.PrintWriter;
  * A class for error messages produced by the parser system.
  */
 public class SyntaxErrorMessage extends Message {
+    /**
+     * Underlying syntax exception.
+     */
     protected SyntaxException cause;
+    /**
+     * Source unit containing the syntax error.
+     */
     protected SourceUnit source;
 
+    /**
+     * Creates a message for the supplied syntax error.
+     *
+     * @param cause the syntax exception to report
+     * @param source the source unit containing the error
+     */
     public SyntaxErrorMessage(SyntaxException cause, SourceUnit source) {
         this.cause = cause;
         this.source = source;
@@ -42,6 +54,15 @@ public class SyntaxErrorMessage extends Message {
      */
     public SyntaxException getCause() {
         return this.cause;
+    }
+
+    /**
+     * The error's bare text with its position: {@link SyntaxException#getMessage()}
+     * appends {@code " @ line N, column M."}, which the position fields already carry.
+     */
+    @Override
+    public Diagnostic toDiagnostic() {
+        return new Diagnostic(source.getName(), cause.getStartLine(), cause.getStartColumn(), cause.getOriginalMessage());
     }
 
     /**

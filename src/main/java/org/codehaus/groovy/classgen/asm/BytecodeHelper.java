@@ -29,18 +29,21 @@ import org.codehaus.groovy.reflection.ReflectionCache;
 import org.codehaus.groovy.runtime.typehandling.DefaultTypeTransformation;
 import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Type;
 
 import java.lang.reflect.Modifier;
 
-import static org.codehaus.groovy.ast.ClassHelper.VOID_TYPE;
-import static org.codehaus.groovy.ast.ClassHelper.boolean_TYPE;
-import static org.codehaus.groovy.ast.ClassHelper.byte_TYPE;
-import static org.codehaus.groovy.ast.ClassHelper.char_TYPE;
-import static org.codehaus.groovy.ast.ClassHelper.double_TYPE;
-import static org.codehaus.groovy.ast.ClassHelper.float_TYPE;
-import static org.codehaus.groovy.ast.ClassHelper.int_TYPE;
-import static org.codehaus.groovy.ast.ClassHelper.long_TYPE;
-import static org.codehaus.groovy.ast.ClassHelper.short_TYPE;
+import static org.codehaus.groovy.ast.ClassHelper.isObjectType;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveBoolean;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveByte;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveChar;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveDouble;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveFloat;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveInt;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveLong;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveShort;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveType;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveVoid;
 import static org.objectweb.asm.Opcodes.ALOAD;
 import static org.objectweb.asm.Opcodes.ARETURN;
 import static org.objectweb.asm.Opcodes.ASTORE;
@@ -66,6 +69,7 @@ import static org.objectweb.asm.Opcodes.ICONST_2;
 import static org.objectweb.asm.Opcodes.ICONST_3;
 import static org.objectweb.asm.Opcodes.ICONST_4;
 import static org.objectweb.asm.Opcodes.ICONST_5;
+import static org.objectweb.asm.Opcodes.ICONST_M1;
 import static org.objectweb.asm.Opcodes.IFEQ;
 import static org.objectweb.asm.Opcodes.IFNE;
 import static org.objectweb.asm.Opcodes.ILOAD;
@@ -73,6 +77,7 @@ import static org.objectweb.asm.Opcodes.INVOKESTATIC;
 import static org.objectweb.asm.Opcodes.INVOKEVIRTUAL;
 import static org.objectweb.asm.Opcodes.IRETURN;
 import static org.objectweb.asm.Opcodes.ISTORE;
+import static org.objectweb.asm.Opcodes.IXOR;
 import static org.objectweb.asm.Opcodes.LCMP;
 import static org.objectweb.asm.Opcodes.LCONST_0;
 import static org.objectweb.asm.Opcodes.LLOAD;
@@ -88,7 +93,7 @@ import static org.objectweb.asm.Opcodes.SIPUSH;
  */
 public class BytecodeHelper {
 
-    private static String DTT_CLASSNAME = BytecodeHelper.getClassInternalName(DefaultTypeTransformation.class);
+    private static final String DTT_CLASSNAME = BytecodeHelper.getClassInternalName(DefaultTypeTransformation.class);
 
     /**
      * @return the ASM internal name of the type
@@ -104,18 +109,18 @@ public class BytecodeHelper {
      * @return the ASM internal name of the type
      */
     public static String getClassInternalName(Class t) {
-        return org.objectweb.asm.Type.getInternalName(t);
+        return Type.getInternalName(t);
     }
 
     /**
      * @return the ASM internal name of the type
      */
     public static String getClassInternalName(String name) {
-        return name.replace('.', '/');
+        return name.indexOf('.') < 0 ? name : name.replace('.', '/');
     }
 
     /**
-     * Returns a method descriptor for the given {@link org.codehaus.groovy.ast.MethodNode}.
+     * Returns a method descriptor for the given {@link MethodNode}.
      *
      * @param methodNode the method node for which to create the descriptor
      * @return a method descriptor as defined in section JVMS section 4.3.3
@@ -185,8 +190,14 @@ public class BytecodeHelper {
         return desc.replace('/', '.');
     }
 
+    /**
+     * Returns the JVM descriptor for the supplied runtime class.
+     *
+     * @param c the runtime class
+     * @return the ASM type descriptor
+     */
     public static String getTypeDescription(Class c) {
-        return org.objectweb.asm.Type.getDescriptor(c);
+        return Type.getDescriptor(c);
     }
 
     /**
@@ -207,9 +218,9 @@ public class BytecodeHelper {
      *
      * @return the ASM type description
      */
-    private static String getTypeDescription(ClassNode c, boolean end) {
+    static String getTypeDescription(ClassNode c, boolean end) {
         ClassNode d = c;
-        if (ClassHelper.isPrimitiveType(d.redirect())) {
+        if (isPrimitiveType(d.redirect())) {
             d = d.redirect();
         }
         String desc = TypeUtil.getDescriptionByType(d);
@@ -231,50 +242,52 @@ public class BytecodeHelper {
         return answer;
     }
 
+    /**
+     * Pushes an integer constant onto the operand stack.
+     *
+     * @param mv the current method visitor
+     * @param value the constant value
+     */
     public static void pushConstant(MethodVisitor mv, int value) {
         switch (value) {
-            case 0:
-                mv.visitInsn(ICONST_0);
-                break;
-            case 1:
-                mv.visitInsn(ICONST_1);
-                break;
-            case 2:
-                mv.visitInsn(ICONST_2);
-                break;
-            case 3:
-                mv.visitInsn(ICONST_3);
-                break;
-            case 4:
-                mv.visitInsn(ICONST_4);
-                break;
-            case 5:
-                mv.visitInsn(ICONST_5);
-                break;
-            default:
-                if (value >= Byte.MIN_VALUE && value <= Byte.MAX_VALUE) {
-                    mv.visitIntInsn(BIPUSH, value);
-                } else if (value >= Short.MIN_VALUE && value <= Short.MAX_VALUE) {
-                    mv.visitIntInsn(SIPUSH, value);
-                } else {
-                    mv.visitLdcInsn(value);
-                }
+          case -1:
+            mv.visitInsn(ICONST_M1);
+            break;
+          case 0:
+            mv.visitInsn(ICONST_0);
+            break;
+          case 1:
+            mv.visitInsn(ICONST_1);
+            break;
+          case 2:
+            mv.visitInsn(ICONST_2);
+            break;
+          case 3:
+            mv.visitInsn(ICONST_3);
+            break;
+          case 4:
+            mv.visitInsn(ICONST_4);
+            break;
+          case 5:
+            mv.visitInsn(ICONST_5);
+            break;
+          default:
+            if (value >= Byte.MIN_VALUE && value <= Byte.MAX_VALUE) {
+                mv.visitIntInsn(BIPUSH, value);
+            } else if (value >= Short.MIN_VALUE && value <= Short.MAX_VALUE) {
+                mv.visitIntInsn(SIPUSH, value);
+            } else {
+                mv.visitLdcInsn(value);
+            }
         }
     }
 
     /**
-     * Negate a boolean on stack.
+     * Negates a boolean on stack.
      */
-    public static void negateBoolean(MethodVisitor mv) {
-        // code to negate the primitive boolean
-        Label endLabel = new Label();
-        Label falseLabel = new Label();
-        mv.visitJumpInsn(IFNE, falseLabel);
+    public static void negateBoolean(final MethodVisitor mv) {
         mv.visitInsn(ICONST_1);
-        mv.visitJumpInsn(GOTO, endLabel);
-        mv.visitLabel(falseLabel);
-        mv.visitInsn(ICONST_0);
-        mv.visitLabel(endLabel);
+        mv.visitInsn(IXOR);
     }
 
     /**
@@ -323,10 +336,19 @@ public class BytecodeHelper {
         return false;
     }
 
-    private static boolean hasGenerics(ClassNode type) {
-        return type.isArray() ? hasGenerics(type.getComponentType()) : type.getGenericsTypes() != null;
+    static boolean hasGenerics(ClassNode type) {
+        if (type.isArray()) return hasGenerics(type.getComponentType());
+        if (type.getGenericsTypes() != null && type.getGenericsTypes().length > 0) return true;
+        ClassNode outer = type.getOuterClassType();
+        return outer != null && hasGenerics(outer);
     }
 
+    /**
+     * Builds the generic signature for a method when one is required.
+     *
+     * @param node the method node
+     * @return the generic signature, or {@code null} if none is needed
+     */
     public static String getGenericsMethodSignature(MethodNode node) {
         GenericsType[] generics = node.getGenericsTypes();
         Parameter[] param = node.getParameters();
@@ -365,6 +387,30 @@ public class BytecodeHelper {
         return false;
     }
 
+    /**
+     * Builds the generic signature for a parameterized type reference.
+     *
+     * @param node the type node
+     * @return the generic type signature, or {@code null} if none is needed
+     */
+    public static String getTypeGenericsSignature(ClassNode node) {
+        if (!usesGenericsInTypeSignature(node)) return null;
+        StringBuilder ret = new StringBuilder(100);
+        TypeSignatureWriter.writeParameterizedClass(ret, node);
+        ret.append(";");
+        return ret.toString();
+    }
+
+    private static boolean usesGenericsInTypeSignature(ClassNode node) {
+        return hasGenerics(node);
+    }
+
+    /**
+     * Builds the generic signature for a class declaration.
+     *
+     * @param node the class node
+     * @return the generic class signature, or {@code null} if none is needed
+     */
     public static String getGenericsSignature(ClassNode node) {
         if (!usesGenericsInClassSignature(node)) return null;
         GenericsType[] genericsTypes = node.getGenericsTypes();
@@ -381,7 +427,7 @@ public class BytecodeHelper {
     }
 
     private static void getGenericsTypeSpec(StringBuilder ret, GenericsType[] genericsTypes) {
-        if (genericsTypes == null) return;
+        if (genericsTypes == null || genericsTypes.length == 0) return;
         ret.append('<');
         for (GenericsType genericsType : genericsTypes) {
             String name = genericsType.getName();
@@ -392,9 +438,18 @@ public class BytecodeHelper {
         ret.append('>');
     }
 
+    /**
+     * Builds the generic bounds signature for a placeholder or parameterized type.
+     *
+     * @param type the type node
+     * @return the bounds signature, or {@code null} if none is needed
+     */
     public static String getGenericsBounds(ClassNode type) {
-        GenericsType[] genericsTypes = type.getGenericsTypes();
-        if (genericsTypes == null) return null;
+        if (type.isArray()) {
+            String component = getGenericsBounds(type.getComponentType());
+            return component == null ? null : "[" + component;
+        }
+        if (!hasGenerics(type)) return null;
         StringBuilder ret = new StringBuilder(100);
         if (type.isGenericsPlaceHolder()) {
             addSubTypes(ret, type.getGenericsTypes(), "", "");
@@ -412,9 +467,8 @@ public class BytecodeHelper {
             ret.append(printType.getGenericsTypes()[0].getName());
             ret.append(";");
         } else {
-            ret.append(getTypeDescription(printType, false));
-            addSubTypes(ret, printType.getGenericsTypes(), "<", ">");
-            if (!ClassHelper.isPrimitiveType(printType)) ret.append(";");
+            TypeSignatureWriter.writeParameterizedClass(ret, printType);
+            if (!isPrimitiveType(printType)) ret.append(";");
         }
     }
 
@@ -431,8 +485,9 @@ public class BytecodeHelper {
         }
     }
 
-    private static void addSubTypes(StringBuilder ret, GenericsType[] types, String start, String end) {
+    static void addSubTypes(StringBuilder ret, GenericsType[] types, String start, String end) {
         if (types == null) return;
+        if (types.length == 0 && "<".equals(start)) return;
         ret.append(start);
         for (GenericsType type : types) {
             if (type.getType().isArray()) {
@@ -462,16 +517,43 @@ public class BytecodeHelper {
         ret.append(end);
     }
 
-    public static void doCast(MethodVisitor mv, ClassNode type) {
-        if (type == ClassHelper.OBJECT_TYPE) return;
-        if (ClassHelper.isPrimitiveType(type) && type != VOID_TYPE) {
+    /**
+     * Generates bytecode for casting a value to the specified type.
+     *
+     * @param mv   the MethodVisitor used to generate bytecode instructions
+     * @param type the target Class type for the cast operation (must not be null)
+     *
+     * @see #doCast(MethodVisitor, ClassNode)
+     * @see #unbox(MethodVisitor, Class)
+     *
+     * @since 6.0.0
+     */
+    public static void doCast(final MethodVisitor mv, final Class<?> type) {
+        if (type.isPrimitive() && type != Void.TYPE) {
             unbox(mv, type);
-        } else {
-            mv.visitTypeInsn(
-                    CHECKCAST,
-                    type.isArray() ?
-                            BytecodeHelper.getTypeDescription(type) :
-                            BytecodeHelper.getClassInternalName(type.getName()));
+        } else if (type != Object.class) {
+            mv.visitTypeInsn(CHECKCAST, type.isArray()
+                    ? BytecodeHelper.getTypeDescription(type)
+                    : BytecodeHelper.getClassInternalName(type.getName()));
+        }
+    }
+
+    /**
+     * Generates bytecode for casting a value to the specified type.
+     *
+     * @param mv   the MethodVisitor used to generate bytecode instructions
+     * @param type the target ClassNode type for the cast operation (must not be null)
+     *
+     * @see #doCast(MethodVisitor, Class)
+     * @see #unbox(MethodVisitor, ClassNode)
+     */
+    public static void doCast(final MethodVisitor mv, final ClassNode type) {
+        if (isPrimitiveType(type) && !isPrimitiveVoid(type)) {
+            unbox(mv, type);
+        } else if (!isObjectType(type)) {
+            mv.visitTypeInsn(CHECKCAST, type.isArray()
+                    ? BytecodeHelper.getTypeDescription(type)
+                    : BytecodeHelper.getClassInternalName(type.getName()));
         }
     }
 
@@ -501,25 +583,12 @@ public class BytecodeHelper {
         mv.visitMethodInsn(INVOKESTATIC, getClassInternalName(targetType), "valueOf", "(" + getTypeDescription(sourceType) + ")" + getTypeDescription(targetType), false);
     }
 
-    public static void doCast(MethodVisitor mv, Class type) {
-        if (type == Object.class) return;
-        if (type.isPrimitive() && type != Void.TYPE) {
-            unbox(mv, type);
-        } else {
-            mv.visitTypeInsn(
-                    CHECKCAST,
-                    type.isArray() ?
-                            BytecodeHelper.getTypeDescription(type) :
-                            BytecodeHelper.getClassInternalName(type.getName()));
-        }
-    }
-
     /**
      * Generates the bytecode to autobox the current value on the stack.
      */
     @Deprecated
     public static boolean box(MethodVisitor mv, ClassNode type) {
-        if (ClassHelper.isPrimitiveType(type) && !ClassHelper.VOID_TYPE.equals(type)) {
+        if (isPrimitiveType(type) && !isPrimitiveVoid(type)) {
             box(mv, BytecodeHelper.getTypeDescription(type));
             return true;
         }
@@ -546,7 +615,7 @@ public class BytecodeHelper {
      * Generates the bytecode to unbox the current value on the stack.
      */
     public static void unbox(MethodVisitor mv, ClassNode type) {
-        if (ClassHelper.isPrimitiveType(type) && !ClassHelper.VOID_TYPE.equals(type)) {
+        if (isPrimitiveType(type) && !isPrimitiveVoid(type)) {
             unbox(mv, type.getName(), BytecodeHelper.getTypeDescription(type));
         }
     }
@@ -570,14 +639,14 @@ public class BytecodeHelper {
      * If the classnode is not a primitive type, we will generate a LDC instruction.
      */
     public static void visitClassLiteral(MethodVisitor mv, ClassNode classNode) {
-        if (ClassHelper.isPrimitiveType(classNode)) {
+        if (isPrimitiveType(classNode)) {
             mv.visitFieldInsn(
                     GETSTATIC,
                     getClassInternalName(ClassHelper.getWrapper(classNode)),
                     "TYPE",
                     "Ljava/lang/Class;");
         } else {
-            mv.visitLdcInsn(org.objectweb.asm.Type.getType(getTypeDescription(classNode)));
+            mv.visitLdcInsn(Type.getType(getTypeDescription(classNode)));
         }
     }
 
@@ -592,7 +661,7 @@ public class BytecodeHelper {
     public static boolean isClassLiteralPossible(ClassNode classNode) {
         // the current implementation only checks for public modifier, because Groovy used to allow
         // handles on classes even if they are package protected and not in the same package.
-        // There are situations where we could make more fine grained checks, but be careful of
+        // There are situations where we could make more fine-grained checks, but be careful of
         // potential breakage of existing code.
         return Modifier.isPublic(classNode.getModifiers());
     }
@@ -633,22 +702,22 @@ public class BytecodeHelper {
      * @param type primitive type to convert
      */
     public static void convertPrimitiveToBoolean(MethodVisitor mv, ClassNode type) {
-        if (type == boolean_TYPE) {
+        if (isPrimitiveBoolean(type)) {
             return;
         }
         // Special handling is done for floating point types in order to
         // handle checking for 0 or NaN values.
-        if (type == double_TYPE) {
+        if (isPrimitiveDouble(type)) {
             convertDoubleToBoolean(mv);
             return;
-        } else if (type == float_TYPE) {
+        } else if (isPrimitiveFloat(type)) {
             convertFloatToBoolean(mv);
             return;
         }
         Label trueLabel = new Label();
         Label falseLabel = new Label();
         // Convert long to int for IFEQ comparison using LCMP
-        if (type == long_TYPE) {
+        if (isPrimitiveLong(type)) {
             mv.visitInsn(LCONST_0);
             mv.visitInsn(LCMP);
         }
@@ -699,14 +768,34 @@ public class BytecodeHelper {
         mv.visitLabel(trueLabel);
     }
 
+    /**
+     * Emits the appropriate return instruction for the supplied type.
+     *
+     * @param mv the current method visitor
+     * @param type the value type being returned
+     */
     public static void doReturn(MethodVisitor mv, ClassNode type) {
         new ReturnVarHandler(mv, type).handle();
     }
 
+    /**
+     * Emits the appropriate load instruction for the supplied local variable.
+     *
+     * @param mv the current method visitor
+     * @param type the local variable type
+     * @param idx the local variable index
+     */
     public static void load(MethodVisitor mv, ClassNode type, int idx) {
         new LoadVarHandler(mv, type, idx).handle();
     }
 
+    /**
+     * Emits the appropriate store instruction for the supplied local variable.
+     *
+     * @param mv the current method visitor
+     * @param type the local variable type
+     * @param idx the local variable index
+     */
     public static void store(MethodVisitor mv, ClassNode type, int idx) {
         new StoreVarHandler(mv, type, idx).handle();
     }
@@ -714,7 +803,7 @@ public class BytecodeHelper {
     private static class ReturnVarHandler extends PrimitiveTypeHandler {
         private MethodVisitor mv;
 
-        public ReturnVarHandler(MethodVisitor mv, ClassNode type) {
+        ReturnVarHandler(MethodVisitor mv, ClassNode type) {
             super(type);
             this.mv = mv;
         }
@@ -754,7 +843,7 @@ public class BytecodeHelper {
         private MethodVisitor mv;
         private int idx;
 
-        public LoadVarHandler(MethodVisitor mv, ClassNode type, int idx) {
+        LoadVarHandler(MethodVisitor mv, ClassNode type, int idx) {
             super(type);
             this.mv = mv;
             this.idx = idx;
@@ -795,7 +884,7 @@ public class BytecodeHelper {
         private MethodVisitor mv;
         private int idx;
 
-        public StoreVarHandler(MethodVisitor mv, ClassNode type, int idx) {
+        StoreVarHandler(MethodVisitor mv, ClassNode type, int idx) {
             super(type);
             this.mv = mv;
             this.idx = idx;
@@ -835,35 +924,44 @@ public class BytecodeHelper {
     private static abstract class PrimitiveTypeHandler {
         private ClassNode type;
 
-        public PrimitiveTypeHandler(ClassNode type) {
+        PrimitiveTypeHandler(ClassNode type) {
             this.type = type;
         }
 
+        /**
+         * Dispatches on the stored type. {@code boolean}, {@code char}, {@code byte},
+         * {@code int}, and {@code short} use {@link #handleIntType()}. {@code double},
+         * {@code float}, {@code long}, and {@code void} use their own handlers. Any other
+         * type uses {@link #handleRefType()}.
+         */
         public void handle() {
-            if (type == double_TYPE) {
+            if (isPrimitiveDouble(type)) {
                 handleDoubleType();
-            } else if (type == float_TYPE) {
+            } else if (isPrimitiveFloat(type)) {
                 handleFloatType();
-            } else if (type == long_TYPE) {
+            } else if (isPrimitiveLong(type)) {
                 handleLongType();
             } else if (
-                    type == boolean_TYPE
-                            || type == char_TYPE
-                            || type == byte_TYPE
-                            || type == int_TYPE
-                            || type == short_TYPE) {
+                    isPrimitiveBoolean(type)
+                            || isPrimitiveChar(type)
+                            || isPrimitiveByte(type)
+                            || isPrimitiveInt(type)
+                            || isPrimitiveShort(type)) {
                 handleIntType();
-            } else if (type == VOID_TYPE) {
+            } else if (isPrimitiveVoid(type)) {
                 handleVoidType();
             } else {
                 handleRefType();
             }
         }
 
+        /** Emits the instruction for a {@code double}. */
         protected abstract void handleDoubleType();
 
+        /** Emits the instruction for a {@code float}. */
         protected abstract void handleFloatType();
 
+        /** Emits the instruction for a {@code long}. */
         protected abstract void handleLongType();
 
         /**
@@ -871,8 +969,10 @@ public class BytecodeHelper {
          */
         protected abstract void handleIntType();
 
+        /** Emits the instruction for {@code void}. */
         protected abstract void handleVoidType();
 
+        /** Emits the instruction for a reference type. */
         protected abstract void handleRefType();
     }
 }

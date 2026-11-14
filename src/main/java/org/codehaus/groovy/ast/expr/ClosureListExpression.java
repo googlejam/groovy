@@ -32,43 +32,63 @@ import java.util.List;
  * </code>
  * The right side is a ClosureListExpression consisting of
  * two ConstantExpressions for the values 1 and 2, and two
- * EmptyStatement entries. The ClosureListExpression defines a new 
+ * EmptyStatement entries. The ClosureListExpression defines a new
  * variable scope. All created Closures share this scope.
  */
 public class ClosureListExpression extends ListExpression {
 
     private VariableScope scope;
-    
+
+    /**
+     * Builds a closure list from the supplied expressions and gives it a new
+     * {@link VariableScope}. Closures created from this list share that scope.
+     *
+     * @param expressions the expressions between the semicolons, in source order
+     */
     public ClosureListExpression(List<Expression> expressions) {
         super(expressions);
         scope = new VariableScope();
     }
-    
+
+    /**
+     * Builds an empty closure list with room for three expressions and a new
+     * {@link VariableScope}.
+     */
     public ClosureListExpression() {
         this(new ArrayList<Expression>(3));
     }
-    
+
     @Override
     public void visit(GroovyCodeVisitor visitor) {
         visitor.visitClosureListExpression(this);
     }
-    
+
     @Override
     public Expression transformExpression(ExpressionTransformer transformer) {
         Expression ret = new ClosureListExpression(transformExpressions(getExpressions(), transformer));
         ret.setSourcePosition(this);
         ret.copyNodeMetaData(this);
-        return ret;       
+        return ret;
     }
-    
+
+    /**
+     * Replaces the scope shared by the closures created from this list.
+     *
+     * @param scope the scope those closures share
+     */
     public void setVariableScope(VariableScope scope) {
         this.scope = scope;
     }
-    
+
+    /**
+     * Returns the scope shared by the closures created from this list.
+     *
+     * @return the variable scope created with this list, or the one last stored
+     */
     public VariableScope getVariableScope() {
         return scope;
     }
-    
+
     @Override
     public String getText() {
         StringBuilder buffer = new StringBuilder("(");
@@ -79,7 +99,7 @@ public class ClosureListExpression extends ListExpression {
             } else {
                 buffer.append("; ");
             }
-            
+
             buffer.append(expression.getText());
         }
         buffer.append(")");

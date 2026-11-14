@@ -18,29 +18,60 @@
  */
 package org.codehaus.groovy.transform.stc;
 
+import groovy.lang.DelegatesTo;
+
 /**
- * This enumeration is used by the AST transformations which rely on static type checking, either
- * to store or to retrieve information from AST node metadata. The values of this enumeration are
- * used as metadata keys.
+ * This enumeration is used by the AST transformations which rely on static type
+ * checking, either to store or to retrieve information from AST node metadata.
+ * The values of this enumeration are used as metadata keys.
  */
 public enum StaticTypesMarker {
-    INFERRED_TYPE, // used to store type information on class nodes
-    DECLARATION_INFERRED_TYPE, // in flow analysis, represents the type of the declaration node lhs
-    INFERRED_RETURN_TYPE, // used to store inferred return type for methods and closures
-    CLOSURE_ARGUMENTS, // used to store closure argument types on a variable expression
-    READONLY_PROPERTY, // used to tell that a property expression refers to a readonly property
-    INITIAL_EXPRESSION, // used to store the default expression for a parameter
-    DIRECT_METHOD_CALL_TARGET, // used to store the MethodNode a MethodCallExpression should target
-    DELEGATION_METADATA, // used to store the delegation strategy and delegate type of a closure when declared with @DelegatesTo
-    IMPLICIT_RECEIVER, // if the receiver is implicit but not "this", store the name of the receiver (delegate or owner)
-    PV_FIELDS_ACCESS, // set of private fields that are accessed from closures or inner classes
-    PV_FIELDS_MUTATION, // set of private fields that are set from closures or inner classes
-    PV_METHODS_ACCESS, // set of private methods that are accessed from closures or inner classes
-    DYNAMIC_RESOLUTION, // call recognized by a type checking extension as a dynamic method call
-    SUPER_MOP_METHOD_REQUIRED, // used to store the list of MOP methods that still have to be generated
-    PARAMETER_TYPE, // used to store the parameter type information of method invocation on an expression
-    INFERRED_FUNCTIONAL_INTERFACE_TYPE, // used to store the function interface type information on an expression
-    CONSTRUCTED_LAMBDA_EXPRESSION, // used to store the constructed lambda expression for method reference and constructor reference
-    SWITCH_CONDITION_EXPRESSION_TYPE, // used to store the condition expression type of the switch-case statement
-    TYPE // used to store the result of `org.codehaus.groovy.transform.stc.StaticTypeCheckingVisitor.getType`
+    /** used to store type information on class nodes */
+    INFERRED_TYPE,
+    /** in flow analysis, represents the type of the declaration node LHS */
+    DECLARATION_INFERRED_TYPE,
+    /** used to store inferred return type for methods and closures */
+    INFERRED_RETURN_TYPE,
+    /** used to store expected closure argument types on an expression */
+    CLOSURE_ARGUMENTS,
+    /** used to tell that a property expression refers to a read-only property */
+    READONLY_PROPERTY,
+    /** used to store the default expression for a parameter */
+    INITIAL_EXPRESSION,
+    /** used to store the MethodNode a MethodCallExpression should target */
+    DIRECT_METHOD_CALL_TARGET,
+    /** used to store the delegation strategy and delegate type of a closure derived from {@link DelegatesTo DelegatesTo} metadata */
+    DELEGATION_METADATA,
+    /** if the receiver is implicit but not "this", store the name of the receiver (delegate or owner) */
+    IMPLICIT_RECEIVER,
+    /** set of private fields that are accessed from closures or inner classes */
+    PV_FIELDS_ACCESS,
+    /** set of private fields that are set from closures or inner classes */
+    PV_FIELDS_MUTATION,
+    /** set of private methods that are accessed from closures or inner classes */
+    PV_METHODS_ACCESS,
+    /** call recognized by a type checking extension as a dynamic method call */
+    DYNAMIC_RESOLUTION,
+    /** used to store the list of MOP methods that still have to be generated */
+    SUPER_MOP_METHOD_REQUIRED,
+    /** used to store the parameter type of method invocation on an expression */
+    PARAMETER_TYPE,
+    /** used to store the condition expression type of the switch-case statement */
+    SWITCH_CONDITION_EXPRESSION_TYPE,
+    /** used to store the result of {@link StaticTypeCheckingVisitor#getType} */
+    TYPE,
+    /** indicates a parameter or method return is known to be non-null (e.g., inferred from {@code @Requires}/{@code @Ensures} contracts) */
+    INFERRED_NON_NULL,
+    /** list of {@code return null} statements recorded on a method before its body is rewritten, so a downstream checker can still report them as non-null violations */
+    INFERRED_NON_NULL_RETURN_VIOLATIONS,
+    /** GEP-15: stores the resolved compound-assignment {@code MethodNode} (e.g. {@code plusAssign}) on a {@code BinaryExpression} when the static type checker has located one, signalling to codegen that the receiver should be mutated in place rather than {@code x = x.plus(y)}-desugared */
+    COMPOUND_ASSIGN_TARGET,
+    /** GROOVY-11998: for an intersection-cast lambda or method reference, the SAM-bearing component picked from the intersection */
+    PRIMARY_FUNCTIONAL_TYPE,
+    /** GROOVY-11998: for an intersection cast on a lambda, method reference or closure, the additional marker interfaces to thread to {@code LambdaMetafactory.altMetafactory} */
+    LAMBDA_MARKERS,
+    /** marks a method-reference ({@code ::}) argument type so overload selection prefers a functional-interface parameter over a {@code Closure} parameter: as a call argument a method reference is coerced only to a functional interface, so a {@code Closure} overload does not apply (unlike assignment, where {@code Closure<?> c = Foo::bar} is valid) */
+    METHOD_REFERENCE_TYPE,
+    /** on a {@code SwitchExpression} without a {@code default}: {@code Boolean.TRUE} when its labels were proven to cover every non-null selector value (a complete enum, an unconditional pattern, or a covered sealed hierarchy), so that matching nothing at run time means a constant or subtype was added after compilation */
+    SWITCH_EXHAUSTIVE
 }

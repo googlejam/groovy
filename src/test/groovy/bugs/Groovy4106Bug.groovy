@@ -16,12 +16,13 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
 import groovy.lang.MetaClassRegistry.MetaClassCreationHandle
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy4106Bug extends GroovyTestCase {
+class Groovy4106Bug {
+    @Test
     void testStackOverflowError() {
         MetaClassCreationHandle handle = new ExpandoMetaClassCreationHandle()
         handle.create(ExpandoMetaClass, GroovySystem.getMetaClassRegistry())

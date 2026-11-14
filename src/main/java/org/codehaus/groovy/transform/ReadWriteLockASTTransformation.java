@@ -59,7 +59,16 @@ public class ReadWriteLockASTTransformation extends AbstractASTTransformation {
     private static final ClassNode READ_LOCK_TYPE = make(WithReadLock.class);
     private static final ClassNode WRITE_LOCK_TYPE = make(WithWriteLock.class);
     private static final ClassNode LOCK_TYPE = make(ReentrantReadWriteLock.class);
+    /**
+     * Name of the private static final {@link ReentrantReadWriteLock}
+     * added when a static method does not name its own lock field.
+     */
     public static final String DEFAULT_STATIC_LOCKNAME = "$REENTRANTLOCK";
+    /**
+     * Name of the private final {@link ReentrantReadWriteLock}
+     * added when an instance method does not name its own lock field.
+     * A {@code value} equal to this name, ignoring case, also selects the default field.
+     */
     public static final String DEFAULT_INSTANCE_LOCKNAME = "$reentrantlock";
 
     @Override
@@ -80,8 +89,7 @@ public class ReadWriteLockASTTransformation extends AbstractASTTransformation {
 
         String value = getMemberStringValue(node, "value");
 
-        if (parent instanceof MethodNode) {
-            MethodNode mNode = (MethodNode) parent;
+        if (parent instanceof MethodNode mNode) {
             ClassNode cNode = mNode.getDeclaringClass();
             FieldNode lockExpr = determineLock(value, cNode, mNode.isStatic(), myTypeName);
             if (lockExpr == null) return;
@@ -102,7 +110,7 @@ public class ReadWriteLockASTTransformation extends AbstractASTTransformation {
     }
 
     private FieldNode determineLock(String value, ClassNode targetClass, boolean isStatic, String myTypeName) {
-        if (value != null && value.length() > 0 && !value.equalsIgnoreCase(DEFAULT_INSTANCE_LOCKNAME)) {
+        if (value != null && !value.isEmpty() && !value.equalsIgnoreCase(DEFAULT_INSTANCE_LOCKNAME)) {
             FieldNode existingLockField = targetClass.getDeclaredField(value);
             if (existingLockField == null) {
                 addError("Error during " + myTypeName + " processing: lock field with name '" + value + "' not found in class " + targetClass.getName(), targetClass);
@@ -119,6 +127,7 @@ public class ReadWriteLockASTTransformation extends AbstractASTTransformation {
             if (field == null) {
                 int visibility = ACC_PRIVATE | ACC_STATIC | ACC_FINAL;
                 field = targetClass.addField(DEFAULT_STATIC_LOCKNAME, visibility, LOCK_TYPE, createLockObject());
+                markAsInternal(field);
             } else if (!field.isStatic()) {
                 addError("Error during " + myTypeName + " processing: " + DEFAULT_STATIC_LOCKNAME + " field must be static", field);
                 return null;
@@ -129,6 +138,7 @@ public class ReadWriteLockASTTransformation extends AbstractASTTransformation {
         if (field == null) {
             int visibility = ACC_PRIVATE | ACC_FINAL;
             field = targetClass.addField(DEFAULT_INSTANCE_LOCKNAME, visibility, LOCK_TYPE, createLockObject());
+            markAsInternal(field);
         } else if (field.isStatic()) {
             addError("Error during " + myTypeName + " processing: " + DEFAULT_INSTANCE_LOCKNAME + " field must not be static", field);
             return null;

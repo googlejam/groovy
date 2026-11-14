@@ -46,14 +46,18 @@ If you plan on using invokedynamic support, link:invokedynamic-support.html[read
 
 === Snapshots
 
-For those who want to test the very latest versions of Groovy and live on the bleeding edge, you can use our https://oss.jfrog.org/oss-snapshot-local/org/codehaus/groovy[snapshot builds]. As soon as a build succeeds on our continuous integration server a snapshot is deployed to Artifactory's OSS snapshot repository.
+For those who want to test the very latest versions of Groovy and live on the bleeding edge, you can use our https://repository.apache.org/content/groups/snapshots/org/apache/groovy[snapshot builds].
+As soon as a build succeeds on our continuous integration server a snapshot is deployed to this repository.
+These snapshots are not official releases and are intended for integration testing by the development
+community prior to official versions being released. We welcome any feedback.
 
 === Prerequisites
 
-Groovy {groovy-short-version} requires Java 8+ with support for up to Groovy 16.
-
-Various Groovy CI servers run the test suite (with more than 10000 tests) across numerous versions of Java.
-Those servers are also useful to look at to confirm supported Java versions for different Groovy releases.
+Groovy {groovy-short-version} requires Java 17 or newer. The primary CI matrix runs the
+test suite on Java 17, 21 and 25. Pushes to the main branch also test Java 18, 19, 20,
+22, 23, 24 and 26. The compiler can emit bytecode for Java 17 through 28; when the
+bytecode level is not set, it matches the JDK running the compiler if that release is
+in that range, and Java 17 otherwise.
 
 == Maven Repository
 
@@ -70,7 +74,7 @@ Simply open a new terminal and enter:
 
 [source,shell]
 ----
-$ curl -s get.sdkman.io | bash
+$ curl -s "https://get.sdkman.io" | bash
 ----
 
 Follow the instructions on-screen to complete installation.
@@ -104,7 +108,7 @@ That's all there is to it!
 
 ==== MacPorts
 
-If you're on MacOS and have https://www.macports.org[MacPorts] installed, you can run:
+If you're on macOS and have https://www.macports.org[MacPorts] installed, you can run:
 
 [source,shell]
 ----
@@ -113,7 +117,7 @@ sudo port install groovy
 
 ==== Homebrew
 
-If you're on MacOS and have https://mxcl.github.com/homebrew[Homebrew] installed, you can run:
+If you're on macOS and have https://brew.sh/[Homebrew] installed, you can run:
 
 [source,shell]
 ----

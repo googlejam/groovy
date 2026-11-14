@@ -16,13 +16,15 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
+import static groovy.test.GroovyAssert.assertScript
 
-class Groovy8140Bug extends GroovyTestCase {
+class Groovy8140Bug {
 
+    @Test
     void testGetMethodCallToSuperReturnsMOPSuperMethod() {
         assertScript '''
             import org.codehaus.groovy.runtime.InvokerHelper

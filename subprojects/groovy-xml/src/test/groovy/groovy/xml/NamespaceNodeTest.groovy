@@ -19,13 +19,15 @@
 package groovy.xml
 
 import groovy.namespace.QName
+import org.junit.jupiter.api.Test
 
 /**
  * Test the building of namespaced XML using GroovyMarkup
  */
-class NamespaceNodeTest extends TestXmlSupport {
+final class NamespaceNodeTest extends TestXmlSupport {
 
-    void testNodeBuilderWithNamespace() {
+    @Test
+    void nodeBuilderWithNamespace() {
         def n = new Namespace('http://foo/bar')
         def builder = NamespaceBuilder.newInstance(new NodeBuilder(), n.uri)
         def result = builder.outer(id: "3") {
@@ -35,8 +37,9 @@ class NamespaceNodeTest extends TestXmlSupport {
         assert result[n.inner][0].@name == 'foo'
         assert result[n.inner][1].text() == 'bar'
     }
-    
-    void testTree() {
+
+    @Test
+    void tree() {
         def builder = NodeBuilder.newInstance()
         def xmlns = new NamespaceBuilder(builder)
         def xsd = xmlns.namespace('http://www.w3.org/2001/XMLSchema', 'xsd')
@@ -84,7 +87,8 @@ class NamespaceNodeTest extends TestXmlSupport {
         assert attrNode[0].@name == 'orderDate'
     }
 
-    void testNodeBuilderWithImplicitNamespace() {
+    @Test
+    void nodeBuilderWithImplicitNamespace() {
         def n = new Namespace('http://foo/bar')
         def builder = NamespaceBuilder.newInstance(new NodeBuilder(), n.uri)
 
@@ -94,7 +98,7 @@ class NamespaceNodeTest extends TestXmlSupport {
             }
             innerWithoutNewNamespace("bar")
         }
-        
+
         def expected = pretty("""<?xml version="1.0" encoding="UTF-8"?>\
 <outer xmlns="http://foo/bar" id="3">
   <ns1:innerWithNewNamespace xmlns:ns1="http://foo/other" someAttr="someValue">
@@ -107,7 +111,8 @@ class NamespaceNodeTest extends TestXmlSupport {
         assert actual == expected
     }
 
-    void testNamespaceBuilderWithoutNamespace() {
+    @Test
+    void namespaceBuilderWithoutNamespace() {
         def builder = NamespaceBuilder.newInstance(new NodeBuilder())
         def result = builder.outer(id: "3") {
             inner(name: "foo")

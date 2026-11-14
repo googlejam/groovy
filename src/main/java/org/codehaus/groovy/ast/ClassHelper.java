@@ -46,12 +46,12 @@ import groovy.lang.Tuple6;
 import groovy.lang.Tuple7;
 import groovy.lang.Tuple8;
 import groovy.lang.Tuple9;
+import groovy.transform.Sealed;
 import org.apache.groovy.util.Maps;
 import org.apache.groovy.util.concurrent.ManagedIdentityConcurrentMap;
 import org.codehaus.groovy.classgen.asm.util.TypeUtil;
 import org.codehaus.groovy.runtime.GeneratedClosure;
 import org.codehaus.groovy.runtime.GeneratedLambda;
-import org.codehaus.groovy.transform.stc.StaticTypeCheckingSupport;
 import org.codehaus.groovy.transform.trait.Traits;
 import org.codehaus.groovy.vmplugin.VMPluginFactory;
 import org.objectweb.asm.Opcodes;
@@ -61,20 +61,50 @@ import java.lang.annotation.Annotation;
 import java.lang.annotation.ElementType;
 import java.lang.invoke.SerializedLambda;
 import java.lang.ref.SoftReference;
-import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import static org.codehaus.groovy.transform.stc.StaticTypeCheckingSupport.implementsInterfaceOrIsSubclassOf;
 
 /**
- * Helper for {@link ClassNode} and classes handling them.  Contains a set of
- * pre-defined instances for the most used types and some code for cached node
- * creation and basic handling.
+ * Helper for {@link ClassNode} creation and type management. Contains cached instances for
+ * all commonly used Groovy and Java types, plus factory methods for creating ClassNodes efficiently.
+ *
+ * <p>Provides:
+ * <ul>
+ *   <li>Predefined {@link ClassNode} constants for primitive types, wrapper types, and common classes</li>
+ *   <li>Caching mechanisms to avoid creating duplicate ClassNode instances for the same class</li>
+ *   <li>Factory methods for constructing ClassNodes from Java {@link Class} or String names</li>
+ *   <li>Type utility methods for wrapper/unwrapper conversions and type comparisons</li>
+ *   <li>Dynamic type representation for Groovy's dynamic typing system</li>
+ * </ul>
+ *
+ * <p><strong>Performance Note:</strong> ClassNodes are cached by reference for all predefined types.
+ * Using {@code make(Class)} or {@code make(String)} returns cached instances when available,
+ * providing O(1) lookup. Use {@code makeWithoutCaching()} only when a unique instance is needed.
+ *
+ * <p><strong>Type Categories:</strong>
+ * <ul>
+ *   <li><strong>Cached types:</strong> Common Java types (Object, String, Number, etc.) and all primitive types.
+ *       These are pre-created once and reused for performance.</li>
+ *   <li><strong>Uncached types:</strong> Collection types (Map, List, Set) created without caching.</li>
+ * </ul>
+ *
+ * @see ClassNode for the AST representation of classes
+ * @see Parameter for method parameters using ClassNode
+ * @see MethodNode for methods using ClassNode for return and parameter types
  */
 public class ClassHelper {
 
@@ -89,6 +119,10 @@ public class ClassHelper {
             Iterator.class, GeneratedClosure.class, GeneratedLambda.class, GroovyObjectSupport.class
     };
 
+    /**
+     * Classes of the fixed-arity tuple types, {@link Tuple0} through {@link Tuple16}.
+     * The array index is the number of components.
+     */
     public static final Class[] TUPLE_CLASSES = new Class[]{
             Tuple0.class, Tuple1.class, Tuple2.class, Tuple3.class, Tuple4.class, Tuple5.class, Tuple6.class,
             Tuple7.class, Tuple8.class, Tuple9.class, Tuple10.class, Tuple11.class, Tuple12.class, Tuple13.class,
@@ -99,9 +133,20 @@ public class ClassHelper {
             "", "boolean", "char", "byte", "short", "int", "long", "double", "float", "void"
     };
 
+    /**
+     * Canonical {@link ClassNode} constants for the types named by the fields.
+     * Callers reuse these instances instead of allocating a node for each comparison.
+     * <p>
+     * {@code OBJECT_TYPE} through {@code DEPRECATED_TYPE} are created with
+     * {@link #makeCached(Class)}. {@code MAP_TYPE} through
+     * {@code GROOVY_OBJECT_SUPPORT_TYPE} are created with
+     * {@link #makeWithoutCaching(Class)}. The one-argument form of that factory
+     * returns the soft-cached node, so those fields are still the single cached
+     * instance of their class. {@code VOID_TYPE} is primitive {@code void} and
+     * {@code void_WRAPPER_TYPE} is {@link Void}.
+     */
     public static final ClassNode
-            DYNAMIC_TYPE = makeCached(Object.class),
-            OBJECT_TYPE = DYNAMIC_TYPE,
+            OBJECT_TYPE = makeCached(Object.class),
             CLOSURE_TYPE = makeCached(Closure.class),
             GSTRING_TYPE = makeCached(GString.class),
             RANGE_TYPE = makeCached(Range.class),
@@ -109,6 +154,7 @@ public class ClassHelper {
             STRING_TYPE = makeCached(String.class),
             SCRIPT_TYPE = makeCached(Script.class),
             BINDING_TYPE = makeCached(Binding.class),
+            THROWABLE_TYPE = makeCached(Throwable.class),
 
             boolean_TYPE = makeCached(boolean.class),
             char_TYPE = makeCached(char.class),
@@ -126,8 +172,8 @@ public class ClassHelper {
             Float_TYPE = makeCached(Float.class),
             Double_TYPE = makeCached(Double.class),
             Boolean_TYPE = makeCached(Boolean.class),
-            BigInteger_TYPE = makeCached(java.math.BigInteger.class),
-            BigDecimal_TYPE = makeCached(java.math.BigDecimal.class),
+            BigInteger_TYPE = makeCached(BigInteger.class),
+            BigDecimal_TYPE = makeCached(BigDecimal.class),
             Number_TYPE = makeCached(Number.class),
 
             VOID_TYPE = makeCached(Void.TYPE),
@@ -137,8 +183,12 @@ public class ClassHelper {
             Annotation_TYPE = makeCached(Annotation.class),
             ELEMENT_TYPE_TYPE = makeCached(ElementType.class),
             AUTOCLOSEABLE_TYPE = makeCached(AutoCloseable.class),
+            CLONEABLE_TYPE = makeCached(Cloneable.class),
             SERIALIZABLE_TYPE = makeCached(Serializable.class),
             SERIALIZEDLAMBDA_TYPE = makeCached(SerializedLambda.class),
+            SEALED_TYPE = makeCached(Sealed.class),
+            OVERRIDE_TYPE = makeCached(Override.class),
+            DEPRECATED_TYPE = makeCached(Deprecated.class),
 
             // uncached constants
             MAP_TYPE = makeWithoutCaching(Map.class),
@@ -147,6 +197,7 @@ public class ClassHelper {
             Enum_Type = makeWithoutCaching(Enum.class),
             CLASS_Type = makeWithoutCaching(Class.class),
             TUPLE_TYPE = makeWithoutCaching(Tuple.class),
+            STREAM_TYPE = makeWithoutCaching(Stream.class),
             ITERABLE_TYPE = makeWithoutCaching(Iterable.class),
             REFERENCE_TYPE = makeWithoutCaching(Reference.class),
             COLLECTION_TYPE = makeWithoutCaching(Collection.class),
@@ -156,6 +207,16 @@ public class ClassHelper {
             GENERATED_CLOSURE_Type = makeWithoutCaching(GeneratedClosure.class),
             GROOVY_INTERCEPTABLE_TYPE = makeWithoutCaching(GroovyInterceptable.class),
             GROOVY_OBJECT_SUPPORT_TYPE = makeWithoutCaching(GroovyObjectSupport.class);
+
+    /**
+     * Historical alias of {@link #OBJECT_TYPE}. The field does not carry the
+     * metadata flag that {@link #isDynamicTyped(ClassNode)} reads;
+     * {@link #dynamicType()} produces a node that does.
+     *
+     * @deprecated use {@link #dynamicType()} when the type is unknown
+     */
+    @Deprecated
+    public static final ClassNode DYNAMIC_TYPE = OBJECT_TYPE;
 
     private static final ClassNode[] types = new ClassNode[]{
             OBJECT_TYPE,
@@ -172,16 +233,62 @@ public class ClassHelper {
             GROOVY_OBJECT_TYPE, GROOVY_INTERCEPTABLE_TYPE, Enum_Type, Annotation_TYPE
     };
 
-    private static final int ABSTRACT_STATIC_PRIVATE = Opcodes.ACC_ABSTRACT | Opcodes.ACC_STATIC | Opcodes.ACC_PRIVATE;
-    private static final int VISIBILITY = 5; // public|protected
+    // O(1) lookup maps for make(Class) and make(String), replacing O(n) linear scans
+    private static final Map<Class<?>, ClassNode> classToTypeMap = new IdentityHashMap<>();
+    private static final Map<String, ClassNode> nameToTypeMap = new HashMap<>();
+    private static final Map<String, ClassNode> primitiveNameToTypeMap = new HashMap<>();
+    private static final Set<ClassNode> cachedTypeSet = Collections.newSetFromMap(new IdentityHashMap<>());
+    static {
+        for (int i = 0; i < classes.length; i++) {
+            classToTypeMap.put(classes[i], types[i]);
+        }
+        for (int i = 0; i < primitiveClassNames.length; i++) {
+            if (!primitiveClassNames[i].isEmpty()) {
+                primitiveNameToTypeMap.put(primitiveClassNames[i], types[i]);
+            }
+        }
+        for (int i = 0; i < classes.length; i++) {
+            nameToTypeMap.put(classes[i].getName(), types[i]);
+        }
+        cachedTypeSet.addAll(Arrays.asList(types));
+    }
 
-    protected static final ClassNode[] EMPTY_TYPE_ARRAY = {};
+    private static final String DYNAMIC_TYPE_METADATA = "_DYNAMIC_TYPE_METADATA_";
 
+    /**
+     * Empty {@link ClassNode} array, the same instance as {@link ClassNode#EMPTY_ARRAY}.
+     */
+    protected static final ClassNode[] EMPTY_TYPE_ARRAY = ClassNode.EMPTY_ARRAY;
+
+    /**
+     * Binary name of {@link Object}, for call sites that need the name as a string.
+     */
     public static final String OBJECT = "java.lang.Object";
 
+    /**
+     * Provides the dynamic type representation, used by Groovy for dynamic typing when type information is unknown.
+     * Returns a ClassNode marked with metadata indicating it represents a dynamic type.
+     *
+     * @return a ClassNode representing the dynamic type (Object with metadata flag)
+     * @see #DYNAMIC_TYPE
+     */
+    public static ClassNode dynamicType() {
+        ClassNode node = OBJECT_TYPE.getPlainNodeReference();
+        node.putNodeMetaData(DYNAMIC_TYPE_METADATA, Boolean.TRUE);
+        return node;
+    }
+
+    /**
+     * Creates a cached {@link ClassNode} for the given Java class. Cached instances are reused across
+     * the compilation unit, reducing memory overhead. If the cache does not contain an entry, a new
+     * ClassNode is created, cached, and returned.
+     *
+     * @param c the Java class to create a ClassNode for
+     * @return a cached ClassNode for the given class
+     */
     public static ClassNode makeCached(Class c) {
-        final SoftReference<ClassNode> classNodeSoftReference = ClassHelperCache.classCache.get(c);
         ClassNode classNode;
+        final SoftReference<ClassNode> classNodeSoftReference = ClassHelperCache.classCache.get(c);
         if (classNodeSoftReference == null || (classNode = classNodeSoftReference.get()) == null) {
             classNode = new ClassNode(c);
             ClassHelperCache.classCache.put(c, new SoftReference<ClassNode>(classNode));
@@ -191,13 +298,13 @@ public class ClassHelper {
     }
 
     /**
-     * Creates an array of ClassNodes using an array of classes.
-     * For each of the given classes a new ClassNode will be
-     * created
+     * Creates an array of ClassNodes using an array of Java classes, using caching where available.
+     * Each class is converted to a ClassNode via {@link #make(Class)}.
      *
-     * @param classes an array of classes used to create the ClassNodes
-     * @return an array of ClassNodes
+     * @param classes the Java classes to convert to ClassNodes
+     * @return an array of ClassNodes corresponding to the input classes, preserving order
      * @see #make(Class)
+     * @see #make(Class, boolean)
      */
     public static ClassNode[] make(Class[] classes) {
         ClassNode[] cns = new ClassNode[classes.length];
@@ -208,21 +315,30 @@ public class ClassHelper {
     }
 
     /**
-     * Creates a ClassNode using a given class.
-     * A new ClassNode object is only created if the class
-     * is not one of the predefined ones
+     * Creates a ClassNode for the given Java class, using caching when available.
+     * Predefined types (like Integer, String, etc.) return cached instances.
+     * For first-time requests of non-predefined types, a new ClassNode is created via {@link #makeWithoutCaching(Class)}.
      *
-     * @param c class used to created the ClassNode
-     * @return ClassNode instance created from the given class
+     * @param c the Java class to create a ClassNode for
+     * @return a ClassNode representing the given class
+     * @see #makeWithoutCaching(Class)
+     * @see #make(String)
      */
     public static ClassNode make(Class c) {
         return make(c, true);
     }
 
+    /**
+     * Creates a ClassNode for the given Java class, optionally including generic type parameters.
+     * Predefined types return cached instances; others are created uncached.
+     *
+     * @param c the Java class to create a ClassNode for
+     * @param includeGenerics whether to include generic type parameters from the class definition
+     * @return a ClassNode representing the given class
+     */
     public static ClassNode make(Class c, boolean includeGenerics) {
-        for (int i = 0; i < classes.length; i++) {
-            if (c == classes[i]) return types[i];
-        }
+        ClassNode cached = classToTypeMap.get(c);
+        if (cached != null) return cached;
         if (c.isArray()) {
             ClassNode cn = make(c.getComponentType(), includeGenerics);
             return cn.makeArray();
@@ -230,10 +346,26 @@ public class ClassHelper {
         return makeWithoutCaching(c, includeGenerics);
     }
 
+    /**
+     * Creates a new ClassNode for the given Java class without caching.
+     * Each call creates a unique ClassNode instance, suitable for cases requiring independent instances.
+     *
+     * @param c the Java class to create a ClassNode for
+     * @return a new ClassNode representing the given class (not cached)
+     * @see #make(Class)
+     */
     public static ClassNode makeWithoutCaching(Class c) {
         return makeWithoutCaching(c, true);
     }
 
+    /**
+     * Creates a new ClassNode for the given Java class without caching, optionally including generic types.
+     * Always creates a unique instance, even for predefined types.
+     *
+     * @param c the Java class to create a ClassNode for
+     * @param includeGenerics whether to include generic type parameters from the class
+     * @return a new ClassNode representing the given class (not cached)
+     */
     public static ClassNode makeWithoutCaching(Class c, boolean includeGenerics) {
         if (c.isArray()) {
             ClassNode cn = makeWithoutCaching(c.getComponentType(), includeGenerics);
@@ -251,13 +383,12 @@ public class ClassHelper {
     }
 
     /**
-     * Creates a ClassNode using a given class.
-     * Unlike make(String) this method will not use the cache
-     * to create the ClassNode. This means the ClassNode created
-     * from this method using the same name will have a different
-     * reference
+     * Creates a new ClassNode for the given class name without caching.
+     * Always creates a unique instance. The ClassNode is set up with Object as superclass.
+     * This is typically used for dynamically-created or parsed class names.
      *
-     * @param name of the class the ClassNode is representing
+     * @param name the fully-qualified or simple class name
+     * @return a new ClassNode representing the named class (not cached)
      * @see #make(String)
      */
     public static ClassNode makeWithoutCaching(String name) {
@@ -267,24 +398,24 @@ public class ClassHelper {
     }
 
     /**
-     * Creates a ClassNode using a given class.
-     * If the name is one of the predefined ClassNodes then the
-     * corresponding ClassNode instance will be returned. If the
-     * name is null or of length 0 the dynamic type is returned
+     * Creates a ClassNode for the given class name, returning cached instances for predefined types.
+     * Returns the dynamic type for null or empty names. Checks both primitive names ("int", "boolean")
+     * and fully-qualified names ("java.lang.String", "java.util.Map").
      *
-     * @param name of the class the ClassNode is representing
+     * @param name the fully-qualified or simple class name, or null/empty for dynamic type
+     * @return a ClassNode for the named class, or the dynamic type if name is null or empty
+     * @see #makeWithoutCaching(String)
+     * @see #make(Class)
      */
     public static ClassNode make(String name) {
-        if (name == null || name.length() == 0) return DYNAMIC_TYPE;
+        if (name == null || name.isEmpty()) return dynamicType();
 
-        for (int i = 0; i < primitiveClassNames.length; i++) {
-            if (primitiveClassNames[i].equals(name)) return types[i];
-        }
+        ClassNode cached = primitiveNameToTypeMap.get(name);
+        if (cached != null) return cached;
 
-        for (int i = 0; i < classes.length; i++) {
-            String cname = classes[i].getName();
-            if (name.equals(cname)) return types[i];
-        }
+        cached = nameToTypeMap.get(name);
+        if (cached != null) return cached;
+
         return makeWithoutCaching(name);
     }
 
@@ -322,6 +453,9 @@ public class ClassHelper {
         if (!isPrimitiveType(cn)) return cn;
 
         ClassNode result = PRIMITIVE_TYPE_TO_WRAPPER_TYPE_MAP.get(cn);
+        if (result == null) {
+            result = PRIMITIVE_TYPE_TO_WRAPPER_TYPE_MAP.get(cn.redirect());
+        }
 
         if (null != result) {
             return result;
@@ -332,6 +466,21 @@ public class ClassHelper {
 
     private static final Map<ClassNode, ClassNode> WRAPPER_TYPE_TO_PRIMITIVE_TYPE_MAP = Maps.inverse(PRIMITIVE_TYPE_TO_WRAPPER_TYPE_MAP);
 
+    /**
+     * Maps a wrapper {@link ClassNode} to its primitive node.
+     * The argument is replaced by its {@link ClassNode#redirect() redirect}.
+     * When {@link #isPrimitiveType(ClassNode)} is true, that redirected node is
+     * returned unchanged. Otherwise it is looked up as a wrapper and the matching
+     * primitive constant is returned. The wrappers in the table are {@link Boolean},
+     * {@link Byte}, {@link Character}, {@link Short}, {@link Integer}, {@link Long},
+     * {@link Float}, {@link Double}, and {@link Void}, the last of which unwraps to
+     * {@code void}. A node that is neither a primitive nor one of those wrappers is
+     * returned after redirection.
+     *
+     * @param cn the type to unwrap; a null node is rejected
+     * @return the primitive constant for a known wrapper, or the redirected node
+     * @see #getWrapper(ClassNode)
+     */
     public static ClassNode getUnwrapper(ClassNode cn) {
         cn = cn.redirect();
         if (isPrimitiveType(cn)) return cn;
@@ -371,54 +520,437 @@ public class ClassHelper {
      * @see #make(Class)
      * @see #make(String)
      */
-    public static boolean isStaticConstantInitializerType(ClassNode cn) {
-        cn = cn.redirect();
-        return cn == int_TYPE ||
-                cn == float_TYPE ||
-                cn == long_TYPE ||
-                cn == double_TYPE ||
-                cn == STRING_TYPE ||
+    public static boolean isStaticConstantInitializerType(final ClassNode cn) {
+        return isPrimitiveInt(cn) ||
+                isPrimitiveFloat(cn) ||
+                isPrimitiveLong(cn) ||
+                isPrimitiveDouble(cn) ||
+                isStringType(cn) ||
                 // the next items require conversion to int when initializing
-                cn == byte_TYPE ||
-                cn == char_TYPE ||
-                cn == short_TYPE;
+                isPrimitiveByte(cn) ||
+                isPrimitiveChar(cn) ||
+                isPrimitiveShort(cn);
     }
 
-    public static boolean isNumberType(ClassNode cn) {
-        cn = cn.redirect();
-        return cn == Byte_TYPE ||
-                cn == Short_TYPE ||
-                cn == Integer_TYPE ||
-                cn == Long_TYPE ||
-                cn == Float_TYPE ||
-                cn == Double_TYPE ||
-                cn == byte_TYPE ||
-                cn == short_TYPE ||
-                cn == int_TYPE ||
-                cn == long_TYPE ||
-                cn == float_TYPE ||
-                cn == double_TYPE;
+    /**
+     * Tests whether {@code cn} redirects to a numeric primitive or the matching
+     * wrapper. The twelve nodes are {@code byte}, {@code short}, {@code int},
+     * {@code long}, {@code float}, {@code double}, and {@link Byte}, {@link Short},
+     * {@link Integer}, {@link Long}, {@link Float}, {@link Double}.
+     * {@link BigInteger}, {@link BigDecimal}, and {@link Number} are outside this
+     * test, as are {@code boolean}, {@code char}, and {@code void}. The wrapper
+     * checks accept a null node as a miss, and the later primitive checks
+     * dereference {@code cn}.
+     *
+     * @param cn the type to test; must not be null
+     * @return {@code true} when {@code cn} redirects to one of those twelve nodes
+     */
+    public static boolean isNumberType(final ClassNode cn) {
+        return isWrapperByte(cn) ||
+                isWrapperShort(cn) ||
+                isWrapperInteger(cn) ||
+                isWrapperLong(cn) ||
+                isWrapperFloat(cn) ||
+                isWrapperDouble(cn) ||
+                isPrimitiveByte(cn) ||
+                isPrimitiveShort(cn) ||
+                isPrimitiveInt(cn) ||
+                isPrimitiveLong(cn) ||
+                isPrimitiveFloat(cn) ||
+                isPrimitiveDouble(cn);
     }
 
+    /**
+     * Returns a new non-primary {@link ClassNode} for {@link Reference}.
+     * The node redirects to the cached reference type. Each call allocates a
+     * distinct node, leaving the shared reference constant unchanged.
+     *
+     * @return a plain node whose redirect is the cached {@code groovy.lang.Reference} type
+     */
     public static ClassNode makeReference() {
         return REFERENCE_TYPE.getPlainNodeReference();
     }
 
+    /**
+     * Tests whether {@code type} is identical to an entry in this class's
+     * predefined {@link ClassNode} table. A different node with the same resolved
+     * name yields {@code false}, including a redirect whose target sits in the
+     * table. {@code null} yields {@code false}.
+     *
+     * @param type the node to test, or {@code null}
+     * @return {@code true} when {@code type} is one of those instances
+     */
     public static boolean isCachedType(ClassNode type) {
-        for (ClassNode cachedType : types) {
-            if (cachedType == type) return true;
-        }
-        return false;
+        return cachedTypeSet.contains(type);
+    }
+
+    /**
+     * Tests whether {@code type} carries the dynamic-type metadata written by
+     * {@link #dynamicType()}. The flag is stored on the node, so
+     * {@link #OBJECT_TYPE} and the {@link #DYNAMIC_TYPE} alias yield
+     * {@code false}. Only {@link Boolean#TRUE} counts, and {@code null} yields
+     * {@code false}.
+     *
+     * @param type the node to test, or {@code null}
+     * @return {@code true} when the dynamic-type metadata is {@link Boolean#TRUE}
+     */
+    public static boolean isDynamicTyped(ClassNode type) {
+        return type != null && Boolean.TRUE.equals(type.getNodeMetaData(DYNAMIC_TYPE_METADATA));
+    }
+
+    /**
+     * Tests whether the {@link ClassNode#redirect() redirect} of {@code type}
+     * is {@link #boolean_TYPE} by identity. That constant is the cached primitive
+     * {@code boolean} node. A {@link Boolean} node is a different type.
+     * {@code type} is dereferenced, so a null argument is rejected.
+     *
+     * @param type the type to test
+     * @return {@code true} when the redirected node is {@link #boolean_TYPE}
+     */
+    public static boolean isPrimitiveBoolean(ClassNode type) {
+        return type.redirect() == boolean_TYPE;
+    }
+
+    /**
+     * Tests whether the {@link ClassNode#redirect() redirect} of {@code type}
+     * is {@link #char_TYPE} by identity. That constant is the cached primitive
+     * {@code char} node. A {@link Character} node is a different type.
+     * {@code type} is dereferenced, so a null argument is rejected.
+     *
+     * @param type the type to test
+     * @return {@code true} when the redirected node is {@link #char_TYPE}
+     */
+    public static boolean isPrimitiveChar(ClassNode type) {
+        return type.redirect() == char_TYPE;
+    }
+
+    /**
+     * Tests whether the {@link ClassNode#redirect() redirect} of {@code type}
+     * is {@link #byte_TYPE} by identity. That constant is the cached primitive
+     * {@code byte} node. A {@link Byte} node is a different type.
+     * {@code type} is dereferenced, so a null argument is rejected.
+     *
+     * @param type the type to test
+     * @return {@code true} when the redirected node is {@link #byte_TYPE}
+     */
+    public static boolean isPrimitiveByte(ClassNode type) {
+        return type.redirect() == byte_TYPE;
+    }
+
+    /**
+     * Tests whether the {@link ClassNode#redirect() redirect} of {@code type}
+     * is {@link #int_TYPE} by identity. That constant is the cached primitive
+     * {@code int} node. A {@link Integer} node is a different type.
+     * {@code type} is dereferenced, so a null argument is rejected.
+     *
+     * @param type the type to test
+     * @return {@code true} when the redirected node is {@link #int_TYPE}
+     */
+    public static boolean isPrimitiveInt(ClassNode type) {
+        return type.redirect() == int_TYPE;
+    }
+
+    /**
+     * Tests whether the {@link ClassNode#redirect() redirect} of {@code type}
+     * is {@link #long_TYPE} by identity. That constant is the cached primitive
+     * {@code long} node. A {@link Long} node is a different type.
+     * {@code type} is dereferenced, so a null argument is rejected.
+     *
+     * @param type the type to test
+     * @return {@code true} when the redirected node is {@link #long_TYPE}
+     */
+    public static boolean isPrimitiveLong(ClassNode type) {
+        return type.redirect() == long_TYPE;
+    }
+
+    /**
+     * Tests whether the {@link ClassNode#redirect() redirect} of {@code type}
+     * is {@link #short_TYPE} by identity. That constant is the cached primitive
+     * {@code short} node. A {@link Short} node is a different type.
+     * {@code type} is dereferenced, so a null argument is rejected.
+     *
+     * @param type the type to test
+     * @return {@code true} when the redirected node is {@link #short_TYPE}
+     */
+    public static boolean isPrimitiveShort(ClassNode type) {
+        return type.redirect() == short_TYPE;
+    }
+
+    /**
+     * Tests whether the {@link ClassNode#redirect() redirect} of {@code type}
+     * is {@link #double_TYPE} by identity. That constant is the cached primitive
+     * {@code double} node. A {@link Double} node is a different type.
+     * {@code type} is dereferenced, so a null argument is rejected.
+     *
+     * @param type the type to test
+     * @return {@code true} when the redirected node is {@link #double_TYPE}
+     */
+    public static boolean isPrimitiveDouble(ClassNode type) {
+        return type.redirect() == double_TYPE;
+    }
+
+    /**
+     * Tests whether the {@link ClassNode#redirect() redirect} of {@code type}
+     * is {@link #float_TYPE} by identity. That constant is the cached primitive
+     * {@code float} node. A {@link Float} node is a different type.
+     * {@code type} is dereferenced, so a null argument is rejected.
+     *
+     * @param type the type to test
+     * @return {@code true} when the redirected node is {@link #float_TYPE}
+     */
+    public static boolean isPrimitiveFloat(ClassNode type) {
+        return type.redirect() == float_TYPE;
+    }
+
+    /**
+     * Tests whether the {@link ClassNode#redirect() redirect} of {@code type}
+     * is {@link #VOID_TYPE} by identity. That constant is the cached primitive
+     * {@code void} node. A {@link Void} node is a different type.
+     * {@code type} is dereferenced, so a null argument is rejected.
+     *
+     * @param type the type to test
+     * @return {@code true} when the redirected node is {@link #VOID_TYPE}
+     */
+    public static boolean isPrimitiveVoid(ClassNode type) {
+        return type.redirect() == VOID_TYPE;
+    }
+
+    /**
+     * Tests whether the {@link ClassNode#redirect() redirect} of {@code type}
+     * is {@link #Boolean_TYPE} by identity. {@code null} yields {@code false}.
+     * The primitive {@code boolean} node is a different type.
+     *
+     * @param type the type to test, or {@code null}
+     * @return {@code true} when {@code type} is non-null and redirects to {@link #Boolean_TYPE}
+     */
+    public static boolean isWrapperBoolean(ClassNode type) {
+        return type != null && type.redirect() == Boolean_TYPE;
+    }
+
+    /**
+     * Tests whether the {@link ClassNode#redirect() redirect} of {@code type}
+     * is {@link #Character_TYPE} by identity. {@code null} yields {@code false}.
+     * The primitive {@code char} node is a different type.
+     *
+     * @param type the type to test, or {@code null}
+     * @return {@code true} when {@code type} is non-null and redirects to {@link #Character_TYPE}
+     */
+    public static boolean isWrapperCharacter(ClassNode type) {
+        return type != null && type.redirect() == Character_TYPE;
+    }
+
+    /**
+     * Tests whether the {@link ClassNode#redirect() redirect} of {@code type}
+     * is {@link #Byte_TYPE} by identity. {@code null} yields {@code false}.
+     * The primitive {@code byte} node is a different type.
+     *
+     * @param type the type to test, or {@code null}
+     * @return {@code true} when {@code type} is non-null and redirects to {@link #Byte_TYPE}
+     */
+    public static boolean isWrapperByte(ClassNode type) {
+        return type != null && type.redirect() == Byte_TYPE;
+    }
+
+    /**
+     * Tests whether the {@link ClassNode#redirect() redirect} of {@code type}
+     * is {@link #Integer_TYPE} by identity. {@code null} yields {@code false}.
+     * The primitive {@code int} node is a different type.
+     *
+     * @param type the type to test, or {@code null}
+     * @return {@code true} when {@code type} is non-null and redirects to {@link #Integer_TYPE}
+     */
+    public static boolean isWrapperInteger(ClassNode type) {
+        return type != null && type.redirect() == Integer_TYPE;
+    }
+
+    /**
+     * Tests whether the {@link ClassNode#redirect() redirect} of {@code type}
+     * is {@link #Long_TYPE} by identity. {@code null} yields {@code false}.
+     * The primitive {@code long} node is a different type.
+     *
+     * @param type the type to test, or {@code null}
+     * @return {@code true} when {@code type} is non-null and redirects to {@link #Long_TYPE}
+     */
+    public static boolean isWrapperLong(ClassNode type) {
+        return type != null && type.redirect() == Long_TYPE;
+    }
+
+    /**
+     * Tests whether the {@link ClassNode#redirect() redirect} of {@code type}
+     * is {@link #Short_TYPE} by identity. {@code null} yields {@code false}.
+     * The primitive {@code short} node is a different type.
+     *
+     * @param type the type to test, or {@code null}
+     * @return {@code true} when {@code type} is non-null and redirects to {@link #Short_TYPE}
+     */
+    public static boolean isWrapperShort(ClassNode type) {
+        return type != null && type.redirect() == Short_TYPE;
+    }
+
+    /**
+     * Tests whether the {@link ClassNode#redirect() redirect} of {@code type}
+     * is {@link #Double_TYPE} by identity. {@code null} yields {@code false}.
+     * The primitive {@code double} node is a different type.
+     *
+     * @param type the type to test, or {@code null}
+     * @return {@code true} when {@code type} is non-null and redirects to {@link #Double_TYPE}
+     */
+    public static boolean isWrapperDouble(ClassNode type) {
+        return type != null && type.redirect() == Double_TYPE;
+    }
+
+    /**
+     * Tests whether the {@link ClassNode#redirect() redirect} of {@code type}
+     * is {@link #Float_TYPE} by identity. {@code null} yields {@code false}.
+     * The primitive {@code float} node is a different type.
+     *
+     * @param type the type to test, or {@code null}
+     * @return {@code true} when {@code type} is non-null and redirects to {@link #Float_TYPE}
+     */
+    public static boolean isWrapperFloat(ClassNode type) {
+        return type != null && type.redirect() == Float_TYPE;
+    }
+
+    /**
+     * Tests whether the {@link ClassNode#redirect() redirect} of {@code type}
+     * is {@link #void_WRAPPER_TYPE} by identity. {@code null} yields {@code false}.
+     * The primitive {@code void} node is a different type.
+     *
+     * @param type the type to test, or {@code null}
+     * @return {@code true} when {@code type} is non-null and redirects to {@link #void_WRAPPER_TYPE}
+     */
+    public static boolean isWrapperVoid(ClassNode type) {
+        return type != null && type.redirect() == void_WRAPPER_TYPE;
+    }
+
+    /**
+     * Tests whether {@code type} names {@link BigInteger}, using
+     * {@link ClassNode#equals(Object)} against {@link #BigInteger_TYPE}.
+     * Equality follows the resolved name, so a redirect to that name matches
+     * even when the node is not the cached constant. {@code null} yields
+     * {@code false}.
+     *
+     * @param type the type to test, or {@code null}
+     * @return {@code true} when {@code type} equals {@link #BigInteger_TYPE}
+     */
+    public static boolean isBigIntegerType(ClassNode type) {
+        return BigInteger_TYPE.equals(type);
+    }
+
+    /**
+     * Tests whether {@code type} names {@link BigDecimal}, using
+     * {@link ClassNode#equals(Object)} against {@link #BigDecimal_TYPE}.
+     * Equality follows the resolved name, so a redirect to that name matches
+     * even when the node is not the cached constant. {@code null} yields
+     * {@code false}.
+     *
+     * @param type the type to test, or {@code null}
+     * @return {@code true} when {@code type} equals {@link #BigDecimal_TYPE}
+     */
+    public static boolean isBigDecimalType(ClassNode type) {
+        return BigDecimal_TYPE.equals(type);
+    }
+
+    /**
+     * Tests whether {@code type} names {@link String}, using
+     * {@link ClassNode#equals(Object)} against {@link #STRING_TYPE}.
+     * Equality follows the resolved name, so a redirect to that name matches
+     * even when the node is not the cached constant. {@code null} yields
+     * {@code false}.
+     *
+     * @param type the type to test, or {@code null}
+     * @return {@code true} when {@code type} equals {@link #STRING_TYPE}
+     */
+    public static boolean isStringType(ClassNode type) {
+        return STRING_TYPE.equals(type);
+    }
+
+    /**
+     * Tests whether {@code type} names {@link GString}, using
+     * {@link ClassNode#equals(Object)} against {@link #GSTRING_TYPE}.
+     * Equality follows the resolved name, so a redirect to that name matches
+     * even when the node is not the cached constant. {@code null} yields
+     * {@code false}.
+     *
+     * @param type the type to test, or {@code null}
+     * @return {@code true} when {@code type} equals {@link #GSTRING_TYPE}
+     */
+    public static boolean isGStringType(ClassNode type) {
+        return GSTRING_TYPE.equals(type);
+    }
+
+    /**
+     * Tests whether {@code type} names {@link Object}, using
+     * {@link ClassNode#equals(Object)} against {@link #OBJECT_TYPE}.
+     * Equality follows the resolved name, so a plain reference to object matches,
+     * including a node from {@link #dynamicType()}. The dynamic-type metadata
+     * flag is a separate test; use {@link #isDynamicTyped(ClassNode)} for it.
+     * {@code null} yields {@code false}.
+     *
+     * @param type the type to test, or {@code null}
+     * @return {@code true} when {@code type} equals {@link #OBJECT_TYPE}
+     */
+    public static boolean isObjectType(ClassNode type) {
+        return OBJECT_TYPE.equals(type);
+    }
+
+    /**
+     * Tests whether {@code type} names {@link GroovyObject}, using
+     * {@link ClassNode#equals(Object)} against {@link #GROOVY_OBJECT_TYPE}.
+     * Equality follows the resolved name, so a redirect to that name matches
+     * even when the node is not the cached constant. {@code null} yields
+     * {@code false}.
+     *
+     * @param type the type to test, or {@code null}
+     * @return {@code true} when {@code type} equals {@link #GROOVY_OBJECT_TYPE}
+     */
+    public static boolean isGroovyObjectType(ClassNode type) {
+        return GROOVY_OBJECT_TYPE.equals(type);
+    }
+
+    /**
+     * Tests whether {@code type} names {@link Class}, using
+     * {@link ClassNode#equals(Object)} against {@link #CLASS_Type}.
+     * Equality follows the resolved name, so a redirect to that name matches
+     * even when the node is not the cached constant. {@code null} yields
+     * {@code false}.
+     *
+     * @param type the type to test, or {@code null}
+     * @return {@code true} when {@code type} equals {@link #CLASS_Type}
+     */
+    public static boolean isClassType(ClassNode type) {
+        return CLASS_Type.equals(type);
     }
 
     static class ClassHelperCache {
-        static ManagedIdentityConcurrentMap<Class, SoftReference<ClassNode>> classCache = new ManagedIdentityConcurrentMap<>(128);
+        static Map<Class, SoftReference<ClassNode>> classCache = new ManagedIdentityConcurrentMap<>(128);
     }
 
+    /**
+     * Tests whether {@link #findSAM(ClassNode)} finds one abstract method on
+     * {@code type}. On an interface, trait methods that already have a default
+     * implementation and methods {@link Object} already declares are set aside.
+     * On an abstract class, an abstract method that already has a usable
+     * implementation on a superclass is set aside. Zero remaining methods, or
+     * more than one, means the type is not a SAM type. {@code null} yields
+     * {@code false}.
+     *
+     * @param type the type to test, or {@code null}
+     * @return {@code true} when exactly one abstract method remains
+     */
     public static boolean isSAMType(final ClassNode type) {
         return findSAM(type) != null;
     }
 
+    /**
+     * Tests whether {@code type} is an interface and {@link #isSAMType(ClassNode)}
+     * is true. {@code null} yields {@code false}. An abstract class is rejected
+     * even when it has a single abstract method, because the JVM converts a
+     * lambda only when the target is an interface.
+     *
+     * @param type the type to test, or {@code null}
+     * @return {@code true} when {@code type} is a non-null interface with one remaining abstract method
+     */
     public static boolean isFunctionalInterface(final ClassNode type) {
         // Functional interface must be an interface at first, or the following exception will occur:
         // java.lang.invoke.LambdaConversionException: Functional interface SamCallable is not an interface
@@ -441,83 +973,81 @@ public class ClassHelper {
      * @return the method node if type is a SAM type, null otherwise
      */
     public static MethodNode findSAM(final ClassNode type) {
-        if (!Modifier.isAbstract(type.getModifiers())) return null;
+        if (type == null) return null;
         if (type.isInterface()) {
-            List<MethodNode> methods;
-            if (type.isInterface()) {
-                // e.g. BinaryOperator extends BiFunction, BinaryOperator contains no abstract method, but it is really a SAM
-                methods = type.redirect().getAllDeclaredMethods();
-            } else {
-                methods = type.getMethods();
-            }
+            MethodNode sam = null;
+            for (MethodNode mn : type.getAbstractMethods()) {
+                // ignore methods that will have an implementation
+                if (Traits.hasDefaultImplementation(mn)) continue;
 
-            MethodNode found = null;
-            for (MethodNode mi : methods) {
-                // ignore methods, that are not abstract and from Object
-                if (!Modifier.isAbstract(mi.getModifiers())) continue;
-                // ignore trait methods which have a default implementation
-                if (Traits.hasDefaultImplementation(mi)) continue;
-                if (mi.getDeclaringClass().equals(OBJECT_TYPE)) continue;
-                if (OBJECT_TYPE.getDeclaredMethod(mi.getName(), mi.getParameters()) != null) continue;
+                final String name = mn.getName();
+                if (OBJECT_METHOD_NAME_SET.contains(name)) {
+                    // Avoid unnecessary checking for `Object` methods as possible as we could
+                    if (OBJECT_TYPE.getDeclaredMethod(name, mn.getParameters()) != null) continue;
+                }
 
                 // we have two methods, so no SAM
-                if (found != null) return null;
-                found = mi;
+                if (sam != null) return null;
+                sam = mn;
             }
-            return found;
-
-        } else {
-            MethodNode found = null;
-            for (MethodNode mi : type.getAbstractMethods()) {
-                if (!hasUsableImplementation(type, mi)) {
-                    if (found != null) return null;
-                    found = mi;
+            return sam;
+        }
+        if (type.isAbstract()) {
+            MethodNode sam = null;
+            for (MethodNode mn : type.getAbstractMethods()) {
+                if (!hasUsableImplementation(type, mn)) {
+                    if (sam != null) return null;
+                    sam = mn;
                 }
             }
-            return found;
+            return sam;
         }
+        return null;
     }
 
-    private static boolean hasUsableImplementation(ClassNode c, MethodNode m) {
-        if (c == m.getDeclaringClass()) return false;
+    private static boolean hasUsableImplementation(final ClassNode c, final MethodNode m) {
+        ClassNode declaringClass = m.getDeclaringClass();
+        if (c.equals(declaringClass)) return false;
+        // GROOVY-10540: GroovyObject declared and Verifier not run yet
+        if (isGroovyObjectType(declaringClass) && c.getCompileUnit() != null) return true;
+
         MethodNode found = c.getDeclaredMethod(m.getName(), m.getParameters());
         if (found == null) return false;
-        int asp = found.getModifiers() & ABSTRACT_STATIC_PRIVATE;
-        int visible = found.getModifiers() & VISIBILITY;
-        if (visible != 0 && asp == 0) return true;
-        if (c.equals(OBJECT_TYPE)) return false;
-        return hasUsableImplementation(c.getSuperClass(), m);
+
+        int modifiers = (found.getModifiers() & 0x40F);//ACC_ABSTRACT|ACC_STATIC|ACC_PROTECTED|ACC_PRIVATE|ACC_PUBLIC
+        if (modifiers == Opcodes.ACC_PUBLIC || modifiers == Opcodes.ACC_PROTECTED) return true;
+
+        return !isObjectType(c) && hasUsableImplementation(c.getSuperClass(), m);
     }
 
     /**
-     * Returns a super class or interface for a given class depending on a given target.
-     * If the target is no super class or interface, then null will be returned.
-     * For a non-primitive array type, returns an array of the componentType's super class
-     * or interface if the target is also an array.
-     *
-     * @param clazz     the start class
-     * @param goalClazz the goal class
-     * @return the next super class or interface
+     * Returns a super class or interface for a given class depending on supplied
+     * target. If the target is not a super class or interface, then null will be
+     * returned. For a non-primitive array type -- if the target is also an array
+     * -- returns an array of the component type's super class or interface.
      */
-    public static ClassNode getNextSuperClass(final ClassNode clazz, final ClassNode goalClazz) {
-        if (clazz.isArray()) {
-            if (!goalClazz.isArray()) return null;
+    public static ClassNode getNextSuperClass(final ClassNode source, final ClassNode target) {
+        if (source.isArray()) {
+            if (!target.isArray()) return null;
 
-            ClassNode cn = getNextSuperClass(clazz.getComponentType(), goalClazz.getComponentType());
+            ClassNode cn = getNextSuperClass(source.getComponentType(), target.getComponentType());
             if (cn != null) cn = cn.makeArray();
             return cn;
         }
 
-        if (goalClazz.isInterface()) {
-            for (ClassNode face : clazz.getUnresolvedInterfaces()) {
-                if (StaticTypeCheckingSupport.implementsInterfaceOrIsSubclassOf(face, goalClazz)) {
+        if (target.isInterface()) {
+            for (ClassNode face : source.getUnresolvedInterfaces()) {
+                if (implementsInterfaceOrIsSubclassOf(face, target)) {
                     return face;
                 }
             }
-        } else if (clazz.isInterface()) {
+        } else if (source.isInterface()) {
             return OBJECT_TYPE;
         }
 
-        return clazz.getUnresolvedSuperClass();
+        return source.getUnresolvedSuperClass();
     }
+
+    private static final Set<String> OBJECT_METHOD_NAME_SET =
+            Collections.unmodifiableSet(Arrays.stream(Object.class.getMethods()).map(m -> m.getName()).collect(Collectors.toSet()));
 }

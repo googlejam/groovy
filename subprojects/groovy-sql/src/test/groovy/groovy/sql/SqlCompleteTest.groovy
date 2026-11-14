@@ -18,6 +18,8 @@
  */
 package groovy.sql
 
+import java.sql.SQLException
+
 import static groovy.sql.SqlTestConstants.*
 
 class SqlCompleteTest extends SqlHelperTestCase {
@@ -163,6 +165,19 @@ class SqlCompleteTest extends SqlHelperTestCase {
         def results = [:]
         sql.eachRow("select * from PERSON", personMetaClosure) {
             results.put(it.firstname, it['lastname'])
+        }
+        assert results == ["James": "Strachan", "Bob": "Mcwhirter", "Sam": "Pullara"]
+        assert personMetaClosureCalled
+    }
+
+    void testExecuteWithStringAndClosures() {
+        def results = [:]
+        sql.execute("select * from PERSON", personMetaClosure) { isResultSet, rs ->
+            if (isResultSet) {
+                rs.each {
+                    results.put(it.firstname, it['lastname'])
+                }
+            }
         }
         assert results == ["James": "Strachan", "Bob": "Mcwhirter", "Sam": "Pullara"]
         assert personMetaClosureCalled
@@ -364,6 +379,26 @@ class SqlCompleteTest extends SqlHelperTestCase {
         assert result == "A narrow ? supported by a ?!!"
     }
 
+    // GROOVY-12118: by default a quoted dynamic expression (a SQL injection risk) must be rejected
+    void testQuotedGStringExpressionRejectedByDefault() {
+        def name = "x' OR '1'='1"
+        def gstring = "select * from PERSON where firstname = '${name}'"
+        def msg = shouldFail(SQLException) {
+            sql.asSql(gstring, gstring.values.toList())
+        }
+        assert msg.contains('SQL injection')
+        assert msg.contains(Sql.INJECTION_LENIENT)
+        // end-to-end via a query method
+        shouldFail(SQLException) {
+            sql.firstRow("select * from PERSON where firstname = '${name}'")
+        }
+        // SQL double quotes around the expression are detected the same way
+        def dqGString = "select * from PERSON where firstname = \"${name}\""
+        shouldFail(SQLException) {
+            sql.asSql(dqGString, dqGString.values.toList())
+        }
+    }
+
     void testNullHandling() {
         def (wh, ere, anotherfield) = [null, null, null]
         def query = "update tbl set wh=$wh, ere=$ere, anotherfield=$anotherfield where id=1"
@@ -424,7 +459,7 @@ class SqlCompleteTest extends SqlHelperTestCase {
         assert result != null
         assert result["name"] == "edam"
     }
-    
+
     void testEachRowPaging() {
         def names = []
         sql.eachRow("select name from FOOD order by name", 2, 2) { row ->
@@ -494,8 +529,7 @@ class SqlCompleteTest extends SqlHelperTestCase {
     }
 
     void testNewInstanceMapShouldNotHavePropertiesAndAccountInfo() {
-        def args = [url: getURI(), user: DB_USER, password: DB_PASSWORD]
-        args.properties = [:] as Properties
+        def args = [url: getURI(), user: DB_USER, password: DB_PASSWORD, properties: new Properties()]
         shouldFail(IllegalArgumentException) {
             Sql.newInstance(args)
         }

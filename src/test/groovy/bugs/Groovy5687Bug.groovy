@@ -16,13 +16,14 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
 import java.text.SimpleDateFormat
 
-class Groovy5687Bug extends GroovyTestCase {
+class Groovy5687Bug {
+    @Test
     void testStaticAccessToInterfaceConstant() {
         assert DateTimeUtils.convertMilitaryTimeToAmPm('20:30') == '8:30pm'
     }

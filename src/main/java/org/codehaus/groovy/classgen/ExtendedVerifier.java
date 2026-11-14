@@ -21,42 +21,61 @@ package org.codehaus.groovy.classgen;
 import org.codehaus.groovy.ast.AnnotatedNode;
 import org.codehaus.groovy.ast.AnnotationNode;
 import org.codehaus.groovy.ast.ClassCodeVisitorSupport;
-import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.ConstructorNode;
 import org.codehaus.groovy.ast.FieldNode;
+import org.codehaus.groovy.ast.GenericsType;
+import org.codehaus.groovy.ast.ImportNode;
 import org.codehaus.groovy.ast.MethodNode;
+import org.codehaus.groovy.ast.ModuleNode;
 import org.codehaus.groovy.ast.PackageNode;
 import org.codehaus.groovy.ast.Parameter;
 import org.codehaus.groovy.ast.PropertyNode;
+import org.codehaus.groovy.ast.RecordComponentNode;
 import org.codehaus.groovy.ast.expr.AnnotationConstantExpression;
 import org.codehaus.groovy.ast.expr.ClassExpression;
+import org.codehaus.groovy.ast.expr.ConstructorCallExpression;
 import org.codehaus.groovy.ast.expr.DeclarationExpression;
 import org.codehaus.groovy.ast.expr.Expression;
-import org.codehaus.groovy.ast.expr.ListExpression;
+import org.codehaus.groovy.ast.expr.VariableExpression;
 import org.codehaus.groovy.ast.stmt.ReturnStatement;
 import org.codehaus.groovy.ast.stmt.Statement;
-import org.codehaus.groovy.ast.tools.ParameterUtils;
 import org.codehaus.groovy.control.AnnotationConstantsVisitor;
-import org.codehaus.groovy.control.CompilerConfiguration;
 import org.codehaus.groovy.control.ErrorCollector;
 import org.codehaus.groovy.control.SourceUnit;
 import org.objectweb.asm.Opcodes;
 
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
+import java.util.Set;
 
+import static java.util.stream.Collectors.toList;
+import static org.codehaus.groovy.ast.AnnotationNode.ANNOTATION_TARGET;
+import static org.codehaus.groovy.ast.AnnotationNode.CONSTRUCTOR_TARGET;
+import static org.codehaus.groovy.ast.AnnotationNode.FIELD_TARGET;
+import static org.codehaus.groovy.ast.AnnotationNode.IMPORT_TARGET;
+import static org.codehaus.groovy.ast.AnnotationNode.LOCAL_VARIABLE_TARGET;
+import static org.codehaus.groovy.ast.AnnotationNode.METHOD_TARGET;
+import static org.codehaus.groovy.ast.AnnotationNode.PACKAGE_TARGET;
+import static org.codehaus.groovy.ast.AnnotationNode.PARAMETER_TARGET;
+import static org.codehaus.groovy.ast.AnnotationNode.RECORD_COMPONENT_TARGET;
+import static org.codehaus.groovy.ast.AnnotationNode.STATEMENT_TARGET;
+import static org.codehaus.groovy.ast.AnnotationNode.TYPE_PARAMETER_TARGET;
+import static org.codehaus.groovy.ast.AnnotationNode.TYPE_TARGET;
+import static org.codehaus.groovy.ast.AnnotationNode.TYPE_USE_TARGET;
+import static org.codehaus.groovy.ast.ClassHelper.DEPRECATED_TYPE;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveVoid;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.listX;
 import static org.codehaus.groovy.ast.tools.GenericsUtils.correctToGenericsSpec;
-import static org.codehaus.groovy.ast.tools.GenericsUtils.correctToGenericsSpecRecurse;
 import static org.codehaus.groovy.ast.tools.GenericsUtils.createGenericsSpec;
-import static org.codehaus.groovy.transform.stc.StaticTypeCheckingSupport.evaluateExpression;
+import static org.codehaus.groovy.ast.tools.GenericsUtils.parameterizeType;
+import static org.codehaus.groovy.ast.tools.ParameterUtils.parametersEqual;
 
 /**
  * A specialized Groovy AST visitor meant to perform additional verifications upon the
@@ -66,61 +85,141 @@ import static org.codehaus.groovy.transform.stc.StaticTypeCheckingSupport.evalua
  * - annotations on local variables are not supported
  */
 public class ExtendedVerifier extends ClassCodeVisitorSupport {
+
+    /**
+     * @deprecated This constant is no longer used and will be removed in a future version.
+     */
+    @Deprecated(forRemoval = true, since = "5.0.0")
     public static final String JVM_ERROR_MESSAGE = "Please make sure you are running on a JVM >= 1.5";
 
-    private final SourceUnit source;
     private ClassNode currentClass;
+    private final SourceUnit source;
+    private final Map<String, Boolean> repeatableCache = new HashMap<>();
+    private final Set<ModuleNode> visitedModules = new HashSet<>();
 
-    public ExtendedVerifier(SourceUnit sourceUnit) {
+    /**
+     * Creates a new extended verifier.
+     *
+     * @param sourceUnit the source unit being verified
+     */
+    public ExtendedVerifier(final SourceUnit sourceUnit) {
         this.source = sourceUnit;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected SourceUnit getSourceUnit() {
         return this.source;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
-    public void visitClass(ClassNode node) {
+    public void visitClass(final ClassNode node) {
         AnnotationConstantsVisitor acv = new AnnotationConstantsVisitor();
         acv.visitClass(node, this.source);
         this.currentClass = node;
-        if (node.isAnnotationDefinition()) {
-            visitAnnotations(node, AnnotationNode.ANNOTATION_TARGET);
-        } else {
-            visitAnnotations(node, AnnotationNode.TYPE_TARGET);
-        }
         PackageNode packageNode = node.getPackage();
         if (packageNode != null) {
-            visitAnnotations(packageNode, AnnotationNode.PACKAGE_TARGET);
+            visitAnnotations(packageNode, PACKAGE_TARGET);
+        }
+        ModuleNode module = node.getModule();
+        if (module != null && visitedModules.add(module)) {
+            visitImportAnnotations(module);
+        }
+        if (node.isAnnotationDefinition()) {
+            visitAnnotations(node, ANNOTATION_TARGET);
+        } else {
+            visitAnnotations(node, TYPE_TARGET);
+            visitGenericsTypeAnnotations(node);
+        }
+        visitTypeAnnotations(node.getUnresolvedSuperClass());
+        for (ClassNode anInterface : node.getInterfaces()) {
+            visitTypeAnnotations(anInterface);
+        }
+        if (node.isRecord()) {
+            for (var recordComponent : node.getRecordComponents()) {
+                visitAnnotations(recordComponent, RECORD_COMPONENT_TARGET);
+                visitTypeAnnotations(recordComponent.getType());
+                extractTypeUseAnnotations(recordComponent.getAnnotations(), recordComponent.getType(), RECORD_COMPONENT_TARGET);
+            }
         }
         node.visitContents(this);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
-    public void visitField(FieldNode node) {
-        visitAnnotations(node, AnnotationNode.FIELD_TARGET);
+    public void visitField(final FieldNode node) {
+        visitAnnotations(node, FIELD_TARGET);
+
+        if (!node.isStatic() && this.currentClass.isRecord()) {
+            // record's instance fields are created by compiler and reuse type instance of record components.
+            // return here to avoid processing type instance repeatedly.
+            return;
+        }
+        visitTypeAnnotations(node.getType());
+        extractTypeUseAnnotations(node.getAnnotations(), node.getType(), FIELD_TARGET);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
-    public void visitDeclarationExpression(DeclarationExpression expression) {
-        visitAnnotations(expression, AnnotationNode.LOCAL_VARIABLE_TARGET);
+    public void visitProperty(final PropertyNode node) {
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
-    public void visitConstructor(ConstructorNode node) {
-        visitConstructorOrMethod(node, AnnotationNode.CONSTRUCTOR_TARGET);
+    public void visitDeclarationExpression(final DeclarationExpression expression) {
+        visitAnnotations(expression, LOCAL_VARIABLE_TARGET);
+        // GROOVY-12540: use the declared (origin) type: getType() may be a shared, boxed ClassHelper node for a primitive local
+        if (expression.isMultipleAssignmentDeclaration()) {
+            // GROOVY-12702: a TYPE_USE annotation in declaration position applies to every
+            // variable. Annotations that target only TYPE_USE are removed from the declaration once.
+            List<ClassNode> declaredTypes = new ArrayList<>();
+            for (Expression element : expression.getTupleExpression().getExpressions()) {
+                ClassNode type = ((VariableExpression) element).getOriginType();
+                visitTypeAnnotations(type);
+                declaredTypes.add(type);
+            }
+            extractTypeUseAnnotations(expression.getAnnotations(), declaredTypes, LOCAL_VARIABLE_TARGET);
+        } else {
+            ClassNode type = expression.getVariableExpression().getOriginType();
+            visitTypeAnnotations(type);
+            extractTypeUseAnnotations(expression.getAnnotations(), type, LOCAL_VARIABLE_TARGET);
+        }
+        expression.getRightExpression().visit(this);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
-    public void visitMethod(MethodNode node) {
-        visitConstructorOrMethod(node, AnnotationNode.METHOD_TARGET);
+    public void visitConstructorCallExpression(final ConstructorCallExpression expression) {
+        if (!expression.isSpecialCall()) {
+            visitTypeAnnotations(expression.getType());
+        }
+        super.visitConstructorCallExpression(expression);
     }
 
-    private void visitConstructorOrMethod(MethodNode node, int methodTarget) {
-        visitAnnotations(node, methodTarget);
+    private void visitConstructorOrMethod(final MethodNode node) {
+        visitGenericsTypeAnnotations(node);
         for (Parameter parameter : node.getParameters()) {
-            visitAnnotations(parameter, AnnotationNode.PARAMETER_TARGET);
+            visitAnnotations(parameter, PARAMETER_TARGET);
+            visitTypeAnnotations(parameter.getType());
+            extractTypeUseAnnotations(parameter.getAnnotations(), parameter.getType(), PARAMETER_TARGET);
+        }
+        if (node.getExceptions() != null) {
+            for (ClassNode t : node.getExceptions()) {
+                visitTypeAnnotations(t);
+            }
         }
 
         if (this.currentClass.isAnnotationDefinition() && !node.isStaticConstructor()) {
@@ -141,27 +240,177 @@ public class ExtendedVerifier extends ClassCodeVisitorSupport {
             }
             this.source.getErrorCollector().addCollectorContents(errorCollector);
         }
+
         Statement code = node.getCode();
         if (code != null) {
             code.visit(this);
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
-    public void visitProperty(PropertyNode node) {
+    public void visitConstructor(final ConstructorNode node) {
+        visitAnnotations(node, CONSTRUCTOR_TARGET);
+        visitConstructorOrMethod(node);
+        if (!node.getReturnType().isRedirectNode() && node.getAnnotations().stream().anyMatch(anno -> anno.isTargetAllowed(TYPE_USE_TARGET))) {
+            node.setReturnType(node.getReturnType().getPlainNodeReference(false)); // GROOVY-10937
+        }
+        extractTypeUseAnnotations(node.getAnnotations(), node.getReturnType(), CONSTRUCTOR_TARGET);
     }
 
-    protected void visitAnnotations(AnnotatedNode node, int target) {
-        if (node.getAnnotations().isEmpty()) {
-            return;
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void visitMethod(final MethodNode node) {
+        visitAnnotations(node, METHOD_TARGET);
+        visitTypeAnnotations(node.getReturnType());
+        visitConstructorOrMethod(node);
+        if (!isPrimitiveVoid(node.getReturnType())) {
+            extractTypeUseAnnotations(node.getAnnotations(), node.getReturnType(), METHOD_TARGET);
         }
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    protected void visitStatementAnnotations(final Statement statement) {
+        for (AnnotationNode annotation : statement.getStatementAnnotations()) {
+            ErrorCollector errorCollector = new ErrorCollector(source.getConfiguration());
+            AnnotationVisitor visitor = new AnnotationVisitor(source, errorCollector);
+            AnnotationNode visited = visitor.visit(annotation);
+            source.getErrorCollector().addCollectorContents(errorCollector);
+
+            if (!visited.isTargetAllowed(STATEMENT_TARGET)) {
+                addError("Annotation @" + visited.getClassNode().getName() + " is not allowed on element "
+                        + AnnotationNode.targetToName(STATEMENT_TARGET), visited);
+            }
+        }
+    }
+
+    private void visitImportAnnotations(final ModuleNode module) {
+        List<ImportNode> allImports = new ArrayList<>();
+        allImports.addAll(module.getImports());
+        allImports.addAll(module.getStarImports());
+        allImports.addAll(module.getStaticImports().values());
+        allImports.addAll(module.getStaticStarImports().values());
+        for (ImportNode importNode : allImports) {
+            visitAnnotations(importNode, IMPORT_TARGET);
+        }
+    }
+
+    //--------------------------------------------------------------------------
+
+    private void visitTypeAnnotations(final ClassNode node) {
+        if ((node.isRedirectNode() || node.isPrimaryClassNode()) && !Boolean.TRUE.equals(node.putNodeMetaData("EXTENDED_VERIFIER_SEEN", Boolean.TRUE))) {
+            visitAnnotations(node, node.getTypeAnnotations(), node.isGenericsPlaceHolder() ? TYPE_PARAMETER_TARGET : TYPE_USE_TARGET);
+            if (node.isArray()) visitTypeAnnotations(node.getComponentType());
+            else visitGenericsTypeAnnotations(node);
+        }
+    }
+
+    private void visitGenericsTypeAnnotations(final ClassNode node) {
+        GenericsType[] genericsTypes = node.getGenericsTypes();
+        if (node.isUsingGenerics() && genericsTypes != null) {
+            visitGenericsTypeAnnotations(genericsTypes);
+        }
+    }
+
+    private void visitGenericsTypeAnnotations(final MethodNode node) {
+        GenericsType[] genericsTypes = node.getGenericsTypes();
+        if (genericsTypes != null) {
+            visitGenericsTypeAnnotations(genericsTypes);
+        }
+    }
+
+    private void visitGenericsTypeAnnotations(final GenericsType[] genericsTypes) {
+        for (GenericsType gt : genericsTypes) {
+            visitTypeAnnotations(gt.getType());
+            if (gt.getLowerBound() != null) {
+                visitTypeAnnotations(gt.getLowerBound());
+            }
+            if (gt.getUpperBounds() != null) {
+                for (ClassNode ub : gt.getUpperBounds()) {
+                    visitTypeAnnotations(ub);
+                }
+            }
+        }
+    }
+
+    private void extractTypeUseAnnotations(final List<AnnotationNode> mixed, final ClassNode targetType, final int keepTarget) {
+        extractTypeUseAnnotations(mixed, List.of(targetType), keepTarget);
+    }
+
+    /**
+     * Moves TYPE_USE annotations from a declaration onto each declared type.
+     * Annotations that are not also allowed on {@code keepTarget} are then removed
+     * from the declaration once, after every type has received them.
+     */
+    private void extractTypeUseAnnotations(final List<AnnotationNode> mixed, final List<ClassNode> targetTypes, final int keepTarget) {
+        List<AnnotationNode> typeUseAnnos = new ArrayList<>();
+        for (AnnotationNode anno : mixed) {
+            if (anno.isTargetAllowed(TYPE_USE_TARGET)) {
+                typeUseAnnos.add(anno);
+            }
+        }
+        if (!typeUseAnnos.isEmpty()) {
+            for (ClassNode targetType : targetTypes) {
+                ClassNode type = targetType;
+                while (type.isArray()) type = type.getComponentType();
+                // GROOVY-12434: a type node shared with a copied member (e.g. a trait method and
+                // its helper or forwarder), or with another variable of this declaration, may
+                // already hold the same annotation or a copy of it
+                List<AnnotationNode> existing = type.getTypeAnnotations();
+                for (AnnotationNode anno : typeUseAnnos) {
+                    if (existing.stream().noneMatch(e -> isSameAnnotation(e, anno))) {
+                        type.addTypeAnnotation(anno);
+                    }
+                }
+            }
+            for (AnnotationNode anno : typeUseAnnos) {
+                if (!anno.isTargetAllowed(keepTarget)) {
+                    mixed.remove(anno);
+                }
+            }
+        }
+    }
+
+    /**
+     * Duplicates are already rejected or collected into a container for each member, so an
+     * annotation of the same type with the same member values is the same annotation or a copy
+     * of it, as made by {@code GeneralUtils#copyAnnotatedNodeAnnotations}.
+     */
+    private static boolean isSameAnnotation(final AnnotationNode a, final AnnotationNode b) {
+        if (a == b) return true;
+        if (!a.getClassNode().equals(b.getClassNode())) return false;
+        Map<String, Expression> aMembers = a.getMembers(), bMembers = b.getMembers();
+        if (aMembers.size() != bMembers.size()) return false;
+        for (Map.Entry<String, Expression> member : aMembers.entrySet()) {
+            if (bMembers.get(member.getKey()) != member.getValue()) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Visits the annotations attached to the supplied node for the given target kind.
+     *
+     * @param node the annotated node to inspect
+     * @param target the annotation target mask being validated
+     */
+    protected void visitAnnotations(final AnnotatedNode node, final int target) {
+        visitAnnotations(node, node.getAnnotations(), target);
+    }
+
+    private void visitAnnotations(final AnnotatedNode node, final List<AnnotationNode> annotations, final int target) {
+        if (annotations.isEmpty()) return;
         this.currentClass.setAnnotated(true);
-        if (!isAnnotationCompatible()) {
-            addError("Annotations are not supported in the current runtime. " + JVM_ERROR_MESSAGE, node);
-            return;
-        }
         Map<String, List<AnnotationNode>> nonSourceAnnotations = new LinkedHashMap<>();
-        for (AnnotationNode unvisited : node.getAnnotations()) {
+        boolean skippable = Boolean.TRUE.equals(node.getNodeMetaData("_SKIPPABLE_ANNOTATIONS"));
+        for (Iterator<AnnotationNode> iterator = annotations.iterator(); iterator.hasNext(); ) {
+            AnnotationNode unvisited = iterator.next();
             AnnotationNode visited;
             {
                 ErrorCollector errorCollector = new ErrorCollector(source.getConfiguration());
@@ -171,10 +420,16 @@ public class ExtendedVerifier extends ClassCodeVisitorSupport {
             }
 
             String name = visited.getClassNode().getName();
+            if (skippable && shouldSkip(node, visited)) {
+                iterator.remove();
+                continue;
+            }
             if (!visited.hasSourceRetention()) {
                 List<AnnotationNode> seen = nonSourceAnnotations.get(name);
                 if (seen == null) {
                     seen = new ArrayList<>();
+                } else if (!isRepeatable(visited)) {
+                    addError("Cannot specify duplicate annotation on the same member : " + name, visited);
                 }
                 seen.add(visited);
                 nonSourceAnnotations.put(name, seen);
@@ -182,23 +437,53 @@ public class ExtendedVerifier extends ClassCodeVisitorSupport {
 
             // Check if the annotation target is correct, unless it's the target annotating an annotation definition
             // defining on which target elements the annotation applies
-            boolean isTargetAnnotation = name.equals("java.lang.annotation.Target");
-            if (!isTargetAnnotation && !visited.isTargetAllowed(target)) {
+            boolean isTargetAnnotation = "java.lang.annotation.Target".equals(name);
+            if (!isTargetAnnotation && !visited.isTargetAllowed(target) && !isTypeUseScenario(visited, target)) {
                 addError("Annotation @" + name + " is not allowed on element " + AnnotationNode.targetToName(target), visited);
             }
             visitDeprecation(node, visited);
             visitOverride(node, visited);
         }
-        checkForDuplicateAnnotations(node, nonSourceAnnotations);
+        processDuplicateAnnotationContainers(node, nonSourceAnnotations);
     }
 
-    private void checkForDuplicateAnnotations(AnnotatedNode node, Map<String, List<AnnotationNode>> nonSourceAnnotations) {
-        for (Map.Entry<String, List<AnnotationNode>> next : nonSourceAnnotations.entrySet()) {
-            if (next.getValue().size() > 1) {
+    private boolean shouldSkip(final AnnotatedNode node, final AnnotationNode visited) {
+        return (node instanceof ClassNode && !visited.isTargetAllowed(TYPE_TARGET) && !visited.isTargetAllowed(TYPE_USE_TARGET) && (visited.isTargetAllowed(CONSTRUCTOR_TARGET) || visited.isTargetAllowed(METHOD_TARGET)))
+                || (node instanceof ConstructorNode && !visited.isTargetAllowed(CONSTRUCTOR_TARGET) && visited.isTargetAllowed(TYPE_TARGET))
+                || (node instanceof FieldNode && !visited.isTargetAllowed(FIELD_TARGET) && !visited.isTargetAllowed(TYPE_USE_TARGET))
+                || (node instanceof Parameter && !visited.isTargetAllowed(PARAMETER_TARGET) && !visited.isTargetAllowed(TYPE_USE_TARGET))
+                || (node instanceof MethodNode && !(node instanceof ConstructorNode) && !visited.isTargetAllowed(METHOD_TARGET) && !visited.isTargetAllowed(TYPE_USE_TARGET))
+                || (node instanceof RecordComponentNode && !visited.isTargetAllowed(RECORD_COMPONENT_TARGET) && !visited.isTargetAllowed(TYPE_USE_TARGET));
+    }
+
+    private boolean isRepeatable(final AnnotationNode annoNode) {
+        ClassNode annoClassNode = annoNode.getClassNode();
+        String name = annoClassNode.getName();
+        if (!repeatableCache.containsKey(name)) {
+            boolean result = false;
+            for (AnnotationNode anno : annoClassNode.getAnnotations()) {
+                if ("java.lang.annotation.Repeatable".equals(anno.getClassNode().getName())) {
+                    result = true;
+                    break;
+                }
+            }
+            repeatableCache.put(name, result);
+        }
+        return repeatableCache.get(name);
+    }
+
+    private boolean isTypeUseScenario(final AnnotationNode visited, final int target) {
+        // allow type use everywhere except package
+        return (visited.isTargetAllowed(TYPE_USE_TARGET) && ((target & PACKAGE_TARGET) == 0));
+    }
+
+    private void processDuplicateAnnotationContainers(final AnnotatedNode node, final Map<String, List<AnnotationNode>> nonSourceAnnotations) {
+        for (Map.Entry<String, List<AnnotationNode>> entry : nonSourceAnnotations.entrySet()) {
+            if (entry.getValue().size() > 1) {
                 ClassNode repeatable = null;
-                AnnotationNode repeatee = next.getValue().get(0);
+                AnnotationNode repeatee = entry.getValue().get(0);
                 for (AnnotationNode anno : repeatee.getClassNode().getAnnotations()) {
-                    if (anno.getClassNode().getName().equals("java.lang.annotation.Repeatable")) {
+                    if ("java.lang.annotation.Repeatable".equals(anno.getClassNode().getName())) {
                         Expression value = anno.getMember("value");
                         if (value instanceof ClassExpression && value.getType().isAnnotationDefinition()) {
                             repeatable = value.getType();
@@ -208,60 +493,42 @@ public class ExtendedVerifier extends ClassCodeVisitorSupport {
                 }
                 if (repeatable != null) {
                     if (nonSourceAnnotations.containsKey(repeatable.getName())) {
-                        addError("Cannot specify duplicate annotation on the same member. Explicit " + repeatable.getName()
-                                + " found when creating implicit container for " + next.getKey(), node);
+                        addError("Cannot specify duplicate annotation on the same member. Explicit " + repeatable.getName() + " found when creating implicit container for " + entry.getKey(), node);
                     }
-                    AnnotationNode collector = new AnnotationNode(repeatable);
-                    if (repeatee.hasRuntimeRetention()) {
-                        collector.setRuntimeRetention(true);
-                    } else if (repeatable.isResolved()) {
-                        Class<?> repeatableType = repeatable.getTypeClass();
-                        Retention retention = repeatableType.getAnnotation(Retention.class);
-                        collector.setRuntimeRetention(retention != null && retention.value().equals(RetentionPolicy.RUNTIME));
-                    } else {
-                        for (AnnotationNode annotation : repeatable.getAnnotations()) {
-                            if (annotation.getClassNode().getName().equals("java.lang.annotation.Retention")) {
-                                Expression value = annotation.getMember("value"); assert value != null;
-                                Object retention = evaluateExpression(value, source.getConfiguration());
-                                collector.setRuntimeRetention(retention != null && retention.toString().equals("RUNTIME"));
-                                break;
-                            }
-                        }
-                    }
-                    collector.addMember("value", new ListExpression(next.getValue().stream()
-                        .map(AnnotationConstantExpression::new).collect(Collectors.toList())));
-                    node.getAnnotations().removeAll(next.getValue());
+                    var collector = new AnnotationNode(repeatable);
+                    assert collector.hasClassRetention() == repeatee.hasClassRetention();
+                    assert collector.hasSourceRetention() == repeatee.hasSourceRetention();
+                    assert collector.hasRuntimeRetention() == repeatee.hasRuntimeRetention();
+                    collector.addMember("value", listX(entry.getValue().stream().map(AnnotationConstantExpression::new).collect(toList())));
+
+                    node.getAnnotations().removeAll(entry.getValue());
                     node.addAnnotation(collector);
                 }
             }
         }
     }
 
-    private static void visitDeprecation(AnnotatedNode node, AnnotationNode visited) {
-        if (visited.getClassNode().isResolved() && visited.getClassNode().getName().equals("java.lang.Deprecated")) {
-            if (node instanceof MethodNode) {
-                MethodNode mn = (MethodNode) node;
+    private static void visitDeprecation(final AnnotatedNode node, final AnnotationNode visited) {
+        if (visited.getClassNode().isResolved() && visited.getClassNode().equals(DEPRECATED_TYPE)) {
+            if (node instanceof MethodNode mn) {
                 mn.setModifiers(mn.getModifiers() | Opcodes.ACC_DEPRECATED);
-            } else if (node instanceof FieldNode) {
-                FieldNode fn = (FieldNode) node;
+            } else if (node instanceof FieldNode fn) {
                 fn.setModifiers(fn.getModifiers() | Opcodes.ACC_DEPRECATED);
-            } else if (node instanceof ClassNode) {
-                ClassNode cn = (ClassNode) node;
+            } else if (node instanceof ClassNode cn) {
                 cn.setModifiers(cn.getModifiers() | Opcodes.ACC_DEPRECATED);
             }
         }
     }
 
     // TODO GROOVY-5011 handle case of @Override on a property
-    private void visitOverride(AnnotatedNode node, AnnotationNode visited) {
+    private void visitOverride(final AnnotatedNode node, final AnnotationNode visited) {
         ClassNode annotationType = visited.getClassNode();
-        if (annotationType.isResolved() && annotationType.getName().equals("java.lang.Override")) {
-            if (node instanceof MethodNode && !Boolean.TRUE.equals(node.getNodeMetaData(Verifier.DEFAULT_PARAMETER_GENERATED))) {
+        if (annotationType.isResolved() && "java.lang.Override".equals(annotationType.getName())) {
+            if (node instanceof MethodNode mNode && !Boolean.TRUE.equals(node.getNodeMetaData(Verifier.DEFAULT_PARAMETER_GENERATED))) {
                 boolean override = false;
-                MethodNode origMethod = (MethodNode) node;
-                ClassNode cNode = origMethod.getDeclaringClass();
-                if (origMethod.hasDefaultValue()) {
-                    List<MethodNode> variants = cNode.getDeclaredMethods(origMethod.getName());
+                ClassNode  cNode = mNode.getDeclaringClass();
+                if (mNode.hasDefaultValue()) {
+                    List<MethodNode> variants = cNode.getDeclaredMethods(mNode.getName());
                     for (MethodNode m : variants) {
                         if (m.getAnnotations().contains(visited) && isOverrideMethod(m)) {
                             override = true;
@@ -269,66 +536,47 @@ public class ExtendedVerifier extends ClassCodeVisitorSupport {
                         }
                     }
                 } else {
-                    override = isOverrideMethod(origMethod);
+                    override = isOverrideMethod(mNode);
                 }
 
                 if (!override) {
-                    addError("Method '" + origMethod.getName() + "' from class '" + cNode.getName() + "' does not override " +
+                    addError("Method '" + mNode.getName() + "' from class '" + cNode.getName() + "' does not override " +
                             "method from its superclass or interfaces but is annotated with @Override.", visited);
                 }
             }
         }
     }
 
-    private static boolean isOverrideMethod(MethodNode method) {
-        ClassNode cNode = method.getDeclaringClass();
-        ClassNode next = cNode;
-        outer:
-        while (next != null) {
-            Map<String, ClassNode> genericsSpec = createGenericsSpec(next);
-            MethodNode mn = correctToGenericsSpec(genericsSpec, method);
-            if (next != cNode) {
-                ClassNode correctedNext = correctToGenericsSpecRecurse(genericsSpec, next);
-                MethodNode found = getDeclaredMethodCorrected(genericsSpec, mn, correctedNext);
-                if (found != null) break;
-            }
-            List<ClassNode> ifaces = new ArrayList<>(Arrays.asList(next.getInterfaces()));
-            while (!ifaces.isEmpty()) {
-                ClassNode origInterface = ifaces.remove(0);
-                if (!origInterface.equals(ClassHelper.OBJECT_TYPE)) {
-                    genericsSpec = createGenericsSpec(origInterface, genericsSpec);
-                    ClassNode iNode = correctToGenericsSpecRecurse(genericsSpec, origInterface);
-                    MethodNode found2 = getDeclaredMethodCorrected(genericsSpec, mn, iNode);
-                    if (found2 != null) break outer;
-                    Collections.addAll(ifaces, iNode.getInterfaces());
+    private static boolean isOverrideMethod(final MethodNode method) {
+        final ClassNode declaringClass = method.getDeclaringClass();
+        var todo = new LinkedList<ClassNode>();
+        var done = new HashSet<ClassNode>();
+        var next = declaringClass;
+        do {
+            if (done.add(next)) {
+                if (next != declaringClass
+                        && getDeclaredMethodCorrected(method, next) != null) {
+                    return true;
+                }
+                ClassNode sc = next.redirect().getUnresolvedSuperClass(false);
+                if (sc != null) todo.addFirst(parameterizeType(next, sc));
+                for (ClassNode in : next.getInterfaces()) {
+                    todo.add(parameterizeType(next, in));
                 }
             }
-            ClassNode superClass = next.getUnresolvedSuperClass();
-            if (superClass != null) {
-                next = correctToGenericsSpecRecurse(genericsSpec, superClass);
-            } else {
-                next = null;
-            }
-        }
-        return next != null;
+        } while ((next = todo.poll()) != null);
+
+        return false;
     }
 
-    private static MethodNode getDeclaredMethodCorrected(Map genericsSpec, MethodNode mn, ClassNode correctedNext) {
-        for (MethodNode declared : correctedNext.getDeclaredMethods(mn.getName())) {
+    private static MethodNode getDeclaredMethodCorrected(final MethodNode mn, final ClassNode cn) {
+        Map<String, ClassNode> genericsSpec = createGenericsSpec(cn);
+        for (MethodNode declared : cn.getDeclaredMethods(mn.getName())) {
             MethodNode corrected = correctToGenericsSpec(genericsSpec, declared);
-            if (ParameterUtils.parametersEqual(corrected.getParameters(), mn.getParameters())) {
+            if (parametersEqual(corrected.getParameters(), mn.getParameters())) {
                 return corrected;
             }
         }
         return null;
-    }
-
-    /**
-     * Check if the current runtime allows Annotation usage.
-     *
-     * @return true if running on a 1.5+ runtime
-     */
-    protected boolean isAnnotationCompatible() {
-        return CompilerConfiguration.isPostJDK5(this.source.getConfiguration().getTargetBytecode());
     }
 }

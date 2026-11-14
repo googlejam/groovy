@@ -18,7 +18,9 @@
  */
 package groovy.xml
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.parallel.ResourceLock
+import org.junit.jupiter.api.parallel.Resources
 import org.xml.sax.ErrorHandler
 import org.xml.sax.InputSource
 
@@ -30,7 +32,7 @@ import static groovy.xml.XmlUtil.escapeXml
 import static groovy.xml.XmlUtil.newSAXParser
 import static javax.xml.XMLConstants.W3C_XML_SCHEMA_NS_URI
 
-class XmlUtilTest extends GroovyTestCase {
+class XmlUtilTest {
     def xml = """\
     <?xml version="1.0" encoding="UTF-8"?>
     <Schl\u00FCssel>
@@ -39,14 +41,28 @@ class XmlUtilTest extends GroovyTestCase {
     """.stripIndent()
 
     // GROOVY-5158
-    void testSerializeOfGPathResultShouldRoundTrip() {
+    @Test
+    void serializeOfGPathResultShouldRoundTrip() {
         def source = new InputSource(new StringReader(xml))
         source.encoding = "UTF-8"
         assertXmlEquals(xml, XmlUtil.serialize(new XmlSlurper().parse(source)))
     }
 
+    def xml2 = '<?xml version="1.0" encoding="UTF-8"?><Name>🎁4</Name>'
+
+    // GROOVY-10132
+    @Test
+    void serializeOfSurrogate() {
+        def source = new InputSource(new StringReader(xml2))
+        source.encoding = "UTF-8"
+        assertXmlEquals(xml2, XmlUtil.serialize(new XmlSlurper().parse(source)))
+    }
+
     // GROOVY-5361
-    void testSchemaValidationUtilityMethod() {
+    @Test
+    // mutates the JVM-wide default Locale; guards against future in-JVM parallelism
+    @ResourceLock(Resources.LOCALE)
+    void schemaValidationUtilityMethod() {
         Locale dl = Locale.getDefault()
         Locale.setDefault(Locale.ENGLISH)
 
@@ -93,8 +109,9 @@ class XmlUtilTest extends GroovyTestCase {
     }
 
     // GROOVY-5775
-    void testEscaping() {
-      def ans = escapeControlCharacters(escapeXml('"bread" & "butter"\r\n'))
-      assert ans == '&quot;bread&quot; &amp; &quot;butter&quot;&#13;&#10;'
+    @Test
+    void escaping() {
+      def ans = escapeControlCharacters(escapeXml('"bread" & "butter"\r\n\u0000\u001f'))
+      assert ans == '&quot;bread&quot; &amp; &quot;butter&quot;&#13;&#10;&#0;&#31;'
     }
 }

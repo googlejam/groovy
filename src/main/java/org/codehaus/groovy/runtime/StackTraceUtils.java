@@ -37,7 +37,11 @@ import java.util.logging.Logger;
  * @since 1.5
  */
 public class StackTraceUtils {
+    private StackTraceUtils() {}
 
+    /**
+     * The logger name for sanitized stack traces.
+     */
     public static final String STACK_LOG_NAME = "StackTrace";
     private static final Logger STACK_LOG;
     // set log to consume traces by default, end user can override later
@@ -45,7 +49,7 @@ public class StackTraceUtils {
     static {
         outer:
         do {
-            Enumeration existingLogs = LogManager.getLogManager().getLoggerNames();
+            Enumeration<String> existingLogs = LogManager.getLogManager().getLoggerNames();
             while (existingLogs.hasMoreElements()) {
                 if (STACK_LOG_NAME.equals(existingLogs.nextElement())) {
                     STACK_LOG = Logger.getLogger(STACK_LOG_NAME);
@@ -64,10 +68,15 @@ public class StackTraceUtils {
                             "java.," +
                             "javax.," +
                             "sun.," +
-                            "gjdk.groovy.,"
-            ).split("(\\s|,)+");
+                            "gjdk.groovy.," +
+                            "groovyjarjar," +
+                            "com.sun.," +
+                            "org.apache.groovy.," +
+                            "jdk.internal.," +
+                            "com.oracle.svm." // GraalVM native image: MethodHandle interpreter and reflection accessor frames (GROOVY-12362)
+            ).split("[\\s,]+");
 
-    private static final List<Closure> tests = new ArrayList<Closure>();
+    private static final List<Closure> tests = new ArrayList<>();
 
     /**
      * Adds a groovy.lang.Closure to test whether the stack trace
@@ -102,7 +111,7 @@ public class StackTraceUtils {
         // Note that this getBoolean access may well be synced...
         if (!SystemUtil.getBooleanSafe("groovy.full.stacktrace")) {
             StackTraceElement[] trace = t.getStackTrace();
-            List<StackTraceElement> newTrace = new ArrayList<StackTraceElement>();
+            List<StackTraceElement> newTrace = new ArrayList<>();
             for (StackTraceElement stackTraceElement : trace) {
                 if (isApplicationClass(stackTraceElement.getClassName())) {
                     newTrace.add(stackTraceElement);
@@ -119,6 +128,13 @@ public class StackTraceUtils {
         return t;
     }
 
+    /**
+     * Prints the sanitized stack trace of the exception to the given writer.
+     * Removes apparently groovy-internal trace entries.
+     *
+     * @param t the Throwable whose stack trace to print
+     * @param p the PrintWriter to print to
+     */
     public static void printSanitizedStackTrace(Throwable t, PrintWriter p) {
         t = StackTraceUtils.sanitize(t);
 
@@ -130,10 +146,23 @@ public class StackTraceUtils {
         }
     }
 
+    /**
+     * Prints the sanitized stack trace of the exception to standard error.
+     * Removes apparently groovy-internal trace entries.
+     *
+     * @param t the Throwable whose stack trace to print
+     */
     public static void printSanitizedStackTrace(Throwable t) {
         printSanitizedStackTrace(t, new PrintWriter(System.err));
     }
 
+    /**
+     * Determines whether the given class name is an application class (not a Groovy runtime class).
+     * First checks any registered test closures, then checks against known Groovy packages.
+     *
+     * @param className the fully qualified class name to check
+     * @return {@code true} if the class is an application class, {@code false} if it's a Groovy runtime class
+     */
     public static boolean isApplicationClass(String className) {
         for (Closure test : tests) {
             Object result = test.call(className);

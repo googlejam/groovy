@@ -18,6 +18,9 @@
  */
 package groovy.lang;
 
+import java.io.ObjectStreamException;
+import java.io.Serial;
+
 /**
  * A TrampolineClosure wraps a closure that needs to be executed on a functional trampoline.
  * Upon calling, a TrampolineClosure will call the original closure waiting for its result.
@@ -28,12 +31,36 @@ package groovy.lang;
  */
 final class TrampolineClosure<V> extends Closure<V> {
 
-    private static final long serialVersionUID = -4096349147398489925L;
+    @Serial private static final long serialVersionUID = -4096349147398489925L;
     private final Closure<V> original;
 
+    /**
+     * Creates a trampoline wrapper for the supplied closure.
+     *
+     * @param original the wrapped closure
+     */
     TrampolineClosure(final Closure<V> original) {
-        super(original.getOwner(), original.getDelegate());
+        super(original.getOwner(), original.getThisObject());
         this.original = original;
+    }
+
+    /**
+     * A trampoline calls through the closure it wraps, so {@code original} is a recursion edge
+     * in addition to the three the cycle check walks by default.
+     */
+    @Override
+    protected Object[] additionalReferences() {
+        return new Object[]{original};
+    }
+
+    /**
+     * Rejects a deserialized trampoline whose references form a cycle, which would otherwise
+     * recurse indefinitely on invocation. See {@link Closure#checkForReferenceCycle}.
+     */
+    @Serial
+    private Object readResolve() throws ObjectStreamException {
+        Closure.checkForReferenceCycle(this);
+        return this;
     }
 
     /**
@@ -41,7 +68,7 @@ final class TrampolineClosure<V> extends Closure<V> {
      */
     @Override
     public int getMaximumNumberOfParameters() {
-        return original.maximumNumberOfParameters;
+        return original.getMaximumNumberOfParameters();
     }
 
     /**
@@ -49,7 +76,50 @@ final class TrampolineClosure<V> extends Closure<V> {
      */
     @Override
     public Class[] getParameterTypes() {
-        return original.parameterTypes;
+        return original.getParameterTypes();
+    }
+
+    /**
+     * Delegates to the wrapped closure
+     */
+    @Override
+    public Object getDelegate() {
+        return original.getDelegate();
+    }
+
+    /**
+     * Delegates to the wrapped closure, which resolves the calls the trampoline makes
+     */
+    @Override
+    public void setDelegate(final Object delegate) {
+        original.setDelegate(delegate);
+    }
+
+    /**
+     * Delegates to the wrapped closure
+     */
+    @Override
+    public int getResolveStrategy() {
+        return original.getResolveStrategy();
+    }
+
+    /**
+     * Delegates to the wrapped closure, which resolves the calls the trampoline makes
+     */
+    @Override
+    public void setResolveStrategy(final int resolveStrategy) {
+        original.setResolveStrategy(resolveStrategy);
+    }
+
+    /**
+     * Clones the wrapped closure too, so that setting the delegate or resolve strategy of the copy
+     * leaves this trampoline alone.
+     * @return An instance of TrampolineClosure wrapping a copy of the original closure.
+     */
+    @Override
+    @SuppressWarnings("unchecked")
+    public Object clone() {
+        return new TrampolineClosure<V>((Closure<V>) original.clone());
     }
 
     /**
@@ -106,5 +176,23 @@ final class TrampolineClosure<V> extends Closure<V> {
     @Override
     public Closure<V> trampoline() {
         return this;
+    }
+
+    /**
+     * Dehydrates the wrapped closure and trampolines the copy, since calls go through the wrapped closure.
+     * @return An instance of TrampolineClosure wrapping a dehydrated copy of the original closure.
+     */
+    @Override
+    public Closure<V> dehydrate() {
+        return new TrampolineClosure<V>(original.dehydrate());
+    }
+
+    /**
+     * Rehydrates the wrapped closure and trampolines the copy, since calls go through the wrapped closure.
+     * @return An instance of TrampolineClosure wrapping a rehydrated copy of the original closure.
+     */
+    @Override
+    public Closure<V> rehydrate(final Object delegate, final Object owner, final Object thisObject) {
+        return new TrampolineClosure<V>(original.rehydrate(delegate, owner, thisObject));
     }
 }

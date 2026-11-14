@@ -16,11 +16,15 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy4416Bug extends GroovyTestCase {
+import static groovy.test.GroovyAssert.assertScript
+
+
+class Groovy4416Bug {
+    @Test
     void testImplicitThisPassingInNonStaticInnerClassesBug() {
         assertScript """
             class Dummy4416 {
@@ -33,7 +37,7 @@ class Groovy4416Bug extends GroovyTestCase {
                def bean = new Bean()
             }
             def b = new Dummy4416().bean
-            
+
             assert b.property1 == "property_value"
             assert b.property2 == "foo()"
         """

@@ -22,9 +22,8 @@ import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.ConstructorNode;
 import org.codehaus.groovy.ast.GroovyCodeVisitor;
-import org.codehaus.groovy.ast.InnerClassNode;
 import org.codehaus.groovy.ast.Parameter;
-import org.codehaus.groovy.ast.expr.BinaryExpression;
+import org.codehaus.groovy.ast.expr.ConstantExpression;
 import org.codehaus.groovy.ast.expr.ConstructorCallExpression;
 import org.codehaus.groovy.ast.expr.Expression;
 import org.codehaus.groovy.ast.expr.ExpressionTransformer;
@@ -36,31 +35,55 @@ import org.codehaus.groovy.classgen.BytecodeExpression;
 import org.codehaus.groovy.classgen.asm.BytecodeHelper;
 import org.codehaus.groovy.classgen.asm.CompileStack;
 import org.codehaus.groovy.classgen.asm.OperandStack;
-import org.codehaus.groovy.classgen.asm.WriterController;
-import org.codehaus.groovy.syntax.Token;
+import org.codehaus.groovy.classgen.asm.sc.RuntimePackageCheck;
 import org.codehaus.groovy.transform.stc.StaticTypeCheckingSupport;
 import org.codehaus.groovy.transform.stc.StaticTypeCheckingVisitor;
+import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 
 import java.util.List;
 
-import static org.codehaus.groovy.ast.tools.GeneralUtils.binX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.assignX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.bytecodeX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.propX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.varX;
 import static org.codehaus.groovy.transform.stc.StaticTypesMarker.DIRECT_METHOD_CALL_TARGET;
 import static org.objectweb.asm.Opcodes.ALOAD;
 import static org.objectweb.asm.Opcodes.ASTORE;
+import static org.objectweb.asm.Opcodes.ATHROW;
+import static org.objectweb.asm.Opcodes.CHECKCAST;
 import static org.objectweb.asm.Opcodes.DUP;
+import static org.objectweb.asm.Opcodes.GOTO;
+import static org.objectweb.asm.Opcodes.IFEQ;
+import static org.objectweb.asm.Opcodes.IFNONNULL;
+import static org.objectweb.asm.Opcodes.INVOKEINTERFACE;
 import static org.objectweb.asm.Opcodes.INVOKESPECIAL;
+import static org.objectweb.asm.Opcodes.INVOKESTATIC;
+import static org.objectweb.asm.Opcodes.INVOKEVIRTUAL;
 import static org.objectweb.asm.Opcodes.NEW;
+import static org.objectweb.asm.Opcodes.SWAP;
 
+/**
+ * Rewrites constructor calls that have a more direct static-compilation form.
+ */
 public class ConstructorCallTransformer {
     private final StaticCompilationTransformer staticCompilationTransformer;
 
+    /**
+     * Creates a constructor-call transformer backed by the owning static compilation transformer.
+     *
+     * @param staticCompilationTransformer the shared transformer context
+     */
     public ConstructorCallTransformer(final StaticCompilationTransformer staticCompilationTransformer) {
         this.staticCompilationTransformer = staticCompilationTransformer;
     }
 
+    /**
+     * Rewrites a constructor call when the static compiler can target a more direct implementation.
+     *
+     * @param expr the constructor call expression to transform
+     * @return the transformed expression
+     */
     Expression transformConstructorCall(final ConstructorCallExpression expr) {
         ConstructorNode node = expr.getNodeMetaData(DIRECT_METHOD_CALL_TARGET);
         if (node == null) return expr;
@@ -69,75 +92,56 @@ public class ConstructorCallTransformer {
                 && StaticTypeCheckingSupport.implementsInterfaceOrIsSubclassOf(params[params.length - 1].getType(), ClassHelper.MAP_TYPE)
                 && node.getCode() == StaticTypeCheckingVisitor.GENERATED_EMPTY_STATEMENT) {
             Expression arguments = expr.getArguments();
-            if (arguments instanceof TupleExpression) {
-                TupleExpression tupleExpression = (TupleExpression) arguments;
+            if (arguments instanceof TupleExpression tupleExpression) {
                 List<Expression> expressions = tupleExpression.getExpressions();
                 if (expressions.size() == 1 || expressions.size() == 2) { // 2 = inner class case
                     Expression expression = expressions.get(expressions.size() - 1);
-                    if (expression instanceof MapExpression) {
-                        MapExpression map = (MapExpression) expression;
-                        // check that the node doesn't belong to the list of declared constructors
-                        ClassNode declaringClass = node.getDeclaringClass();
-                        for (ConstructorNode constructorNode : declaringClass.getDeclaredConstructors()) {
-                            if (constructorNode == node) {
-                                return staticCompilationTransformer.superTransform(expr);
-                            }
+                    // check that the node doesn't belong to the list of declared constructors
+                    ClassNode declaringClass = node.getDeclaringClass();
+                    for (ConstructorNode constructorNode : declaringClass.getDeclaredConstructors()) {
+                        if (constructorNode == node) {
+                            return staticCompilationTransformer.superTransform(expr);
                         }
-                        // replace call to <init>(Map) or <init>(this, Map)
-                        // with a call to <init>() or <init>(this) + appropriate setters
-                        // for example, foo(x:1, y:2) is replaced with:
-                        // { def tmp = new Foo(); tmp.x = 1; tmp.y = 2; return tmp }()
-                        MapStyleConstructorCall result = new MapStyleConstructorCall(
-                                staticCompilationTransformer,
-                                declaringClass,
-                                map,
-                                expr
-                        );
-
-                        return result;
                     }
+                    // replace call to <init>(Map) or <init>(this, Map)
+                    // with a call to <init>() or <init>(this) + appropriate setters
+                    // for example, foo(x:1, y:2) is replaced with:
+                    // { def tmp = new Foo(); tmp.x = 1; tmp.y = 2; return tmp }()
+                    // a map that is not a literal has its entries set through the metaclass at runtime
+                    if (!(expression instanceof MapExpression)) {
+                        expression = staticCompilationTransformer.transform(expression);
+                    }
+                    return new MapStyleConstructorCall(declaringClass, expression, expr);
                 }
             }
-
         }
+
         return staticCompilationTransformer.superTransform(expr);
     }
 
-    private static class MapStyleConstructorCall extends BytecodeExpression {
-        private final StaticCompilationTransformer staticCompilationTransformer;
-        private AsmClassGenerator acg;
-        private final ClassNode declaringClass;
-        private final MapExpression map;
+    private class MapStyleConstructorCall extends BytecodeExpression {
+        private final Expression map;
         private final ConstructorCallExpression originalCall;
         private final boolean innerClassCall;
+        private AsmClassGenerator acg;
 
-        public MapStyleConstructorCall(
-                final StaticCompilationTransformer transformer,
-                final ClassNode declaringClass,
-                final MapExpression map,
-                final ConstructorCallExpression originalCall) {
+        MapStyleConstructorCall(final ClassNode declaringClass, final Expression map, final ConstructorCallExpression originalCall) {
             super(declaringClass);
-            this.staticCompilationTransformer = transformer;
-            this.declaringClass = declaringClass;
             this.map = map;
             this.originalCall = originalCall;
-            this.setSourcePosition(originalCall);
             this.copyNodeMetaData(originalCall);
-            List<Expression> originalExpressions = originalCall.getArguments() instanceof TupleExpression
-                    ? ((TupleExpression) originalCall.getArguments()).getExpressions()
-                    : null;
-            this.innerClassCall = originalExpressions != null && originalExpressions.size() == 2;
+            this.setSourcePosition(originalCall);
+            var originalArgs = (TupleExpression) originalCall.getArguments();
+            this.innerClassCall = (2 == originalArgs.getExpressions().size());
         }
 
         @Override
         public Expression transformExpression(final ExpressionTransformer transformer) {
-            Expression result = new MapStyleConstructorCall(
-                    staticCompilationTransformer, declaringClass,
-                    (MapExpression) map.transformExpression(transformer),
+            Expression result = new MapStyleConstructorCall(getType(),
+                    map.transformExpression(transformer),
                     (ConstructorCallExpression) originalCall.transformExpression(transformer)
             );
             result.copyNodeMetaData(this);
-            result.setSourcePosition(this);
             return result;
         }
 
@@ -153,48 +157,125 @@ public class ConstructorCallTransformer {
 
         @Override
         public void visit(final MethodVisitor mv) {
-            WriterController controller = acg.getController();
-            CompileStack compileStack = controller.getCompileStack();
-            OperandStack operandStack = controller.getOperandStack();
+            CompileStack compileStack = acg.getController().getCompileStack();
 
-            // create a temporary variable to store the constructed object
-            int tmpObj = compileStack.defineTemporaryVariable("tmpObj", declaringClass, false);
-            String classInternalName = BytecodeHelper.getClassInternalName(declaringClass);
-            mv.visitTypeInsn(NEW, classInternalName);
+            int tmpMap = -1;
+            if (!(map instanceof MapExpression)) {
+                // evaluate the argument before the object is created
+                map.visit(acg);
+                tmpMap = compileStack.defineTemporaryVariable("tmpMap", ClassHelper.MAP_TYPE, true);
+            }
+
+            ClassNode ctorType = getType();
+            if (tmpMap != -1) {
+                // a null map selects no constructor, as for a dynamic call
+                Label nonNull = new Label();
+                mv.visitVarInsn(ALOAD, tmpMap);
+                mv.visitJumpInsn(IFNONNULL, nonNull);
+                mv.visitTypeInsn(NEW, "groovy/lang/GroovyRuntimeException");
+                mv.visitInsn(DUP);
+                String argTypes = (innerClassCall && ctorType.getOuterClass() != null ? ctorType.getOuterClass().getName() + ", " : "") + "null";
+                mv.visitLdcInsn("Could not find matching constructor for: " + ctorType.getName() + "(" + argTypes + ")");
+                mv.visitMethodInsn(INVOKESPECIAL, "groovy/lang/GroovyRuntimeException", "<init>", "(Ljava/lang/String;)V", false);
+                mv.visitInsn(ATHROW);
+                mv.visitLabel(nonNull);
+            }
+            // create temporary variable to store new object instance
+            int tmpObj = compileStack.defineTemporaryVariable("tmpObj", ctorType, false);
+            String ctorTypeName = BytecodeHelper.getClassInternalName(ctorType);
+            mv.visitTypeInsn(NEW, ctorTypeName);
             mv.visitInsn(DUP);
-            String desc = "()V";
-            if (innerClassCall && declaringClass.isRedirectNode() && declaringClass.redirect() instanceof InnerClassNode) {
-                // load "this"
-                mv.visitVarInsn(ALOAD, 0);
-                InnerClassNode icn = (InnerClassNode) declaringClass.redirect();
-                Parameter[] params = {new Parameter(icn.getOuterClass(), "$p$")};
-                desc = BytecodeHelper.getMethodDescriptor(ClassHelper.VOID_TYPE, params);
+            String signature = "()V";
+            Parameter[] params = Parameter.EMPTY_ARRAY;
+            if (innerClassCall && ctorType.getOuterClass() != null) {
+                acg.visitVariableExpression(varX("this")); // GROOVY-11122
+                params = new Parameter[]{new Parameter(ctorType.getOuterClass(),"$p$")};
+                signature = BytecodeHelper.getMethodDescriptor(ClassHelper.VOID_TYPE, params);
             }
-            mv.visitMethodInsn(INVOKESPECIAL, classInternalName, "<init>", desc, false);
-            mv.visitVarInsn(ASTORE, tmpObj); // store it into tmp variable
+            ConstructorNode ctor = ctorType.getDeclaredConstructor(params);
+            if (ctor != null) RuntimePackageCheck.checkConstructor(acg.getController(), ctor, false, originalCall);
+            mv.visitMethodInsn(INVOKESPECIAL, ctorTypeName, "<init>", signature, false);
+            mv.visitVarInsn(ASTORE, tmpObj);
 
-            // load every field
-            for (MapEntryExpression entryExpression : map.getMapEntryExpressions()) {
-                Expression keyExpression = staticCompilationTransformer.transform(entryExpression.getKeyExpression());
-                Expression valueExpression = staticCompilationTransformer.transform(entryExpression.getValueExpression());
-                BinaryExpression bexp = binX(
-                        propX(
-                                bytecodeX(declaringClass, v -> v.visitVarInsn(ALOAD, tmpObj)),
-                                keyExpression
-                        ),
-                        Token.newSymbol("=", entryExpression.getLineNumber(), entryExpression.getColumnNumber()),
-                        valueExpression
-                );
-                bexp.setSourcePosition(entryExpression);
-                bexp.visit(acg);
-                operandStack.pop(); // consume argument
+            if (map instanceof MapExpression mapExpression) {
+                setProperties(mapExpression, tmpObj);
+            } else {
+                setProperties(mv, tmpMap, tmpObj);
             }
 
-            // load object
+            // result object
             mv.visitVarInsn(ALOAD, tmpObj);
 
             // cleanup stack
             compileStack.removeVar(tmpObj);
+            if (tmpMap != -1) compileStack.removeVar(tmpMap);
+        }
+
+        private void setProperties(final MapExpression map, final int tmpObj) {
+            OperandStack operandStack = acg.getController().getOperandStack();
+            ClassNode ctorType = getType();
+            int mark = operandStack.getStackLength();
+            Expression objExpression = bytecodeX(ctorType, v -> v.visitVarInsn(ALOAD, tmpObj));
+
+            // process property initializers
+            for (MapEntryExpression entryExpression : map.getMapEntryExpressions()) {
+                Expression keyExpression = entryExpression.getKeyExpression();
+                Expression varExpression = propX(objExpression, keyExpression);
+                Expression valExpression = entryExpression.getValueExpression();
+
+                objExpression.setSourcePosition(keyExpression); // GROOVY-11956
+
+                if (keyExpression instanceof ConstantExpression) { // a dynamic key's target is its own (GROOVY-12456)
+                    varExpression.putNodeMetaData(DIRECT_METHOD_CALL_TARGET,
+                            keyExpression.getNodeMetaData(DIRECT_METHOD_CALL_TARGET));
+                }
+
+                Expression setExpression = staticCompilationTransformer.transform(
+                        assignX(varExpression, valExpression) // tmp.key = value
+                );
+                setExpression.putNodeMetaData(AsmClassGenerator.ELIDE_EXPRESSION_VALUE, Boolean.TRUE);
+                setExpression.setSourcePosition(entryExpression);
+                // the transformed expression may or may not write a line number (a setter
+                // call of a compiled class does not), so write the entry's own line first
+                acg.onLineNumber(entryExpression, "visitMapEntryExpression");
+                setExpression.visit(acg);
+
+                operandStack.popDownTo(mark);
+            }
+        }
+
+        private void setProperties(final MethodVisitor mv, final int tmpMap, final int tmpObj) {
+            CompileStack compileStack = acg.getController().getCompileStack();
+            // for (Map.Entry entry : map.entrySet())
+            //     InvokerHelper.getMetaClass(tmp).setProperty(tmp, entry.getKey().toString(), entry.getValue())
+            mv.visitVarInsn(ALOAD, tmpMap);
+            mv.visitMethodInsn(INVOKEINTERFACE, "java/util/Map", "entrySet", "()Ljava/util/Set;", true);
+            mv.visitMethodInsn(INVOKEINTERFACE, "java/util/Set", "iterator", "()Ljava/util/Iterator;", true);
+            int tmpIter = compileStack.defineTemporaryVariable("tmpIter", ClassHelper.Iterator_TYPE, false);
+            mv.visitVarInsn(ASTORE, tmpIter);
+
+            Label loop = new Label(), done = new Label();
+            mv.visitLabel(loop);
+            mv.visitVarInsn(ALOAD, tmpIter);
+            mv.visitMethodInsn(INVOKEINTERFACE, "java/util/Iterator", "hasNext", "()Z", true);
+            mv.visitJumpInsn(IFEQ, done);
+
+            mv.visitVarInsn(ALOAD, tmpObj);
+            mv.visitMethodInsn(INVOKESTATIC, "org/codehaus/groovy/runtime/InvokerHelper", "getMetaClass", "(Ljava/lang/Object;)Lgroovy/lang/MetaClass;", false);
+            mv.visitVarInsn(ALOAD, tmpObj);
+            mv.visitVarInsn(ALOAD, tmpIter);
+            mv.visitMethodInsn(INVOKEINTERFACE, "java/util/Iterator", "next", "()Ljava/lang/Object;", true);
+            mv.visitTypeInsn(CHECKCAST, "java/util/Map$Entry");
+            mv.visitInsn(DUP);
+            mv.visitMethodInsn(INVOKEINTERFACE, "java/util/Map$Entry", "getKey", "()Ljava/lang/Object;", true);
+            mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Object", "toString", "()Ljava/lang/String;", false);
+            mv.visitInsn(SWAP);
+            mv.visitMethodInsn(INVOKEINTERFACE, "java/util/Map$Entry", "getValue", "()Ljava/lang/Object;", true);
+            mv.visitMethodInsn(INVOKEINTERFACE, "groovy/lang/MetaClass", "setProperty", "(Ljava/lang/Object;Ljava/lang/String;Ljava/lang/Object;)V", true);
+            mv.visitJumpInsn(GOTO, loop);
+            mv.visitLabel(done);
+
+            compileStack.removeVar(tmpIter);
         }
     }
 }

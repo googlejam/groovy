@@ -30,7 +30,7 @@ import junit.textui.TestRunner
  *
  * Source files will be read from the directory specified by the <code>javadocAssertion.src.dir</code>
  * system property, including all files matching <code>javadocAssertion.src.pattern</code> and
- * excluding files matching the <code>javadocAssertion.src.excludesPattern</code>. 
+ * excluding files matching the <code>javadocAssertion.src.excludesPattern</code>.
  *
  * By default all <code>.java</code> and <code>.groovy</code> source files from <code>./src</code> will
  * be scanned for assertions.
@@ -59,7 +59,7 @@ class JavadocAssertionTestSuite extends TestSuite {
      * Defaults to including all <code>.java</code> and <code>.groovy</code> files.
      */
     public static final String SYSPROP_SRC_PATTERN = "javadocAssertion.src.pattern";
-    
+
     /** The System Property to set as a filename excludes pattern for collection of Classes.
      * When non-empty, the pattern will be used as Regular Expression pattern applied with the
      * find operator against each candidate file.path.
@@ -67,28 +67,64 @@ class JavadocAssertionTestSuite extends TestSuite {
      * Default value is "".
      */
     public static final String SYSPROP_SRC_EXCLUDES_PATTERN = "javadocAssertion.src.excludesPattern";
-    
+
     private static final JavadocAssertionTestBuilder testBuilder = new JavadocAssertionTestBuilder()
-    private static final IFileNameFinder finder = Class.forName('groovy.ant.FileNameFinder',true,this.classLoader).newInstance()
-    
+    private static final IFileNameFinder finder = Class.forName('groovy.ant.FileNameFinder',true,this.classLoader).getConstructor().newInstance()
+
+    /**
+     * Builds a suite from the directory named by the
+     * {@code javadocAssertion.src.dir} system property, or {@code ./src/}
+     * when that property is unset. Files are included by
+     * {@code javadocAssertion.src.pattern}, or {@code **&#47;*.java,**&#47;*.groovy}
+     * when that property is unset.
+     *
+     * @return the suite
+     */
     static Test suite() {
         String basedir = System.getProperty(SYSPROP_SRC_DIR, "./src/")
         return suite(basedir)
     }
-    
+
+    /**
+     * Builds a suite for {@code basedir}. Files are included by the
+     * {@code javadocAssertion.src.pattern} system property, or
+     * {@code **&#47;*.java,**&#47;*.groovy} when that property is unset.
+     *
+     * @param basedir the directory to scan
+     * @return the suite
+     */
     static Test suite(String basedir) {
         String includePattern = System.getProperty(SYSPROP_SRC_PATTERN, "**/*.java,**/*.groovy")
         return suite(basedir, includePattern)
     }
-    
+
+    /**
+     * Builds a suite for {@code basedir}, keeping files that match
+     * {@code includePattern}. Excludes files matching the
+     * {@code javadocAssertion.src.excludesPattern} system property, which is empty by default.
+     *
+     * @param basedir the directory to scan
+     * @param includePattern ant-style include pattern
+     * @return the suite
+     */
     static Test suite(String basedir, String includePattern) {
         String excludePattern = System.getProperty(SYSPROP_SRC_EXCLUDES_PATTERN, "")
         return suite(basedir, includePattern, excludePattern)
     }
-    
+
+    /**
+     * Builds a suite from the Javadoc examples under {@code basedir}.
+     * {@code basedir} must exist. A file whose generated test class is null
+     * is skipped.
+     *
+     * @param basedir the directory to scan
+     * @param includePattern ant-style include pattern
+     * @param excludePattern ant-style exclude pattern
+     * @return the suite
+     */
     static Test suite(String basedir, String includePattern, String excludePattern) {
         assert new File(basedir).exists()
-        
+
         TestSuite suite = new JavadocAssertionTestSuite()
 
         Collection filenames = finder.getFileNames([dir:basedir, includes:includePattern, excludes:excludePattern])
@@ -103,6 +139,12 @@ class JavadocAssertionTestSuite extends TestSuite {
         return suite
     }
 
+    /**
+     * Runs the suite named by {@code args}: one argument is the base directory,
+     * two add the include pattern, three add the exclude pattern.
+     *
+     * @param args base directory, then optional include and exclude patterns
+     */
     static void main(String[] args) {
         switch(args.length) {
             case 3:

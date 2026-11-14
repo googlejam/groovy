@@ -16,14 +16,15 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-/**
- */
-class BooleanBug extends GroovyTestCase {
-    
+import static groovy.test.GroovyAssert.assertScript
+
+final class BooleanBug {
+
+    @Test
     void testBug() {
         def x = new BooleanBean(name:'James', foo:true)
         def y = new BooleanBean(name:'Bob', foo:false)
@@ -33,18 +34,20 @@ class BooleanBug extends GroovyTestCase {
         y.foo = true
         assert y.foo
     }
-    
+
+    @Test
     void testBug2() {
         BooleanBean bean = new BooleanBean(name:'Gromit', foo:false)
         def value = isApplicableTo(bean)
         assert value
     }
-    
+
     public boolean isApplicableTo(BooleanBean field) {
         return !field.isFoo();
     }
-    
-    public testBooleanAsMethodArgumentFromCompare() {
+
+    @Test
+    void testBooleanAsMethodArgumentFromCompare() {
         assertScript """
             def foo(x){x}
             def i = 0
@@ -52,9 +55,8 @@ class BooleanBug extends GroovyTestCase {
         """
     }
 
-}
-
-class BooleanBean {
-    String name
-    boolean foo
+    static class BooleanBean {
+        String name
+        boolean foo
+    }
 }

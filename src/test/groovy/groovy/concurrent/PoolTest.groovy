@@ -1,0 +1,202 @@
+/*
+ *  Licensed to the Apache Software Foundation (ASF) under one
+ *  or more contributor license agreements.  See the NOTICE file
+ *  distributed with this work for additional information
+ *  regarding copyright ownership.  The ASF licenses this file
+ *  to you under the Apache License, Version 2.0 (the
+ *  "License"); you may not use this file except in compliance
+ *  with the License.  You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing,
+ *  software distributed under the License is distributed on an
+ *  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *  KIND, either express or implied.  See the License for the
+ *  specific language governing permissions and limitations
+ *  under the License.
+ */
+package groovy.concurrent
+
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.assertScript
+import static groovy.test.GroovyAssert.shouldFail
+
+final class PoolTest {
+
+    @Test
+    void testFixedPoolSize() {
+        assertScript '''
+            import groovy.concurrent.Pool
+
+            def pool = Pool.fixed(4)
+            assert pool.poolSize == 4
+            assert pool.asForkJoinPool().parallelism == 4
+            assert !pool.usesVirtualThreads()
+            pool.close()
+        '''
+    }
+
+    @Test
+    void testCpuPoolSizedToProcessors() {
+        assertScript '''
+            import groovy.concurrent.Pool
+
+            def pool = Pool.cpu()
+            assert pool.poolSize == Runtime.runtime.availableProcessors()
+            assert pool.asForkJoinPool().parallelism == pool.poolSize
+            assert !pool.usesVirtualThreads()
+            pool.close()
+        '''
+    }
+
+    @Test
+    void testIoPoolFollowsVirtualThreadSupport() {
+        assertScript '''
+            import groovy.concurrent.ConcurrentConfig
+            import groovy.concurrent.Pool
+
+            import static groovy.test.GroovyAssert.shouldFail
+
+            def virtual = Pool.virtual()
+            def io = Pool.io()
+            try {
+                def virtualThreads = virtual.usesVirtualThreads()
+                if (Runtime.version().feature() >= 21) {
+                    assert virtualThreads
+                }
+                if (virtualThreads) {
+                    assert io.usesVirtualThreads()
+                    assert io.poolSize == Integer.MAX_VALUE
+                    shouldFail(UnsupportedOperationException) {
+                        io.asForkJoinPool()
+                    }
+                } else {
+                    assert !io.usesVirtualThreads()
+                    assert io.poolSize == ConcurrentConfig.defaultParallelism
+                    assert io.asForkJoinPool().parallelism == io.poolSize
+                }
+            } finally {
+                virtual.close()
+                io.close()
+            }
+        '''
+    }
+
+    @Test
+    void testPoolExecutesWork() {
+        assertScript '''
+            import groovy.concurrent.Pool
+            import java.util.concurrent.CountDownLatch
+
+            def pool = Pool.fixed(2)
+            def latch = new CountDownLatch(2)
+            pool.execute { latch.countDown() }
+            pool.execute { latch.countDown() }
+            assert latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
+            pool.close()
+        '''
+    }
+
+    @Test
+    void testFixedPoolRejectsInvalidSize() {
+        shouldFail(IllegalArgumentException, '''
+            import groovy.concurrent.Pool
+            Pool.fixed(0)
+        ''')
+    }
+
+    @Test
+    void testPoolWorksAsAsyncScopeExecutor() {
+        assertScript '''
+            import groovy.concurrent.AsyncScope
+            import groovy.concurrent.Pool
+
+            def pool = Pool.fixed(2)
+            def result = AsyncScope.withScope(pool) { scope ->
+                def a = scope.async { 10 }
+                def b = scope.async { 20 }
+                [await(a), await(b)]
+            }
+            assert result == [10, 20]
+            pool.close()
+        '''
+    }
+
+    @Test
+    void testWorkerThreadCarriesItsPool() {
+        assertScript '''
+            import groovy.concurrent.Pool
+            import java.util.concurrent.CountDownLatch
+            import java.util.concurrent.TimeUnit
+
+            def check = { Pool pool ->
+                def seen = new java.util.concurrent.atomic.AtomicReference()
+                def latch = new CountDownLatch(1)
+                pool.execute {
+                    seen.set(Pool.current())
+                    latch.countDown()
+                }
+                assert latch.await(5, TimeUnit.SECONDS)
+                assert seen.get().is(pool)
+            }
+
+            def fixed = Pool.fixed(1)
+            def virtual = Pool.virtual()
+            try {
+                check(fixed)
+                check(virtual)
+            } finally {
+                fixed.close()
+                virtual.close()
+            }
+        '''
+    }
+
+    @Test
+    void testPoolCurrentWithCurrentBinding() {
+        assertScript '''
+            import groovy.concurrent.Pool
+
+            def pool = Pool.fixed(1)
+            try {
+                assert Pool.current() == null
+                def captured = Pool.withCurrent(pool, { Pool.current() })
+                assert captured.is(pool)
+                assert Pool.current() == null
+            } finally {
+                pool.close()
+            }
+        '''
+    }
+
+    @Test
+    void testPoolWithCurrentNestedRestore() {
+        assertScript '''
+            import groovy.concurrent.Pool
+
+            def outer = Pool.fixed(1)
+            def inner = Pool.fixed(1)
+            try {
+                def outerSeen = null
+                def innerSeen = null
+
+                Pool.withCurrent(outer, {
+                    outerSeen = Pool.current()
+                    Pool.withCurrent(inner, {
+                        innerSeen = Pool.current()
+                    })
+                    assert Pool.current().is(outer)
+                })
+
+                assert outerSeen.is(outer)
+                assert innerSeen.is(inner)
+                assert Pool.current() == null
+            } finally {
+                outer.close()
+                inner.close()
+            }
+        '''
+    }
+}

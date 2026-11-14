@@ -18,26 +18,37 @@
  */
 package groovy.sql;
 
-import org.codehaus.groovy.ast.CodeVisitorSupport;
 import org.codehaus.groovy.ast.expr.PropertyExpression;
-import org.codehaus.groovy.ast.stmt.ReturnStatement;
+import org.codehaus.groovy.ast.query.AstQuery;
+import org.codehaus.groovy.ast.stmt.Statement;
 
-public class SqlOrderByVisitor extends CodeVisitorSupport {
+/**
+ * Derives an SQL {@code ORDER BY} fragment from a simple sort closure, used by {@link DataSet}.
+ */
+public class SqlOrderByVisitor {
 
     private final StringBuffer buffer = new StringBuffer();
 
+    /**
+     * Appends the outermost referenced property name of each property access in the supplied
+     * closure body, in source order.
+     *
+     * @param code the sort closure body to inspect
+     */
+    public void visit(Statement code) {
+        AstQuery.from(code)
+                .descendants(PropertyExpression.class)
+                .notInto(PropertyExpression.class) // keep only the outermost name of a property chain
+                .forEach(expression -> buffer.append(expression.getPropertyAsString()));
+    }
+
+    /**
+     * Returns the SQL {@code ORDER BY} fragment built so far.
+     *
+     * @return the derived order-by fragment
+     */
     public String getOrderBy() {
         return buffer.toString();
-    }
-
-    @Override
-    public void visitReturnStatement(ReturnStatement statement) {
-        statement.getExpression().visit(this);
-    }
-
-    @Override
-    public void visitPropertyExpression(PropertyExpression expression) {
-        buffer.append(expression.getPropertyAsString());
     }
 
 }

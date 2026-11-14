@@ -16,11 +16,15 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy8085Bug extends GroovyTestCase {
+import static groovy.test.GroovyAssert.assertScript
+
+
+class Groovy8085Bug {
+    @Test
     void testTryCatchFinally() {
         assertScript '''
             try {
@@ -35,6 +39,7 @@ class Groovy8085Bug extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testTryCatchFinally2() {
         assertScript '''
             def visitSequence = []
@@ -51,11 +56,12 @@ class Groovy8085Bug extends GroovyTestCase {
             } finally {
                 visitSequence << 'outerFinally'
             }
-            
+
             assert ['innerFinally', 'outerCatch', 'outerFinally'] == visitSequence
         '''
     }
 
+    @Test
     void testTryCatchFinallyWithExplicitReturn() {
         assertScript '''
             try {
@@ -70,6 +76,7 @@ class Groovy8085Bug extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testTryCatchFinallyWithExplicitReturn2() {
         assertScript '''
             def visitSequence = []
@@ -86,7 +93,7 @@ class Groovy8085Bug extends GroovyTestCase {
             } finally {
                 visitSequence << 'outerFinally'
             }
-            
+
             assert ['innerFinally', 'outerCatch', 'outerFinally'] == visitSequence
         '''
     }

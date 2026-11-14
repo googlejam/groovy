@@ -19,13 +19,15 @@
 package groovy.lang;
 
 import org.codehaus.groovy.runtime.GeneratedClosure;
+import org.codehaus.groovy.runtime.PackedClosure;
 import org.codehaus.groovy.runtime.metaclass.ClosureMetaClass;
+import org.codehaus.groovy.runtime.metaclass.PackedClosureMetaClass;
 
 import java.lang.reflect.Constructor;
 import java.util.Iterator;
 
 /**
- * A MetaClassRegistry is an object that is responsible for managing the a cache of MetaClass instances. Each
+ * A MetaClassRegistry is an object that is responsible for managing a cache of MetaClass instances. Each
  * java.lang.Class instance has an associated MetaClass and client code can query this interface for the MetaClass for
  * a given associated java.lang.Class
  *
@@ -33,14 +35,14 @@ import java.util.Iterator;
  *
  */
 public interface MetaClassRegistry {
-    
+
     /**
      * The main function of the registry
-     * If a meta class exists then return it
+     * If a metaclass exists then return it
      * otherwise create one, put it in the registry and return it
      */
     MetaClass getMetaClass(Class theClass);
-    
+
     /**
      * Adds a metaclass to the registry for the given class
      *
@@ -71,14 +73,14 @@ public interface MetaClassRegistry {
     void setMetaClassCreationHandle(MetaClassCreationHandle handle);
 
     /**
-     * Adds a meta class change listener for constant meta classes
+     * Adds a metaclass change listener for constant metaclasses
      *
      * @param listener - the update listener
      */
     void addMetaClassRegistryChangeEventListener(MetaClassRegistryChangeEventListener listener);
-    
+
     /**
-     * Adds a meta class change listener for constant meta classes. 
+     * Adds a metaclass change listener for constant metaclasses.
      * This listener cannot be removed!
      *
      * @param listener - the update listener
@@ -86,47 +88,47 @@ public interface MetaClassRegistry {
     void addNonRemovableMetaClassRegistryChangeEventListener(MetaClassRegistryChangeEventListener listener);
 
     /**
-     * Removes a meta class change listener for constant meta classes
+     * Removes a metaclass change listener for constant metaclasses
      *
      * @param listener - the update listener
      */
     void removeMetaClassRegistryChangeEventListener(MetaClassRegistryChangeEventListener listener);
 
     /**
-     * Returns all registered class change listener for constant meta classes.
+     * Returns all registered class change listener for constant metaclasses.
      *
      * @return an array containing all change listener
      */
     MetaClassRegistryChangeEventListener[] getMetaClassRegistryChangeEventListeners();
 
     /**
-     * Gets a snapshot of the current constant meta classes and returns it as Iterator.
+     * Gets a snapshot of the current constant metaclasses and returns it as Iterator.
      * Modifications done using this Iterator will not cause a ConcurrentModificationException.
      * If a MetaClass is removed using this Iterator, then the MetaClass will only
      * be removed if the MetaClass was not replaced by another MetaClass in the meantime.
      * If a MetaClass is added while using this Iterator, then it will be part of the Iteration.
-     * If a MetaClass replaces another constant meta class, then the Iteration might show two
-     * meta classes for the same class.
+     * If a MetaClass replaces another constant metaclass, then the Iteration might show two
+     * metaclasses for the same class.
      * <p>
-     * Note: This Iterator may not used with multiple threads.
+     * Note: This Iterator may not be used with multiple threads.
      *
-     * @return Iterator for the constant meta classes
+     * @return Iterator for the constant metaclasses
      */
-    Iterator iterator();    
-    
+    Iterator iterator();
+
     /**
      * Class used as base for the creation of MetaClass implementations.
      * The Class defaults to MetaClassImpl, if the class loading fails to
-     * find a special meta class. The name for such a meta class would be
+     * find a special metaclass. The name for such a metaclass would be
      * the class name it is created for with the prefix
      * "groovy.runtime.metaclass." By replacing the handle in the registry
      * you can have any control over the creation of what MetaClass is used
-     * for a class that you want to have. 
+     * for a class that you want to have.
      * WARNING: experimental code, likely to change soon
      */
     class MetaClassCreationHandle {
         private boolean disableCustomMetaClassLookup;
-         
+
         /**
          * Creates a metaclass implementation for theClass.
          * @param theClass The class to create a metaclass for
@@ -159,8 +161,22 @@ public interface MetaClassRegistry {
             }
         }
 
+        /**
+         * Creates the standard meta class implementation for the supplied type.
+         *
+         * @param theClass the class that requires a meta class
+         * @param registry the registry creating the meta class
+         * @return the default meta class implementation for the type
+         */
         protected MetaClass createNormalMetaClass(Class theClass,MetaClassRegistry registry) {
-            if (GeneratedClosure.class.isAssignableFrom(theClass)) {
+            if (PackedClosure.class.isAssignableFrom(theClass)) {
+                // the packed adapter family shares its dispatch machinery, so it gets its own
+                // metaclass with reflection-free call/doCall dispatch and instance-faithful
+                // introspection. Checked before GeneratedClosure: the fixed-arity members carry
+                // that marker (for class-level arity introspection) but must not fall into
+                // ClosureMetaClass, whose reflective dispatch assumes per-literal classes.
+                return new PackedClosureMetaClass(registry, theClass);
+            } else if (GeneratedClosure.class.isAssignableFrom(theClass)) {
                 return new ClosureMetaClass(registry,theClass);
             } else {
                 return new MetaClassImpl(registry, theClass);
@@ -168,17 +184,17 @@ public interface MetaClassRegistry {
         }
 
         /**
-         * Returns whether custom meta classes are disabled.
+         * Returns whether custom metaclasses are disabled.
          */
         public boolean isDisableCustomMetaClassLookup() {
             return disableCustomMetaClassLookup;
         }
 
         /**
-         * Set flag saying to disable lookup of custom meta classes
+         * Set flag saying to disable lookup of custom metaclasses
          * It's enough to call this method only once in your application for handle which was set in to registry
          * as every new handle will inherit this property
-         * @param disableCustomMetaClassLookup flag saying to disable lookup of custom meta classes
+         * @param disableCustomMetaClassLookup flag saying to disable lookup of custom metaclasses
          */
         public void setDisableCustomMetaClassLookup(boolean disableCustomMetaClassLookup) {
             this.disableCustomMetaClassLookup = disableCustomMetaClassLookup;

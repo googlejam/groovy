@@ -20,7 +20,10 @@ package groovy.cli
 
 import groovy.transform.InheritConstructors
 
+/**
+ * Indicates an error while configuring or using {@link CliBuilder}.
+ */
 @InheritConstructors
 class CliBuilderException extends RuntimeException {
-    private static final long serialVersionUID = 3996705753888714632L;
+    private static final long serialVersionUID = 3996705753888714632L
 }

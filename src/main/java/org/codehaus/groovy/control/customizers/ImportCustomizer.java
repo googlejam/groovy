@@ -23,18 +23,28 @@ import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.ModuleNode;
 import org.codehaus.groovy.classgen.GeneratorContext;
 import org.codehaus.groovy.control.CompilePhase;
+import org.codehaus.groovy.control.ModuleImportHelper;
+import org.codehaus.groovy.control.ResolveVisitor;
 import org.codehaus.groovy.control.SourceUnit;
 
+import java.lang.module.ModuleFinder;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
- * This compilation customizer allows addiing various types of imports to the compilation unit. Supports adding:
+ * This compilation customizer allows adding various types of imports to the compilation unit. Supports adding:
  * <ul>
  *     <li>standard imports via {@link #addImports(String...)} or {@link #addImport(String, String)}</li>
  *     <li>star imports via {@link #addStarImports(String...)}</li>
  *     <li>static imports via {@link #addStaticImport(String, String)} or {@link #addStaticImport(String, String, String)}</li>
  *     <li>static star imports via {@link #addStaticStars(String...)}</li>
+ *     <li>module imports via {@link #addModuleImports(String...)}</li>
  * </ul>
  *
  * @since 1.8.0
@@ -43,10 +53,20 @@ public class ImportCustomizer extends CompilationCustomizer {
 
     private final List<Import> imports = new LinkedList<>();
 
+    /**
+     * Creates an import customizer that runs during conversion.
+     */
     public ImportCustomizer() {
         super(CompilePhase.CONVERSION);
     }
 
+    /**
+     * Applies the configured imports to the module represented by the current class.
+     *
+     * @param source the source unit being customized
+     * @param context the current generator context
+     * @param classNode the class node being customized
+     */
     @Override
     public void call(final SourceUnit source, final GeneratorContext context, final ClassNode classNode) {
         ModuleNode ast = source.getAST();
@@ -68,25 +88,70 @@ public class ImportCustomizer extends CompilationCustomizer {
                 case star:
                     ast.addStarImport(anImport.star);
                     break;
+                case moduleImport:
+                    expandModuleImport(source, ast, anImport.star);
+                    break;
             }
         }
     }
 
+    private static void expandModuleImport(final SourceUnit sourceUnit, final ModuleNode moduleNode, final String moduleName) {
+        ModuleFinder finder = ModuleImportHelper.moduleFinder(sourceUnit);
+        List<String> packageNames = ModuleImportHelper.resolveModulePackages(moduleName, finder);
+        Set<String> skip = new HashSet<>();
+        Collections.addAll(skip, ResolveVisitor.DEFAULT_IMPORTS);
+        for (var in : moduleNode.getStarImports()) skip.add(in.getPackageName());
+        for (var in : moduleNode.getModuleStarImports()) skip.add(in.getPackageName());
+        for (String pn : packageNames) { String packageName = pn + ".";
+            if (skip.add(packageName)) {
+                moduleNode.addModuleStarImport(packageName, Collections.emptyList());
+            }
+        }
+    }
+
+    /**
+     * Adds a regular import with an explicit alias.
+     *
+     * @param alias the import alias
+     * @param className the fully qualified class name to import
+     * @return this customizer
+     */
     public ImportCustomizer addImport(final String alias, final String className) {
         imports.add(new Import(ImportType.regular, alias, ClassHelper.make(className)));
         return this;
     }
 
+    /**
+     * Adds a static import for a single member without an alias.
+     *
+     * @param className the fully qualified declaring class name
+     * @param fieldName the static member name
+     * @return this customizer
+     */
     public ImportCustomizer addStaticImport(final String className, final String fieldName) {
         imports.add(new Import(ImportType.staticImport, fieldName, ClassHelper.make(className), fieldName));
         return this;
     }
 
+    /**
+     * Adds a static import for a single member with an alias.
+     *
+     * @param alias the alias to expose
+     * @param className the fully qualified declaring class name
+     * @param fieldName the static member name
+     * @return this customizer
+     */
     public ImportCustomizer addStaticImport(final String alias, final String className, final String fieldName) {
         imports.add(new Import(ImportCustomizer.ImportType.staticImport, alias, ClassHelper.make(className), fieldName));
         return this;
     }
 
+    /**
+     * Adds one or more regular imports.
+     *
+     * @param classNames the fully qualified class names to import
+     * @return this customizer
+     */
     public ImportCustomizer addImports(final String... classNames) {
         for (String className : classNames) {
             addImport(className);
@@ -94,6 +159,12 @@ public class ImportCustomizer extends CompilationCustomizer {
         return this;
     }
 
+    /**
+     * Adds one or more star imports.
+     *
+     * @param packageNames the package names to import from
+     * @return this customizer
+     */
     public ImportCustomizer addStarImports(final String... packageNames) {
         for (String packageName : packageNames) {
             addStarImport(packageName);
@@ -101,11 +172,129 @@ public class ImportCustomizer extends CompilationCustomizer {
         return this;
     }
 
+    /**
+     * Adds one or more static star imports.
+     *
+     * @param classNames the fully qualified class names to import members from
+     * @return this customizer
+     */
     public ImportCustomizer addStaticStars(final String... classNames) {
         for (String className : classNames) {
             addStaticStar(className);
         }
         return this;
+    }
+
+    /**
+     * Adds module imports. Each module name (e.g. {@code "java.sql"}) is expanded
+     * at compilation time into star imports for all packages exported by that module,
+     * including packages from transitively required modules (per JEP 476).
+     *
+     * @param moduleNames the JPMS module names to import
+     * @since 6.0.0
+     */
+    public ImportCustomizer addModuleImports(final String... moduleNames) {
+        for (String moduleName : moduleNames) {
+            imports.add(new Import(ImportType.moduleImport, moduleName));
+        }
+        return this;
+    }
+
+    /**
+     * Regular imports, as fully qualified class names. An import whose alias
+     * is not the simple class name is omitted here and reported by {@link #getAliases()}.
+     * Named {@code getImportClassNames} so it does not hide the internal
+     * {@code imports} list that the customization builder reads.
+     *
+     * @return class names, never {@code null}
+     * @since 7.0.0
+     */
+    public List<String> getImportClassNames() {
+        List<String> names = new ArrayList<>();
+        for (Import imp : imports) {
+            if (imp.type == ImportType.regular && imp.classNode != null
+                    && (imp.alias == null || imp.alias.equals(imp.classNode.getNameWithoutPackage()))) {
+                names.add(imp.classNode.getName());
+            }
+        }
+        return names;
+    }
+
+    /**
+     * Star imports, as package names without a trailing dot.
+     *
+     * @return package names, never {@code null}
+     * @since 7.0.0
+     */
+    public List<String> getStarImports() {
+        List<String> names = new ArrayList<>();
+        for (Import imp : imports) {
+            if (imp.type == ImportType.star && imp.star != null) {
+                names.add(stripTrailingDot(imp.star));
+            }
+        }
+        return names;
+    }
+
+    private static String stripTrailingDot(final String name) {
+        return name.endsWith(".") ? name.substring(0, name.length() - 1) : name;
+    }
+
+    /**
+     * Static star imports, as fully qualified class names.
+     *
+     * @return class names, never {@code null}
+     * @since 7.0.0
+     */
+    public List<String> getStaticStarImports() {
+        List<String> names = new ArrayList<>();
+        for (Import imp : imports) {
+            if (imp.type == ImportType.staticStar && imp.classNode != null) {
+                names.add(imp.classNode.getName());
+            }
+        }
+        return names;
+    }
+
+    /**
+     * Aliases for regular imports. The key is the alias and the value is the class name.
+     * An import whose alias is just the simple class name is not included.
+     *
+     * @return aliases, never {@code null}
+     * @since 7.0.0
+     */
+    public Map<String, String> getAliases() {
+        Map<String, String> aliases = new LinkedHashMap<>();
+        for (Import imp : imports) {
+            if (imp.type == ImportType.regular && imp.alias != null && imp.classNode != null
+                    && !imp.alias.equals(imp.classNode.getNameWithoutPackage())) {
+                aliases.put(imp.alias, imp.classNode.getName());
+            }
+        }
+        return aliases;
+    }
+
+    /**
+     * Static imports. Each entry is {@code alias=ClassName.member}. When the
+     * alias is the member name, the alias is omitted and the entry is {@code ClassName.member}.
+     *
+     * @return static imports, never {@code null}
+     * @since 7.0.0
+     */
+    public List<String> getStaticImports() {
+        List<String> names = new ArrayList<>();
+        for (Import imp : imports) {
+            if (imp.type != ImportType.staticImport || imp.classNode == null || imp.field == null) {
+                continue;
+            }
+            String member = imp.classNode.getName() + '.' + imp.field;
+            if (imp.alias != null && !imp.alias.equals(imp.field)) {
+                names.add(imp.alias + '=' + member);
+            } else {
+                names.add(member);
+            }
+        }
+        return names;
     }
 
     //
@@ -164,6 +353,7 @@ public class ImportCustomizer extends CompilationCustomizer {
         regular,
         staticImport,
         staticStar,
-        star
+        star,
+        moduleImport
     }
 }

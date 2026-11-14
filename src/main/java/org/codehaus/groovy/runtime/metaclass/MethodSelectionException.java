@@ -23,24 +23,25 @@ import groovy.lang.MetaMethod;
 import org.codehaus.groovy.reflection.CachedConstructor;
 import org.codehaus.groovy.util.FastArray;
 
+import java.io.Serial;
 import java.lang.reflect.Modifier;
 
 /**
  * This exception is thrown if the runtime is unable to select
- * a method. This class builds the exception text when calling 
+ * a method. This class builds the exception text when calling
  * getMessage.
  * <p>
  * <b>Note:</b> This exception as for internal use only!
- * 
+ *
  * @since Groovy 1.1
  */
 public class MethodSelectionException extends GroovyRuntimeException {
 
-    private static final long serialVersionUID = 8126246630023758333L;
+    @Serial private static final long serialVersionUID = 8126246630023758333L;
     private final String methodName;
     private final FastArray methods;
     private final Class[] arguments;
-    
+
     /**
      * Creates a new MethodSelectionException.
      * @param methodName name of the method
@@ -54,6 +55,12 @@ public class MethodSelectionException extends GroovyRuntimeException {
         this.methods = methods;
     }
 
+    /**
+     * Returns a descriptive error message listing which method could not be selected
+     * and the available methods that could have been chosen.
+     *
+     * @return the error message describing the method selection failure
+     */
     @Override
     public String getMessage() {
         StringBuilder buffer = new StringBuilder();
@@ -63,8 +70,8 @@ public class MethodSelectionException extends GroovyRuntimeException {
         appendMethods(buffer);
         return buffer.toString();
     }
-    
-    
+
+
     private static void appendClassNames(StringBuilder argBuf, Class[] classes) {
         argBuf.append("(");
         for (int i = 0; i < classes.length; i++) {
@@ -77,13 +84,12 @@ public class MethodSelectionException extends GroovyRuntimeException {
         }
         argBuf.append(")");
     }
-    
+
     private void appendMethods(StringBuilder buffer) {
         for (int i = 0; i < methods.size; i++) {
             buffer.append("\n  ");
             Object methodOrConstructor = methods.get(i);
-            if (methodOrConstructor instanceof MetaMethod) {
-                MetaMethod method = (MetaMethod) methodOrConstructor;
+            if (methodOrConstructor instanceof MetaMethod method) {
                 buffer.append(Modifier.toString(method.getModifiers()));
                 buffer.append(" ").append(method.getReturnType().getName());
                 buffer.append(" ").append(method.getDeclaringClass().getName());

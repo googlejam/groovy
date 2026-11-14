@@ -21,10 +21,18 @@ package org.codehaus.groovy.control.customizers.builder;
 import groovy.util.FactoryBuilderSupport;
 
 /**
- * A helper interface for factories which require post processing of generated nodes.
+ * A helper interface for factories which require post-processing of generated nodes.
  *
  * @since 2.1.0
  */
 public interface PostCompletionFactory {
+    /**
+     * Finishes {@code node} after the builder has attached its children.
+     *
+     * @param factory the builder that produced {@code node}
+     * @param parent the node {@code node} was added to; may be null
+     * @param node the node that was just completed
+     * @return the node that should replace {@code node}, often {@code node} itself
+     */
     Object postCompleteNode(FactoryBuilderSupport factory, Object parent, Object node);
 }

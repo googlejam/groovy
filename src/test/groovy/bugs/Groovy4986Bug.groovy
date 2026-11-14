@@ -16,13 +16,14 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
 import java.sql.Timestamp
 
-class Groovy4986Bug extends GroovyTestCase {
+class Groovy4986Bug {
+    @Test
     void testPlusMinusToTimestamp() {
         def d = new Date()
         def t = new Timestamp(d.time)

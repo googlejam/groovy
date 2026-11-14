@@ -31,22 +31,41 @@ import groovy.transform.stc.POJO
 @POJO
 @CompileStatic
 class SourceRecord<T> implements Serializable {
+    private static final long serialVersionUID = -6321206176010272639L
     private static final String ALL = '*'
     private final T sourceRecord
     private final List<String> aliasList
     private Map<String, Object> sourceRecordCache
 
+    /**
+     * Creates a source record wrapper for alias-based access.
+     *
+     * @param sourceRecord the underlying source record
+     * @param aliasList the aliases available for lookup
+     */
     SourceRecord(T sourceRecord, List<String> aliasList) {
         this.sourceRecord = sourceRecord
         this.aliasList = aliasList
     }
 
+    /**
+     * Returns the value associated with the supplied alias.
+     *
+     * @param name the alias name
+     * @return the resolved value
+     */
     def getAt(String name) {
         if (null == sourceRecordCache) sourceRecordCache = new HashMap<>(4)
 
         return sourceRecordCache.computeIfAbsent(name, n -> findSourceRecordByName(n))
     }
 
+    /**
+     * Returns the value associated with the supplied alias.
+     *
+     * @param name the alias name
+     * @return the resolved value
+     */
     def get(String name) {
         return getAt(name)
     }

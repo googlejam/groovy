@@ -21,43 +21,63 @@ package org.codehaus.groovy.ast.expr;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.GroovyCodeVisitor;
 
+/**
+ * A unary plus expression, rendered as {@code +(operand)}. The type of
+ * this node is the type of the operand.
+ */
 public class UnaryPlusExpression extends Expression {
 
     private final Expression expression;
 
-    public UnaryPlusExpression(Expression expression) {
+    /**
+     * Creates a unary plus over {@code expression}.
+     *
+     * @param expression operand of the plus
+     */
+    public UnaryPlusExpression(final Expression expression) {
         this.expression = expression;
     }
 
+    /**
+     * Returns the operand of this plus.
+     *
+     * @return the operand
+     */
     public Expression getExpression() {
         return expression;
     }
 
     @Override
-    public void visit(GroovyCodeVisitor visitor) {
-        visitor.visitUnaryPlusExpression(this);
+    public String getText() {
+        return "+(" + getExpression().getText() + ")";
     }
 
     @Override
-    public Expression transformExpression(ExpressionTransformer transformer) {
-        Expression ret = new UnaryPlusExpression(transformer.transform(expression));
+    public ClassNode getType() {
+        return getExpression().getType(); // TODO: promote byte, char and short to int
+    }
+
+    /**
+     * Reports that the operand is not a dynamic expression. This
+     * implementation always returns false.
+     *
+     * @return {@code false}
+     */
+    @Deprecated
+    public boolean isDynamic() {
+        return false;
+    }
+
+    @Override
+    public Expression transformExpression(final ExpressionTransformer transformer) {
+        Expression ret = new UnaryPlusExpression(transformer.transform(getExpression()));
         ret.setSourcePosition(this);
         ret.copyNodeMetaData(this);
         return ret;
     }
 
     @Override
-    public String getText() {
-        return expression.getText();
+    public void visit(final GroovyCodeVisitor visitor) {
+        visitor.visitUnaryPlusExpression(this);
     }
-
-    @Override
-    public ClassNode getType() {
-        return expression.getType();
-    }
-
-    public boolean isDynamic() {
-        return false;
-    }
-
 }

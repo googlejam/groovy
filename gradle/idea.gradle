@@ -17,6 +17,8 @@
  *  under the License.
  */
 
+import groovy.xml.XmlParser
+
 def appendNode(node, text) {
     node.append(new XmlParser().parseText(text))
 }
@@ -50,8 +52,8 @@ if (gradle.startParameter.taskNames.any { it =~ /(?i)idea/ }) {
 
                     // jdk, language level fix
                     def pRoot = node.component.find { it.'@name' == 'ProjectRootManager' }
-                    pRoot.'@languageLevel' = 'JDK_1_8'
-                    pRoot.'@project-jdk-name' = '1.8'
+                    pRoot.'@languageLevel' = 'JDK_' + sharedConfiguration.targetJavaVersion.get()
+                    pRoot.'@project-jdk-name' = sharedConfiguration.targetJavaVersion.get()
 
                     // Use git
                     def vcsConfig = node.component.find { it.'@name' == 'VcsDirectoryMappings' }
@@ -113,7 +115,7 @@ if (gradle.startParameter.taskNames.any { it =~ /(?i)idea/ }) {
                         groovyCompilerConfig = node.component.find { it.'@name' == 'GroovyCompilerConfiguration' }
                     }
                     def excludeNode = groovyCompilerConfig.excludes[0]
-                    ['/src/test/org/codehaus/groovy/transform/DelegateTransformTest.groovy',
+                    ['/src/test/groovy/org/codehaus/groovy/transform/DelegateTransformTest.groovy',
                      '/src/test/groovy/bugs/Groovy593_Bug.groovy'].each { excludedFile ->
                         def url = "file://\$PROJECT_DIR\$$excludedFile"
                         if (!excludeNode.file.any { it.'@url' == url }) {

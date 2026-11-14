@@ -19,6 +19,7 @@
 package org.codehaus.groovy.runtime;
 
 import groovy.lang.Closure;
+import groovy.time.Timed;
 import org.codehaus.groovy.reflection.ReflectionUtils;
 import org.codehaus.groovy.runtime.typehandling.DefaultTypeTransformation;
 
@@ -30,7 +31,9 @@ import java.lang.management.ThreadMXBean;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.ResourceBundle;
 import java.util.regex.Matcher;
 import java.util.stream.Collectors;
@@ -109,10 +112,47 @@ public class DefaultGroovyStaticMethods {
      * @since 3.0.0
      */
     public static String dumpAll(Thread self){
-        ThreadMXBean threadMxBean = ManagementFactory.getThreadMXBean();
-        return Arrays.stream(threadMxBean.dumpAllThreads(true, true))
-                .map(ThreadInfo::toString)
-                .collect(Collectors.joining(""));
+        return ThreadDumps.all();
+    }
+
+    /**
+     * Keeps the {@code java.lang.management} code out of this class's own
+     * methods. A platform without that module (Android, a jlinked runtime)
+     * refuses reflection over a class whose declared methods mention its
+     * types, which would cost every static extension method at once, and a
+     * method reference is turned into such a declared method by D8. This
+     * nested class is loaded only when {@link #dumpAll} runs.
+     */
+    private static class ThreadDumps {
+        static String all() {
+            ThreadMXBean threadMxBean = ManagementFactory.getThreadMXBean();
+            return Arrays.stream(threadMxBean.dumpAllThreads(true, true))
+                    .map(ThreadInfo::toString)
+                    .collect(Collectors.joining(""));
+        }
+    }
+
+    /**
+     * Get all threads
+     *
+     * @param self placeholder variable used by Groovy categories; ignored for default static methods
+     * @return all threads
+     * @since 4.0.16
+     */
+    public static List<Thread> allThreads(Thread self) {
+        ThreadGroup rootGroup = Thread.currentThread().getThreadGroup();
+        for (ThreadGroup parentGroup; (parentGroup = rootGroup.getParent()) != null; ) {
+            rootGroup = parentGroup;
+        }
+
+        Thread[] threads = new Thread[rootGroup.activeCount()];
+        while (rootGroup.enumerate(threads, true) == threads.length) {
+            threads = new Thread[threads.length * 2];
+        }
+
+        return Arrays.stream(threads)
+                        .filter(Objects::nonNull)
+                        .collect(Collectors.toUnmodifiableList());
     }
 
     /**
@@ -138,19 +178,25 @@ public class DefaultGroovyStaticMethods {
         long start = System.currentTimeMillis();
         long rest = millis;
         long current;
-        while (rest > 0) {
-            try {
-                Thread.sleep(rest);
-                rest = 0;
-            } catch (InterruptedException e) {
-                if (closure != null) {
-                    if (DefaultTypeTransformation.castToBoolean(closure.call(e))) {
-                        return;
+        boolean interrupted = false;
+        try {
+            while (rest > 0) {
+                try {
+                    Thread.sleep(rest);
+                    rest = 0;
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                    if (closure != null) {
+                        if (DefaultTypeTransformation.castToBoolean(closure.call(e))) {
+                            return;
+                        }
                     }
+                    current = System.currentTimeMillis(); // compensate for closure's time
+                    rest = millis + start - current;
                 }
-                current = System.currentTimeMillis(); // compensate for closure's time
-                rest = millis + start - current;
             }
+        } finally {
+            if (interrupted) Thread.currentThread().interrupt();
         }
     }
 
@@ -176,6 +222,85 @@ public class DefaultGroovyStaticMethods {
      */
     public static void sleep(Object self, long milliseconds, Closure onInterrupt) {
         sleepImpl(milliseconds, onInterrupt);
+    }
+
+    /**
+     * Executes the given closure and returns the elapsed time in nanoseconds.
+     * <p>
+     * Timing uses {@link System#nanoTime()}, which is monotonic and unaffected by
+     * wall-clock adjustments. The closure is executed synchronously on the calling
+     * thread and any exception it throws propagates unchanged (the elapsed time is
+     * not reported in that case). Its result, if any, is discarded; use
+     * {@link #timed(System, Closure)} when the result is also needed.
+     * <pre class="groovyTestCase">
+     * long elapsed = System.timedNanos { (1..1_000).sum() }
+     * assert elapsed &gt;= 0
+     * </pre>
+     *
+     * @param self placeholder variable used by Groovy categories; ignored for default static methods
+     * @param code the closure to execute and time
+     * @return the elapsed time in nanoseconds
+     * @see #timedMillis(System, Closure)
+     * @see #timed(System, Closure)
+     * @since 6.0.0
+     */
+    public static long timedNanos(System self, Closure<?> code) {
+        long start = System.nanoTime();
+        code.call();
+        return System.nanoTime() - start;
+    }
+
+    /**
+     * Executes the given closure and returns the elapsed time in whole milliseconds.
+     * <p>
+     * This is a convenience for {@code timedNanos(code) / 1_000_000}. Timing uses
+     * {@link System#nanoTime()}, which is monotonic and unaffected by wall-clock
+     * adjustments. The closure is executed synchronously on the calling thread and
+     * any exception it throws propagates unchanged. Its result, if any, is
+     * discarded; use {@link #timed(System, Closure)} when the result is also needed.
+     * <pre class="groovyTestCase">
+     * long elapsed = System.timedMillis { (1..1_000).sum() }
+     * assert elapsed &gt;= 0
+     * </pre>
+     *
+     * @param self placeholder variable used by Groovy categories; ignored for default static methods
+     * @param code the closure to execute and time
+     * @return the elapsed time in milliseconds, truncated toward zero
+     * @see #timedNanos(System, Closure)
+     * @see #timed(System, Closure)
+     * @since 6.0.0
+     */
+    public static long timedMillis(System self, Closure<?> code) {
+        return timedNanos(self, code) / 1_000_000;
+    }
+
+    /**
+     * Executes the given closure and returns a {@link Timed} capturing both the
+     * closure's result and the elapsed time in nanoseconds.
+     * <p>
+     * Timing uses {@link System#nanoTime()}, which is monotonic and unaffected by
+     * wall-clock adjustments. The closure is executed synchronously on the calling
+     * thread and any exception it throws propagates unchanged.
+     * <pre class="groovyTestCase">
+     * def t = System.timed { (1..1_000).sum() }
+     * assert t.result == 500_500
+     * assert t.nanos &gt;= 0
+     * println "computed ${t.result} in ${t.millis}ms"
+     * </pre>
+     *
+     * @param self placeholder variable used by Groovy categories; ignored for default static methods
+     * @param code the closure to execute and time
+     * @param <T>  the type of the closure's result
+     * @return a {@link Timed} holding the result and the elapsed nanoseconds
+     * @see #timedNanos(System, Closure)
+     * @see #timedMillis(System, Closure)
+     * @since 6.0.0
+     */
+    public static <T> Timed<T> timed(System self, Closure<T> code) {
+        long start = System.nanoTime();
+        T result = code.call();
+        long nanos = System.nanoTime() - start;
+        return new Timed<>(result, nanos);
     }
 
     /**
@@ -212,14 +337,42 @@ public class DefaultGroovyStaticMethods {
         return ResourceBundle.getBundle(bundleName, locale, targetCL);
     }
 
+    /**
+     * Creates a directory in the default temporary-file directory, using the
+     * prefix {@code groovy-generated-tmpdir-}. {@code self} is ignored.
+     *
+     * @param self ignored; present so the method is a category on {@link File}
+     * @return the new directory
+     * @throws IOException if the directory cannot be created
+     */
     public static File createTempDir(File self) throws IOException {
         return createTempDir(self, "groovy-generated-", "tmpdir-");
     }
 
+    /**
+     * Creates a directory in the default temporary-file directory whose name
+     * starts with {@code prefix}. {@code self} is ignored.
+     *
+     * @param self ignored; present so the method is a category on {@link File}
+     * @param prefix the directory-name prefix passed to {@code Files.createTempDirectory}
+     * @return the new directory
+     * @throws IOException if the directory cannot be created
+     */
     public static File createTempDir(File self, final String prefix) throws IOException {
         return createTempDirNio(prefix);
     }
 
+    /**
+     * Creates a directory in the default temporary-file directory. {@code self}
+     * is ignored. {@code suffix} is appended to {@code prefix} because
+     * {@code Files.createTempDirectory} takes no separate suffix.
+     *
+     * @param self ignored; present so the method is a category on {@link File}
+     * @param prefix the leading part of the directory-name prefix
+     * @param suffix appended to {@code prefix} before the directory is created
+     * @return the new directory
+     * @throws IOException if the directory cannot be created
+     */
     public static File createTempDir(File self, final String prefix, final String suffix) throws IOException {
         // more secure Files api doesn't support suffix, so just append it to the prefix
         return createTempDirNio(prefix + suffix);

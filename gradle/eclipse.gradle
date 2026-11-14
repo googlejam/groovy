@@ -33,11 +33,13 @@ if (gradle.startParameter.taskNames.any { it =~ /(?i)eclipse/ }) {
         }
 
         project.tasks.eclipse.doLast {
+            if (!file("${project.projectDir}/.classpath").exists()) return
+
             file("${project.projectDir}/.settings/org.eclipse.jdt.groovy.core.prefs").with { prefs ->
                 if (!prefs.exists()) {
                     append('''\
                         eclipse.preferences.version=1
-                        groovy.compiler.level=40
+                        groovy.compiler.level=50
                         groovy.script.filters=**/*.gradle,n,**/script*.groovy,y,**/*resources/**/*.groovy,y,**/benchmarks/**/*.groovy,y
                         org.codehaus.groovy.eclipse.preferences.compiler.project=true
                         '''.stripIndent()
@@ -88,12 +90,12 @@ if (gradle.startParameter.taskNames.any { it =~ /(?i)eclipse/ }) {
 
         // tasks for cleaning the .settings files created above
 
-        task cleanEclipseGdt(type: Delete) {
+        tasks.register('cleanEclipseGdt', Delete) {
             delete "${project.projectDir}/.settings/org.eclipse.jdt.groovy.core.prefs"
         }
         cleanEclipse.dependsOn(cleanEclipseGdt)
 
-        task cleanEclipseJdtUI(type: Delete) {
+        tasks.register('cleanEclipseJdtUI', Delete) {
             delete "${project.projectDir}/.settings/org.eclipse.jdt.ui.prefs"
         }
         cleanEclipse.dependsOn(cleanEclipseJdtUI)
@@ -106,15 +108,24 @@ if (gradle.startParameter.taskNames.any { it =~ /(?i)eclipse/ }) {
     }
 
     eclipse.classpath.file.whenMerged {
-        entries.removeAll { entry -> entry.path in ['src/test/groovy', 'src/test-resources'] }
-
         entries.findAll { entry -> entry.path =~ '^build/generated/sources/antlr' }.each { entry ->
             entry.entryAttributes['ignore_optional_problems'] = 'true'
             entry.entryAttributes['optional'] = 'true'
         }
     }
 
-    sourceSets.main.java.srcDirs += "${buildDir}/generated/sources/antlr4"
+    // exclude folder 'subprojects' from root project
+    eclipse.project.resourceFilter {
+        type = 'EXCLUDE_ALL'
+        appliesTo = 'FOLDERS'
+        recursive = false
+        matcher {
+            id = 'org.eclipse.ui.ide.multiFilter'
+            arguments = '1.0-projectRelativePath-matches-true-false-subprojects'
+        }
+    }
+
+    sourceSets.main.java.srcDirs += layout.buildDirectory.dir('generated/sources/antlr4')
 
     eclipseClasspath.dependsOn(generateGrammarSource)
 }

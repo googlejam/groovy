@@ -19,29 +19,116 @@
 package org.apache.groovy.contracts.ast;
 
 import groovy.contracts.Contracted;
+import groovy.contracts.Invariant;
+import org.apache.groovy.contracts.annotations.meta.ContractElement;
 import org.apache.groovy.contracts.ast.visitor.AnnotationClosureVisitor;
 import org.apache.groovy.contracts.ast.visitor.ConfigurationSetup;
 import org.apache.groovy.contracts.ast.visitor.ContractElementVisitor;
 import org.apache.groovy.contracts.generation.CandidateChecks;
+import org.apache.groovy.contracts.util.AnnotationUtils;
 import org.codehaus.groovy.ast.ASTNode;
+import org.codehaus.groovy.ast.AnnotatedNode;
 import org.codehaus.groovy.ast.AnnotationNode;
 import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
+import org.codehaus.groovy.ast.ImportNode;
+import org.codehaus.groovy.ast.MethodNode;
 import org.codehaus.groovy.ast.ModuleNode;
+import org.codehaus.groovy.ast.expr.ClassExpression;
+import org.codehaus.groovy.ast.expr.ClosureExpression;
+import org.codehaus.groovy.ast.expr.Expression;
 import org.codehaus.groovy.control.CompilePhase;
 import org.codehaus.groovy.control.SourceUnit;
 import org.codehaus.groovy.control.io.ReaderSource;
+import org.codehaus.groovy.syntax.SyntaxException;
+import org.codehaus.groovy.transform.ASTTransformation;
 import org.codehaus.groovy.transform.GroovyASTTransformation;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Evaluates {@link org.codehaus.groovy.ast.expr.ClosureExpression} instances in as actual annotation parameters and
+ * Evaluates {@link ClosureExpression} instances in annotation parameters and
  * generates special contract closure classes from them.
  */
 @GroovyASTTransformation(phase = CompilePhase.SEMANTIC_ANALYSIS)
 public class ClosureExpressionEvaluationASTTransformation extends BaseASTTransformation {
+
+    /**
+     * {@link ASTTransformation#visit(ASTNode[], SourceUnit)}
+     */
+    @Override
+    public void visit(ASTNode[] nodes, SourceUnit unit) {
+        final ModuleNode moduleNode = unit.getAST();
+
+        promoteImportInvariantsToScriptClass(moduleNode);
+
+        ReaderSource source = getReaderSource(unit);
+        final List<ClassNode> classNodes = new ArrayList<>(moduleNode.getClasses());
+
+        rejectNonClosureConditions(unit, classNodes);
+        generateAnnotationClosureClasses(unit, source, classNodes);
+    }
+
+    /**
+     * Reports a contract annotation whose value is not a closure. The annotation type declares its value as a
+     * {@code Class}, so a class literal passes the annotation checks, but later phases would take it for the
+     * condition class generated from a closure: it was never checked, or failed compilation when the contract
+     * was inherited. A condition already replaced by its generated class, when another source unit visited
+     * this class as a supertype first, is recognised by its metadata.
+     */
+    private static void rejectNonClosureConditions(final SourceUnit unit, final List<ClassNode> classNodes) {
+        for (ClassNode classNode : classNodes) {
+            rejectNonClosureConditions(unit, classNode);
+            for (MethodNode methodNode : classNode.getMethods()) {
+                rejectNonClosureConditions(unit, methodNode);
+            }
+            for (MethodNode constructorNode : classNode.getDeclaredConstructors()) {
+                rejectNonClosureConditions(unit, constructorNode);
+            }
+        }
+    }
+
+    private static void rejectNonClosureConditions(final SourceUnit unit, final AnnotatedNode node) {
+        for (AnnotationNode annotation : AnnotationUtils.hasMetaAnnotations(node, ContractElement.class.getName())) {
+            Expression value = annotation.getMember("value");
+            if (value == null || value instanceof ClosureExpression
+                    || value.getNodeMetaData(AnnotationClosureVisitor.META_DATA_ORIGINAL_TRY_CATCH_BLOCK) != null) continue;
+            String name = annotation.getClassNode().getNameWithoutPackage();
+            unit.addError(new SyntaxException(
+                    "@" + name + " requires a closure containing the condition, e.g. @" + name + "({ ... }); found "
+                            + (value instanceof ClassExpression ? "a class " : "") + value.getText(),
+                    annotation.getLineNumber(), annotation.getColumnNumber()));
+        }
+    }
+
+    /**
+     * Promotes {@link Invariant} annotations found on import statements to the script body class,
+     * allowing {@code @Invariant} on an import to act as a class invariant for the script.
+     */
+    private static void promoteImportInvariantsToScriptClass(final ModuleNode moduleNode) {
+        final String invariantName = Invariant.class.getName();
+        final List<ImportNode> allImports = new ArrayList<>();
+        allImports.addAll(moduleNode.getImports());
+        allImports.addAll(moduleNode.getStarImports());
+        allImports.addAll(moduleNode.getStaticImports().values());
+        allImports.addAll(moduleNode.getStaticStarImports().values());
+
+        ClassNode scriptClass = null;
+        for (ImportNode importNode : allImports) {
+            for (AnnotationNode annotation : importNode.getAnnotations()) {
+                if (invariantName.equals(annotation.getClassNode().getName())) {
+                    if (scriptClass == null) {
+                        scriptClass = moduleNode.getClasses().stream()
+                                .filter(ClassNode::isScriptBody)
+                                .findFirst().orElse(null);
+                        if (scriptClass == null) return;
+                    }
+                    scriptClass.addAnnotation(annotation);
+                }
+            }
+        }
+    }
 
     private void generateAnnotationClosureClasses(SourceUnit unit, ReaderSource source, List<ClassNode> classNodes) {
         final AnnotationClosureVisitor annotationClosureVisitor = new AnnotationClosureVisitor(unit, source);
@@ -49,31 +136,19 @@ public class ClosureExpressionEvaluationASTTransformation extends BaseASTTransfo
         for (final ClassNode classNode : classNodes) {
             annotationClosureVisitor.visitClass(classNode);
 
-            if (!CandidateChecks.isContractsCandidate(classNode)) continue;
+            if (!CandidateChecks.isContractsCandidate(classNode) && !CandidateChecks.isInterfaceContractsCandidate(classNode))
+                continue;
 
             final ContractElementVisitor contractElementVisitor = new ContractElementVisitor(unit, source);
             contractElementVisitor.visitClass(classNode);
-
             if (!contractElementVisitor.isFoundContractElement()) continue;
 
             annotationClosureVisitor.visitClass(classNode);
             markClassNodeAsContracted(classNode);
+            if (classNode.isInterface()) continue;
 
             new ConfigurationSetup().init(classNode);
         }
-    }
-
-    /**
-     * {@link org.codehaus.groovy.transform.ASTTransformation#visit(org.codehaus.groovy.ast.ASTNode[], org.codehaus.groovy.control.SourceUnit)}
-     */
-    @Override
-    public void visit(ASTNode[] nodes, SourceUnit unit) {
-        final ModuleNode moduleNode = unit.getAST();
-
-        ReaderSource source = getReaderSource(unit);
-        final List<ClassNode> classNodes = new ArrayList<ClassNode>(moduleNode.getClasses());
-
-        generateAnnotationClosureClasses(unit, source, classNodes);
     }
 
     private void markClassNodeAsContracted(final ClassNode classNode) {

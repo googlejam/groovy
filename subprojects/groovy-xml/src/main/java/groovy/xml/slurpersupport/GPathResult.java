@@ -49,10 +49,25 @@ import java.util.Stack;
  * Base class for representing lazy evaluated GPath expressions.
  */
 public abstract class GPathResult extends GroovyObjectSupport implements Writable, Buildable, Iterable {
+    /**
+     * Previous step in the lazy GPath chain, used for expression backtracking.
+     */
     protected final GPathResult parent;
+    /**
+     * Node or attribute name selected by this result.
+     */
     protected final String name;
+    /**
+     * Namespace prefix constraint applied to this result, if any.
+     */
     protected final String namespacePrefix;
+    /**
+     * Namespace declarations added while traversing or rebuilding this result.
+     */
     protected final Map namespaceMap = new HashMap();
+    /**
+     * Namespace prefix hints captured while parsing for stable QName rendering.
+     */
     protected final Map<String, String> namespaceTagHints;
 
     /**
@@ -88,18 +103,58 @@ public abstract class GPathResult extends GroovyObjectSupport implements Writabl
      */
     @Override
     public void setMetaClass(final MetaClass metaClass) {
-        final MetaClass newMetaClass = new DelegatingMetaClass(metaClass) {
+        super.setMetaClass(new DelegatingMetaClass(metaClass) {
+            /**
+             * Reads the GPath property named {@code @} plus {@code attribute}.
+             *
+             * @param object the receiver, ignored in favour of this GPath result
+             * @param attribute the attribute name
+             * @return the attribute value
+             */
             @Override
             public Object getAttribute(final Object object, final String attribute) {
                 return GPathResult.this.getProperty("@" + attribute);
             }
+            /**
+             * Delegates to {@link #getAttribute(Object, String)}, ignoring the caller and the super flag.
+             *
+             * @param sender the caller, ignored
+             * @param object the receiver, ignored
+             * @param attribute the attribute name
+             * @param isSuper whether the lookup is for a super class, ignored
+             * @return the attribute value
+             */
+            @Override
+            public Object getAttribute(final Class sender, final Object object, final String attribute, final boolean isSuper) {
+                return this.getAttribute(object, attribute);
+            }
 
+            /**
+             * Writes the GPath property named {@code @} plus {@code attribute}.
+             *
+             * @param object the receiver, ignored in favour of this GPath result
+             * @param attribute the attribute name
+             * @param newValue the value to store
+             */
             @Override
             public void setAttribute(final Object object, final String attribute, final Object newValue) {
                 GPathResult.this.setProperty("@" + attribute, newValue);
             }
-        };
-        super.setMetaClass(newMetaClass);
+            /**
+             * Delegates to {@link #setAttribute(Object, String, Object)}, ignoring the caller and the super flags.
+             *
+             * @param sender the caller, ignored
+             * @param object the receiver, ignored
+             * @param attribute the attribute name
+             * @param newValue the value to store
+             * @param isSuper whether the write is for a super class, ignored
+             * @param isInner whether the write is for an inner class, ignored
+             */
+            @Override
+            public void setAttribute(final Class sender, final Object object, final String attribute, final Object newValue, final boolean isSuper, final boolean isInner) {
+                this.setAttribute(object, attribute, newValue);
+            }
+        });
     }
 
     /**
@@ -194,6 +249,12 @@ public abstract class GPathResult extends GroovyObjectSupport implements Writabl
      */
     public Object plus(final Object newValue) {
         this.replaceNode(new Closure(this) {
+            /**
+             * Yields the original builder arguments, then yields {@code newValue}.
+             * The {@code mkp} property is read before each yield so the markup builder accepts it.
+             *
+             * @param args the content the builder was already yielding
+             */
             public void doCall(Object[] args) {
                 final GroovyObject delegate = (GroovyObject) getDelegate();
                 delegate.getProperty("mkp");
@@ -206,17 +267,38 @@ public abstract class GPathResult extends GroovyObjectSupport implements Writabl
         return this;
     }
 
-    // GROOVY-9852: so that XmlSlurper plus (shorthand for replaceNode)
-    // is preferred ahead of the DGM plus(Iterable, Iterable) method
-    // since GPathResult is Iterable
+    /**
+     * Delegates to {@link #plus(Object)} while preserving XmlSlurper replacement semantics for closures.
+     *
+     * @param newValue closure supplying replacement markup
+     * @return {@code this}
+     */
     public Object plus(final Closure newValue) {
+        // GROOVY-9852: so that XmlSlurper plus (shorthand for replaceNode)
+        // is preferred ahead of the DGM plus(Iterable, Iterable) method
+        // since GPathResult is Iterable
         return plus((Object) newValue);
     }
 
+    /**
+     * Lazily replaces the nodes represented by this result.
+     *
+     * @param newValue closure generating the replacement content
+     */
     protected abstract void replaceNode(Closure newValue);
 
+    /**
+     * Lazily replaces the body content represented by this result.
+     *
+     * @param newValue replacement body content
+     */
     protected abstract void replaceBody(Object newValue);
-    
+
+    /**
+     * Lazily appends content to the nodes represented by this result.
+     *
+     * @param newValue content to append
+     */
     protected abstract void appendNode(Object newValue);
 
     /**
@@ -284,7 +366,7 @@ public abstract class GPathResult extends GroovyObjectSupport implements Writabl
     }
 
     /**
-     * Converts the text of this GPathResult to a Integer object.
+     * Converts the text of this GPathResult to an Integer object.
      *
      * @return the GPathResult, converted to a <code>Integer</code>
      */
@@ -357,7 +439,7 @@ public abstract class GPathResult extends GroovyObjectSupport implements Writabl
 
     private boolean textIsEmptyOrNull() {
         String t = text();
-        return null == t || 0 == t.length();
+        return null == t || t.isEmpty();
     }
 
     /**
@@ -399,11 +481,13 @@ public abstract class GPathResult extends GroovyObjectSupport implements Writabl
         return this;
     }
 
+    /** {@inheritDoc} */
     @Override
     public int hashCode() {
         return text().hashCode();
     }
 
+    /** {@inheritDoc} */
     @Override
     public boolean equals(Object obj) {
         if (null == obj) {
@@ -415,7 +499,7 @@ public abstract class GPathResult extends GroovyObjectSupport implements Writabl
 
     /**
      * Supports the subscript operator for a GPathResult.
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * import groovy.xml.slurpersupport.*
      * import groovy.xml.XmlSlurper
      * def text = """
@@ -459,7 +543,7 @@ public abstract class GPathResult extends GroovyObjectSupport implements Writabl
 
     /**
      * Supports the range subscript operator for a GPathResult.
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * import groovy.xml.slurpersupport.*
      * import groovy.xml.XmlSlurper
      * def text = """
@@ -506,11 +590,21 @@ public abstract class GPathResult extends GroovyObjectSupport implements Writabl
             private Iterator iter = iterator();
             private GPathResult next = getNextByDepth();
 
+            /**
+             * Returns whether a depth-first node has already been prefetched.
+             *
+             * @return {@code true} when {@code next} is non-null
+             */
             @Override
             public boolean hasNext() {
                 return this.next != null;
             }
 
+            /**
+             * Returns the prefetched node and prefetches the next depth-first node.
+             *
+             * @return the node that was pending
+             */
             @Override
             public Object next() {
                 try {
@@ -520,6 +614,11 @@ public abstract class GPathResult extends GroovyObjectSupport implements Writabl
                 }
             }
 
+            /**
+             * Refuses removal. Depth-first traversal does not modify the tree.
+             *
+             * Throws {@code UnsupportedOperationException}.
+             */
             @Override
             public void remove() {
                 throw new UnsupportedOperationException();
@@ -556,11 +655,21 @@ public abstract class GPathResult extends GroovyObjectSupport implements Writabl
             private Iterator iter = iterator();
             private GPathResult next = getNextByBreadth();
 
+            /**
+             * Returns whether a breadth-first node has already been prefetched.
+             *
+             * @return {@code true} when {@code next} is non-null
+             */
             @Override
             public boolean hasNext() {
                 return this.next != null;
             }
 
+            /**
+             * Returns the prefetched node and prefetches the next breadth-first node.
+             *
+             * @return the node that was pending
+             */
             @Override
             public Object next() {
                 try {
@@ -570,6 +679,11 @@ public abstract class GPathResult extends GroovyObjectSupport implements Writabl
                 }
             }
 
+            /**
+             * Refuses removal. Breadth-first traversal does not modify the tree.
+             *
+             * Throws {@code UnsupportedOperationException}.
+             */
             @Override
             public void remove() {
                 throw new UnsupportedOperationException();
@@ -638,6 +752,13 @@ public abstract class GPathResult extends GroovyObjectSupport implements Writabl
      */
     public Closure getBody() {
         return new Closure(this.parent,this) {
+            /**
+             * Yields the children of the first node in this result.
+             * Element children are yielded as {@link NodeChild} values; other children are yielded as themselves.
+             * The {@code mkp} property is read before each yield.
+             *
+             * @param args ignored builder arguments
+             */
             public void doCall(Object[] args) {
                 final GroovyObject delegate = (GroovyObject)getDelegate();
                 final GPathResult thisObject = (GPathResult)getThisObject();
@@ -652,7 +773,7 @@ public abstract class GPathResult extends GroovyObjectSupport implements Writabl
                     } else {
                         delegate.invokeMethod("yield", new Object[]{child});
                     }
-                }                
+                }
             }
         };
     }
@@ -682,6 +803,7 @@ public abstract class GPathResult extends GroovyObjectSupport implements Writabl
      */
     public abstract Iterator childNodes();
 
+    /** {@inheritDoc} */
     @Override
     public abstract Iterator iterator();
 
@@ -701,17 +823,38 @@ public abstract class GPathResult extends GroovyObjectSupport implements Writabl
      */
     public abstract GPathResult findAll(Closure closure);
 
+    /**
+     * Returns the raw node iterator backing this lazy result.
+     *
+     * @return the underlying node iterator
+     */
     public abstract Iterator nodeIterator();
 
+    /**
+     * Creates a single-element iterator used by scalar GPath results.
+     *
+     * @param obj the sole element to expose
+     * @return an iterator yielding {@code obj} once
+     */
     protected Iterator createIterator(final Object obj) {
         return new Iterator() {
             private boolean hasNext = true;
 
+            /**
+             * Returns whether {@code obj} has not yet been returned.
+             *
+             * @return {@code true} until {@link #next()} has been called
+             */
             @Override
             public boolean hasNext() {
                 return this.hasNext;
             }
 
+            /**
+             * Returns {@code obj} on the first call and null afterwards.
+             *
+             * @return {@code obj} once, then null
+             */
             @Override
             public Object next() {
                 try {
@@ -721,6 +864,11 @@ public abstract class GPathResult extends GroovyObjectSupport implements Writabl
                 }
             }
 
+            /**
+             * Refuses removal. The single-element iterator does not modify the result.
+             *
+             * Throws {@code UnsupportedOperationException}.
+             */
             @Override
             public void remove() {
                 throw new UnsupportedOperationException();

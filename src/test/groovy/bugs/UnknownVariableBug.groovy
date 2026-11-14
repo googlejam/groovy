@@ -16,13 +16,17 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.shouldFail
+
 
 /**
  */
-class UnknownVariableBug extends GroovyTestCase {
+class UnknownVariableBug {
+    @Test
     void testBug() {
         def shell = new GroovyShell()
         shouldFail {

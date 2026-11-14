@@ -21,14 +21,12 @@ plugins {
 }
 
 dependencies {
-    api rootProject // Template uses Writable...
-    implementation project(':groovy-xml')
-    testImplementation project(':groovy-test')
+    api project(':') // Template uses Writable...
+    implementation projects.groovyXml
+    testImplementation projects.groovyTest
+    testImplementation projects.groovyTestJunit6
     testImplementation ("org.spockframework:spock-core:${versions.spock}") {
-        exclude group: 'org.codehaus.groovy'
-    }
-    testRuntimeOnly("org.junit.vintage:junit-vintage-engine:${versions.junit5}") {
-        because 'for JUnit 3/4 tests as well as JUnit 5'
+        exclude group: 'org.apache.groovy'
     }
 }
 

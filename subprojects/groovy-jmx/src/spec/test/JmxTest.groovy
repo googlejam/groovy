@@ -17,9 +17,11 @@
  *  under the License.
  */
 import gls.CompilableTestSupport
+import org.junit.jupiter.api.Test
 
-class JmxTest extends CompilableTestSupport {
+final class JmxTest extends CompilableTestSupport {
 
+    @Test
     void testIntroduction() {
         shouldCompile '''
             import groovy.jmx.GroovyMBean
@@ -28,7 +30,7 @@ class JmxTest extends CompilableTestSupport {
 
             MBeanServerConnection server = null
             String beanName = 'Person'
-            
+
             // tag::introduction_example[]
             println server.getAttribute(beanName, 'Age')
             server.setAttribute(beanName, new Attribute('Name', 'New name'))
@@ -46,6 +48,7 @@ class JmxTest extends CompilableTestSupport {
         '''
     }
 
+    @Test
     void testTheJvm() {
         shouldCompile '''
             // tag::the_jvm[]
@@ -126,9 +129,10 @@ class JmxTest extends CompilableTestSupport {
                 }
             }
             // end::the_jvm[]
-        '''   
+        '''
     }
 
+    @Test
     void testTomcat() {
         shouldCompile '''
             @Grab('org.jfree:jfreechart:1.5.0')
@@ -177,9 +181,10 @@ class JmxTest extends CompilableTestSupport {
             frame.show()
             chart.draw(swing.canvas.graphics, swing.canvas.bounds)
             // end::tomcat[]
-        '''   
+        '''
     }
 
+    @Test
     void testWebLogic() {
         shouldCompile '''
             // tag::weblogic[]
@@ -207,9 +212,10 @@ class JmxTest extends CompilableTestSupport {
                 println "JMS Destination: name=$jms.Name, type=$jms.DestinationType, messages=$jms.MessagesReceivedCount"
             }
             // end::weblogic[]
-        '''   
+        '''
     }
 
+    @Test
     void testSpringClasses() {
         shouldCompile '''
             @Grab('org.springframework:spring-context:5.2.8.RELEASE')
@@ -258,9 +264,10 @@ class JmxTest extends CompilableTestSupport {
                 }
             }
             // end::spring_classes[]
-        '''   
+        '''
     }
 
+    @Test
     void testSpringUsage() {
         shouldCompile '''
             @Grab('org.springframework:spring-context:5.2.8.RELEASE')
@@ -295,9 +302,10 @@ class JmxTest extends CompilableTestSupport {
             sleep 2000
             assert '20' == calc.addStrings('1f', '1')
             // end::spring_usage[]
-        '''   
+        '''
     }
 
+    @Test
     void testTroubleshooting() {
         shouldCompile '''
             import javax.management.remote.*
@@ -312,9 +320,10 @@ class JmxTest extends CompilableTestSupport {
             }
             def connector = JMXConnectorFactory.connect(new JMXServiceURL(serverUrl), jmxEnv)
             // end::troubleshooting[]
-        '''   
+        '''
     }
 
+    @Test
     void testJmxBuilder() {
         shouldCompile '''
             @Grab('org.codehaus.groovy:groovy-jmx:2.1.6')
@@ -381,7 +390,7 @@ class JmxTest extends CompilableTestSupport {
             }
             // end::request_controller[]
 
-            if (true) {            
+            if (true) {
                 // tag::implicit_export[]
                 jmx.export {
                     bean(new RequestController(resource: "Hello World"))
@@ -566,7 +575,7 @@ class JmxTest extends CompilableTestSupport {
                     attributes: "*"
                 ]
             }
-            
+
             // export
             jmx.export(
                 bean(new RequestControllerGroovy())

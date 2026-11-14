@@ -21,28 +21,34 @@ plugins {
 }
 
 dependencies {
-    api rootProject // AstBrowser has methods with Closure params...
+    api project(':') // AstBrowser has methods with Closure params...
+    api projects.groovySwing // SwingBuilder is used in public API
+    implementation "com.formdev:flatlaf:${versions.flatLaf}"
+    implementation "com.formdev:flatlaf-extras:${versions.flatLaf}"
     implementation "com.github.javaparser:javaparser-core:${versions.javaParser}"
     implementation "org.ow2.asm:asm-util:${versions.asm}"
-    implementation "org.abego.treelayout:org.abego.treelayout.core:${versions.treelayout}"
-    implementation project(':groovy-swing')
-    implementation project(':groovy-templates')
-    implementation ("org.apache.ivy:ivy:${versions.ivy}") {
-        transitive = false
-    }
-    testImplementation project(':groovy-test')
-    testImplementation testFixtures(project(':groovy-swing'))
+    implementation projects.groovyGrapeIvy
+    implementation projects.groovyTemplates
+    // Editor language services. implementation, not api: the engine stays
+    // internal, and LSP4J is not part of this module's published API.
+    implementation projects.groovyLsp
+    runtimeOnly "org.abego.treelayout:org.abego.treelayout.core:${versions.treelayout}"
+    testImplementation projects.groovyTest
+    testImplementation testFixtures(projects.groovySwing)
 
     groovyCompilerClasspath(project(":")) {
         capabilities {
             requireCapability 'org.apache.groovy:groovy-grapes'
         }
     }
+    testRuntimeOnly ("org.apache.ivy:ivy:${versions.ivy}") {
+        transitive = false
+    }
 }
 
 tasks.register("console", JavaExec) {
     jvmArgs += ["-Dgroovy.attach.groovydoc=true"]
 
-    main = 'groovy.console.ui.Console'
+    mainClass = 'groovy.console.ui.Console'
     classpath = sourceSets.main.runtimeClasspath
 }

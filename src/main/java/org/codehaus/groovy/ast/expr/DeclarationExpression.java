@@ -19,10 +19,13 @@
 package org.codehaus.groovy.ast.expr;
 
 import org.codehaus.groovy.GroovyBugError;
+import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.GroovyCodeVisitor;
 import org.codehaus.groovy.syntax.Token;
 
 import static org.apache.groovy.ast.tools.ClassNodeUtils.formatTypeName;
+import static org.codehaus.groovy.ast.MultipleAssignmentMetadata.MAP_KEY;
+import static org.codehaus.groovy.ast.MultipleAssignmentMetadata.REST_BINDING;
 
 /**
  * Represents one or more local variables. Typically it is a single local variable
@@ -42,45 +45,53 @@ import static org.apache.groovy.ast.tools.ClassNodeUtils.formatTypeName;
  * you can use the method "<code>TupleExpression getTupleExpression()</code>" method.
  * Calling either of these expression getters when the "isMultipleAssignment" condition
  * is not appropriate is unsafe and will result in a <code>ClassCastException</code>.
+ * <p>
+ * JEP&nbsp;394 type patterns reuse this node as the right-hand side of
+ * {@code instanceof}: {@code e instanceof String s} is modelled as an
+ * {@code instanceof} {@link BinaryExpression} whose RHS is a
+ * {@code DeclarationExpression} with an {@link EmptyExpression} initializer.
+ * The pattern variable's scope is flow-sensitive (see GROOVY-12242).
  */
 public class DeclarationExpression extends BinaryExpression {
 
     /**
-     * Creates a DeclarationExpression for VariableExpressions like "def x" or "String y = 'foo'".
+     * Creates a declaration like "def v" or "int w = 0".
+     *
      * @param left
      *      the left hand side of a variable declaration
      * @param operation
-     *      the operation, typically an assignment operator
+     *      the operation, assumed to be assignment operator
      * @param right
-     *      the right hand side of a declaration
+     *      the right hand side of a declaration; {@link EmptyExpression} for no initial value
      */
-    public DeclarationExpression(VariableExpression left, Token operation, Expression right) {
-        super(left,operation,right);
+    public DeclarationExpression(final VariableExpression left, final Token operation, final Expression right) {
+        this((Expression) left, operation, right);
     }
 
     /**
-     * Creates a DeclarationExpression for Expressions like "def (x, y) = [1, 2]"
+     * Creates a declaration like "def v" or "int w = 0" or "def (x, y) = [1, 2]".
+     *
      * @param left
-     *      the left hand side of a declaration. Must be either a VariableExpression or
-     *      a TupleExpression with at least one element.
+     *      the left hand side of a declaration -- either a {@link VariableExpression} or
+     *      a {@link TupleExpression} with at least one element
      * @param operation
-     *       the operation, typically an assignment operator
+     *       the operation, assumed to be assignment operator
      * @param right
      *       the right hand side of a declaration
      */
-    public DeclarationExpression(Expression left, Token operation, Expression right) {
-        super(left,operation,right);
+    public DeclarationExpression(final Expression left, final Token operation, final Expression right) {
+        super(left, Token.newSymbol("=", operation.getStartLine(), operation.getStartColumn()), right);
         check(left);
     }
 
-    private static void check(Expression left) {
+    private static void check(final Expression left) {
         if (left instanceof VariableExpression) {
-            //nothing
-        } else if (left instanceof TupleExpression) {
-            TupleExpression tuple = (TupleExpression) left;
-            if (tuple.getExpressions().isEmpty()) throw new GroovyBugError("one element required for left side");
+            // all good
+        } else if (left instanceof TupleExpression tuple) {
+            if (tuple.getExpressions().isEmpty())
+                throw new GroovyBugError("one element required for left side");
         } else {
-            throw new GroovyBugError("illegal left expression for declaration: "+left);
+            throw new GroovyBugError("illegal left expression for declaration: " + left);
         }
     }
 
@@ -127,6 +138,16 @@ public class DeclarationExpression extends BinaryExpression {
                     : null;
     }
 
+    /**
+     * Returns the type of the declared variable (or of the tuple for a multiple
+     * assignment). For a JEP&nbsp;394 pattern used as the RHS of {@code instanceof},
+     * this is the pattern type {@code T} in {@code e instanceof T t}.
+     */
+    @Override
+    public ClassNode getType() {
+        return (isMultipleAssignmentDeclaration() ? getTupleExpression() : getVariableExpression()).getType();
+    }
+
     @Override
     public String getText() {
         StringBuilder text = new StringBuilder();
@@ -136,26 +157,39 @@ public class DeclarationExpression extends BinaryExpression {
             if (v.isDynamicTyped()) {
                 text.append("def");
             } else {
-                text.append(formatTypeName(v.getType()));
+                text.append(formatTypeName(v.getOriginType()));
             }
-            text.append(' ').append(v.getText());
+            text.append(' ').append(v.getName());
         } else {
             TupleExpression t = getTupleExpression();
             text.append("def (");
             for (Expression e : t.getExpressions()) {
-                if (e instanceof VariableExpression) {
-                    VariableExpression v = (VariableExpression) e;
-                    if (!v.isDynamicTyped()) {
-                        text.append(formatTypeName(v.getType())).append(' ');
+                if (e instanceof VariableExpression v) {
+                    if (v.getNodeMetaData(MAP_KEY) instanceof String label) {
+                        text.append(label).append(": ");
                     }
+                    if (!v.isDynamicTyped()) {
+                        text.append(formatTypeName(v.getOriginType())).append(' ');
+                    }
+                    if (Boolean.TRUE.equals(v.getNodeMetaData(REST_BINDING))) {
+                        text.append('*');
+                    }
+                    text.append(v.getName());
+                } else {
+                    text.append(e.getText());
                 }
-                text.append(e.getText()).append(", ");
+                text.append(", ");
             }
             text.setLength(text.length() - 2);
             text.append(')');
         }
-        text.append(' ').append(getOperation().getText());
-        text.append(' ').append(getRightExpression().getText());
+
+        if (getRightExpression() instanceof EmptyExpression) {
+            text.append(';');
+        } else {
+            text.append(' ').append(getOperation().getText());
+            text.append(' ').append(getRightExpression().getText());
+        }
 
         return text.toString();
     }

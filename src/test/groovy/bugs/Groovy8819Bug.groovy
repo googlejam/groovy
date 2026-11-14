@@ -16,42 +16,46 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy8819Bug extends GroovyTestCase {
+import static groovy.test.GroovyAssert.assertScript
+
+class Groovy8819Bug {
+    @Test
     void testAccessStaticFieldInThisConstructor() {
         assertScript '''
-            class Parent { 
-                static final String DEFAULT = 'default' 
+            class Parent {
+                static final String DEFAULT = 'default'
             }
             class Child extends Parent {
                 String value
                 Child() { this(DEFAULT) }
                 Child(String value) { this.value = value }
             }
-            
+
             assert 'default' == new Child().value
         '''
     }
 
+    @Test
     void testAccessStaticFieldInThisConstructorCS() {
         assertScript '''
             import groovy.transform.CompileStatic
 
             @CompileStatic
-            class Parent { 
-                static final String DEFAULT = 'default' 
+            class Parent {
+                static final String DEFAULT = 'default'
             }
-            
+
             @CompileStatic
             class Child extends Parent {
                 String value
                 Child() { this(DEFAULT) }
                 Child(String value) { this.value = value }
             }
-            
+
             assert 'default' == new Child().value
         '''
     }

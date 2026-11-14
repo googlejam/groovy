@@ -16,23 +16,26 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
 import gls.CompilableTestSupport
+import org.junit.jupiter.api.Test
 
-class Groovy4081Bug extends CompilableTestSupport {
-    public void testEnumConstructorCallFromOutsideEnum() {
+final class Groovy4081Bug extends CompilableTestSupport {
+
+    @Test
+    void testEnumConstructorCallFromOutsideEnum() {
         shouldNotCompile """
             enum Alphabet {
                 A(1), Z(26)
                 private int m_pos;
-            
+
                 public Alphabet( int pos ) {
                     m_pos = pos;
                 }
             }
-            
+
             new Alphabet(2)
         """
-    }    
+    }
 }

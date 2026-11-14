@@ -28,6 +28,7 @@ import org.codehaus.groovy.syntax.CSTNode;
 import org.codehaus.groovy.syntax.SyntaxException;
 
 import java.io.PrintWriter;
+import java.io.Serial;
 import java.io.Serializable;
 import java.util.LinkedList;
 import java.util.List;
@@ -36,10 +37,20 @@ import java.util.List;
  * A base class for collecting messages and errors during processing.
  * Each CompilationUnit should have an ErrorCollector, and the SourceUnits
  * should share their ErrorCollector with the CompilationUnit.
+ * <p>
+ * Messages may be recorded from several threads, as happens when the sources
+ * of a unit are parsed in parallel, so recording and the indexed accessors
+ * are synchronized on the collector itself. The lists returned by
+ * {@link #getErrors()} and {@link #getWarnings()} are the live lists and
+ * should be read once processing has finished.
+ * <p>
+ * A subclass that reads or modifies {@link #errors} or {@link #warnings}
+ * directly must hold the collector's monitor while doing so, either by
+ * synchronizing on {@code this} or by going through the synchronized methods.
  */
 public class ErrorCollector implements Serializable {
 
-    private static final long serialVersionUID = 2844774170905056755L;
+    @Serial private static final long serialVersionUID = 2844774170905056755L;
 
     /**
      * ErrorMessages collected during processing
@@ -63,7 +74,12 @@ public class ErrorCollector implements Serializable {
         this.configuration = configuration;
     }
 
-    public void addCollectorContents(final ErrorCollector that) {
+    /**
+     * Merges the recorded warnings and errors from another collector into this one.
+     *
+     * @param that the collector whose contents should be appended
+     */
+    public synchronized void addCollectorContents(final ErrorCollector that) {
         if (that.errors != null) {
             if (this.errors == null) {
                 this.errors = that.errors;
@@ -80,7 +96,24 @@ public class ErrorCollector implements Serializable {
         }
     }
 
-    public void addErrorAndContinue(final SyntaxException error, final SourceUnit source) throws CompilationFailedException {
+    /**
+     * Adds a syntax error for the supplied AST node without failing immediately.
+     *
+     * @param error the error message
+     * @param node the offending AST node
+     * @param source the source unit containing the node
+     */
+    public void addErrorAndContinue(final String error, final ASTNode node, final SourceUnit source) {
+        addErrorAndContinue(Message.create(new SyntaxException(error, node), source));
+    }
+
+    /**
+     * Adds a syntax error without failing immediately.
+     *
+     * @param error the syntax error
+     * @param source the source unit containing the error
+     */
+    public void addErrorAndContinue(final SyntaxException error, final SourceUnit source) {
         addErrorAndContinue(Message.create(error, source));
     }
 
@@ -88,29 +121,29 @@ public class ErrorCollector implements Serializable {
      * Adds an error to the message set, but does not cause a failure. The message is not required to have a source
      * line and column specified, but it is best practice to try and include that information.
      */
-    public void addErrorAndContinue(final Message message) {
+    public synchronized void addErrorAndContinue(final Message message) {
         if (errors == null) {
             errors = new LinkedList<>();
         }
         errors.add(message);
     }
 
-    public void addErrorAndContinue(String error, ASTNode node, SourceUnit source) {
-        addErrorAndContinue(new SyntaxErrorMessage(
-                new SyntaxException(error,
-                        node.getLineNumber(), node.getColumnNumber(), node.getLastLineNumber(), node.getLastColumnNumber()),
-                source));
-    }
-
     /**
      * Adds a non-fatal error to the message set, which may cause a failure if the error threshold is exceeded.
      * The message is not required to have a source line and column specified, but it is best practice to try
      * and include that information.
+     * <p>
+     * A {@link CompilerConfiguration#getTolerance() tolerance} of zero or less means unlimited:
+     * every error is collected and the threshold never triggers a failure (GROOVY-12306).
      */
     public void addError(final Message message) throws CompilationFailedException {
-        addErrorAndContinue(message);
-
-        if (errors != null && errors.size() >= configuration.getTolerance()) {
+        int tolerance = configuration.getTolerance();
+        boolean exceeded;
+        synchronized (this) {
+            addErrorAndContinue(message);
+            exceeded = tolerance > 0 && errors != null && errors.size() >= tolerance;
+        }
+        if (exceeded) {
             failIfErrors();
         }
     }
@@ -120,7 +153,7 @@ public class ErrorCollector implements Serializable {
      * The message is not required to have a source line and column specified, but it is best practice to try
      * and include that information.
      * @param fatal
-     *      if true then then processing will stop
+     *      if true then processing will stop
      */
     public void addError(final Message message, final boolean fatal) throws CompilationFailedException {
         if (fatal) {
@@ -130,14 +163,36 @@ public class ErrorCollector implements Serializable {
         }
     }
 
+    /**
+     * Adds a syntax error and fails if it is marked fatal or exceeds tolerance.
+     *
+     * @param error the syntax error
+     * @param source the source unit containing the error
+     * @throws CompilationFailedException if compilation must stop
+     */
     public void addError(final SyntaxException error, final SourceUnit source) throws CompilationFailedException {
         addError(Message.create(error, source), error.isFatal());
     }
 
+    /**
+     * Adds a source-located error message.
+     *
+     * @param error the error text
+     * @param context the CST node describing the source location
+     * @param source the source unit containing the error
+     * @throws CompilationFailedException if compilation must stop
+     */
     public void addError(final String error, final CSTNode context, final SourceUnit source) throws CompilationFailedException {
         addError(new LocatedMessage(error, context, source));
     }
 
+    /**
+     * Adds an exception-based error for the supplied source unit and then fails.
+     *
+     * @param exception the exception to report
+     * @param source the source unit being processed
+     * @throws CompilationFailedException if compilation must stop
+     */
     public void addException(final Exception exception, final SourceUnit source) throws CompilationFailedException {
         addError(new ExceptionMessage(exception, configuration.getDebug(), source));
         failIfErrors();
@@ -154,7 +209,7 @@ public class ErrorCollector implements Serializable {
     /**
      * Adds a warning to the message set.
      */
-    public void addWarning(final WarningMessage message) {
+    public synchronized void addWarning(final WarningMessage message) {
         if (message.isRelevant(configuration.getWarningLevel())) {
             if (warnings == null) {
                 warnings = new LinkedList<>();
@@ -191,14 +246,14 @@ public class ErrorCollector implements Serializable {
     /**
      * Returns the number of errors.
      */
-    public int getErrorCount() {
+    public synchronized int getErrorCount() {
         return (hasErrors() ? errors.size() : 0);
     }
 
     /**
      * Returns the specified error message, or null.
      */
-    public Message getError(final int index) {
+    public synchronized Message getError(final int index) {
         if (index < getErrorCount()) {
             return errors.get(index);
         }
@@ -222,14 +277,14 @@ public class ErrorCollector implements Serializable {
     /**
      * Returns the number of warnings.
      */
-    public int getWarningCount() {
+    public synchronized int getWarningCount() {
         return (hasWarnings() ? warnings.size() : 0);
     }
 
     /**
      * Returns the specified warning message, or null.
      */
-    public WarningMessage getWarning(final int index) {
+    public synchronized WarningMessage getWarning(final int index) {
         if (index < getWarningCount()) {
             return warnings.get(index);
         }
@@ -255,7 +310,7 @@ public class ErrorCollector implements Serializable {
     /**
      * Returns the last error reported.
      */
-    public Message getLastError() {
+    public synchronized Message getLastError() {
         return errors.getLast();
     }
 
@@ -299,30 +354,11 @@ public class ErrorCollector implements Serializable {
     //---------------------------------------------------------------------------
     // OUTPUT
 
-    private void write(final PrintWriter writer, final Janitor janitor, final List<? extends Message> messages, final String txt) {
-        if (messages == null || messages.isEmpty()) return;
-
-        for (Message message : messages) {
-            message.write(writer, janitor);
-            if (configuration.getDebug() && (message instanceof SyntaxErrorMessage)) {
-                ((SyntaxErrorMessage) message).getCause().printStackTrace(writer);
-            }
-            writer.println();
-        }
-
-        writer.print(messages.size());
-        writer.print(" " + txt);
-        if (messages.size() > 1) {
-            writer.print("s");
-        }
-        writer.println();
-    }
-
     /**
-     * Writes error messages to the specified PrintWriter.
+     * Writes the warnings, then the errors, to the specified PrintWriter in the
+     * configured {@link ErrorFormat}.
      */
     public void write(final PrintWriter writer, final Janitor janitor) {
-        write(writer, janitor, warnings, "warning");
-        write(writer, janitor, errors, "error");
+        configuration.getErrorFormat().write(writer, janitor, warnings, errors, configuration.getDebug());
     }
 }

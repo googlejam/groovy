@@ -18,17 +18,18 @@
  */
 package groovy.xml
 
-import groovy.test.GroovyTestCase
 import org.custommonkey.xmlunit.Diff
 import org.custommonkey.xmlunit.XMLUnit
+import org.junit.jupiter.api.Test
 import org.xml.sax.ContentHandler
 
 import javax.xml.transform.TransformerFactory
 import javax.xml.transform.stream.StreamResult
 
-class StreamingSAXBuilderTest extends GroovyTestCase {
+class StreamingSAXBuilderTest {
 
-    void testDefaultSerialization() {
+    @Test
+    void defaultSerialization() {
         def handler = TransformerFactory.newInstance().newTransformerHandler()
         def outstream = new ByteArrayOutputStream()
         handler.setResult(new StreamResult(outstream))
@@ -46,7 +47,8 @@ class StreamingSAXBuilderTest extends GroovyTestCase {
         assert xmlDiff.similar(), xmlDiff.toString()
     }
 
-    void testDefaultSerializationNamespaces() {
+    @Test
+    void defaultSerializationNamespaces() {
         def handler = TransformerFactory.newInstance().newTransformerHandler()
         def outstream = new ByteArrayOutputStream()
         handler.setResult(new StreamResult(outstream))
@@ -66,7 +68,30 @@ class StreamingSAXBuilderTest extends GroovyTestCase {
         assert xmlDiff.similar(), xmlDiff.toString()
     }
 
-    void testCustomHandler() {
+    // GROOVY-9698
+    @Test
+    void siblingsInheritNamespacesWithoutRedeclaration() {
+        def handler = TransformerFactory.newInstance().newTransformerHandler()
+        def outstream = new ByteArrayOutputStream()
+        handler.setResult(new StreamResult(outstream))
+
+        def doc = new StreamingSAXBuilder().bind {
+            mkp.declareNamespace("" : "uri:urn1")
+            mkp.declareNamespace("x" : "uri:urn2")
+            outer {
+                'x:inner'('hello')
+                'x:inner'('hello again')
+            }
+        }
+
+        doc(handler)
+        def output = outstream.toString()
+        assert !output.replaceFirst(/xmlns="uri:urn1"/, '').contains('xmlns="uri:urn1"')
+        assert !output.replaceFirst(/xmlns:x="uri:urn2"/, '').contains('xmlns:x="uri:urn2"')
+    }
+
+    @Test
+    void customHandler() {
         def visited = []
         def handler = [
                 startDocument: {->

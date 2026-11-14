@@ -29,34 +29,44 @@ public class SpreadExpression extends Expression {
 
     private final Expression expression;
 
-    public SpreadExpression(Expression expression) {
+    /**
+     * Creates a spread of {@code expression}, as in {@code [*expression]}.
+     *
+     * @param expression the expression whose contents are spread
+     */
+    public SpreadExpression(final Expression expression) {
         this.expression = expression;
     }
 
+    /**
+     * The expression being spread.
+     *
+     * @return the expression passed to the constructor
+     */
     public Expression getExpression() {
         return expression;
     }
 
     @Override
-    public void visit(GroovyCodeVisitor visitor) {
-        visitor.visitSpreadExpression(this);
+    public String getText() {
+        return "*" + getExpression().getText();
     }
 
     @Override
-    public Expression transformExpression(ExpressionTransformer transformer) {
-        Expression ret = new SpreadExpression(transformer.transform(expression));
+    public ClassNode getType() {
+        return getExpression().getType();
+    }
+
+    @Override
+    public Expression transformExpression(final ExpressionTransformer transformer) {
+        Expression ret = new SpreadExpression(transformer.transform(getExpression()));
         ret.setSourcePosition(this);
         ret.copyNodeMetaData(this);
         return ret;
     }
 
     @Override
-    public String getText() {
-        return "*" + expression.getText();
-    }
-
-    @Override
-    public ClassNode getType() {
-        return expression.getType();
+    public void visit(final GroovyCodeVisitor visitor) {
+        visitor.visitSpreadExpression(this);
     }
 }

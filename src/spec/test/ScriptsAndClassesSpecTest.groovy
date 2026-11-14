@@ -1,5 +1,3 @@
-import groovy.test.GroovyTestCase
-
 /*
  *  Licensed to the Apache Software Foundation (ASF) under one
  *  or more contributor license agreements.  See the NOTICE file
@@ -18,7 +16,14 @@ import groovy.test.GroovyTestCase
  *  specific language governing permissions and limitations
  *  under the License.
  */
-class ScriptsAndClassesSpecTest extends GroovyTestCase {
+
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.assertScript
+
+final class ScriptsAndClassesSpecTest {
+
+    @Test
     void testMainMethod() {
         assertScript '''
             // tag::groovy_class_with_main_method[]
@@ -48,8 +53,61 @@ class ScriptsAndClassesSpecTest extends GroovyTestCase {
             }
             // end::groovy_script_equiv[]
         '''
+
+        assertScript '''
+            import groovy.transform.CompileStatic
+            // tag::script_with_explicit_static_main[]
+            @CompileStatic
+            static main(args) {
+                println 'Groovy world!'
+            }
+            // end::script_with_explicit_static_main[]
+        '''
+
+        assertScript '''
+            import groovy.transform.*
+            import com.fasterxml.jackson.annotation.*
+            import tools.jackson.databind.ObjectMapper
+
+            // tag::script_with_explicit_instance_run[]
+            @JsonIgnoreProperties(["binding"])
+            def run() {
+                var mapper = new ObjectMapper()
+                assert mapper.writeValueAsString(this) == '{"pets":["cat","dog"]}'
+            }
+
+            public pets = ['cat', 'dog']
+            // end::script_with_explicit_instance_run[]
+        '''
     }
 
+    @Test
+    void testJep445Definition() {
+        def runScript = { scriptText -> new GroovyShell().run(scriptText, 'ScriptSnippet', new String[0]) }
+
+        runScript '''
+            // tag::jep445_barescript[]
+            void main(args) {
+                println new Date()
+            }
+            // end::jep445_barescript[]
+        '''
+
+        runScript '''
+            // tag::jep445_script[]
+            def main() {
+                assert upper(foo) + lower(bar) == 'FOObar'
+            }
+
+            def upper(s) { s.toUpperCase() }
+
+            def lower = String::toLowerCase
+            def (foo, bar) = ['Foo', 'Bar']      // <1>
+            // end::jep445_script[]
+        '''
+    }
+
+    @Test
     void testMethodDefinition() {
         assertScript '''
             // tag::method_in_script[]
@@ -87,6 +145,7 @@ class ScriptsAndClassesSpecTest extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testScriptVariables() {
         assertScript '''
             // tag::script_with_variables[]

@@ -31,6 +31,7 @@ import org.apache.tools.ant.Project;
 import org.apache.tools.ant.filters.util.ChainReaderHelper;
 import org.apache.tools.ant.taskdefs.Java;
 import org.apache.tools.ant.types.Commandline;
+import org.apache.tools.ant.types.Environment;
 import org.apache.tools.ant.types.FileSet;
 import org.apache.tools.ant.types.FilterChain;
 import org.apache.tools.ant.types.Path;
@@ -51,7 +52,6 @@ import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -62,9 +62,11 @@ import java.io.Reader;
 import java.io.Writer;
 import java.lang.reflect.Field;
 import java.nio.charset.Charset;
-import java.security.AccessController;
-import java.security.PrivilegedAction;
+import java.nio.file.Files;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.Vector;
 
 /**
@@ -93,7 +95,7 @@ public class Groovy extends Java {
     /**
      * files to load
      */
-    private final Vector<FileSet> filesets = new Vector<FileSet>();
+    private final Vector<FileSet> filesets = new Vector<>();
 
     /**
      * The input resource
@@ -119,6 +121,7 @@ public class Groovy extends Java {
     private boolean fork = false;
     private boolean includeAntRuntime = true;
     private boolean useGroovyShell = false;
+    private boolean inheritAll = false;
 
     private String scriptBaseClass;
     private String configscript;
@@ -129,7 +132,6 @@ public class Groovy extends Java {
      * Compiler configuration.
      * <p>
      * Used to specify the debug output to print stacktraces in case something fails.
-     * TODO: Could probably be reused to specify the encoding of the files to load or other properties.
      */
     private final CompilerConfiguration configuration = new CompilerConfiguration();
 
@@ -186,6 +188,22 @@ public class Groovy extends Java {
      */
     public void setIncludeAntRuntime(boolean includeAntRuntime) {
         this.includeAntRuntime = includeAntRuntime;
+    }
+
+    /**
+     * If true, pass all properties from the parent Ant project to the forked JVM as system
+     * properties so the script can read them via {@code System.getProperty(name)}.
+     * Only takes effect when {@code fork} is true. Defaults to false.
+     * <p>
+     * For fine-grained control, use a nested {@code <syspropertyset>} (inherited from the
+     * {@code <java>} task) instead. Both may be combined; explicit {@code <sysproperty>}
+     * and {@code <syspropertyset>} entries take precedence on name collision.
+     *
+     * @param inheritAll true to inherit all Ant properties into the forked JVM
+     * @since 6.0.0
+     */
+    public void setInheritAll(boolean inheritAll) {
+        this.inheritAll = inheritAll;
     }
 
     /**
@@ -325,7 +343,7 @@ public class Groovy extends Java {
     }
 
     /**
-     * If true, generates metadata for reflection on method parameter names (jdk8+ only).  Defaults to false.
+     * If true, generates metadata for reflection on method parameter names. Defaults to false.
      *
      * @param parameters set to true to generate metadata.
      */
@@ -360,7 +378,7 @@ public class Groovy extends Java {
             }
         }
 
-        if (src == null && command.length() == 0) {
+        if (src == null && command.isEmpty()) {
             throw new BuildException("Source does not exist!", getLocation());
         }
 
@@ -383,13 +401,13 @@ public class Groovy extends Java {
 
                 // if there are no groovy statements between the enclosing Groovy tags
                 // then read groovy statements in from a resource using the src attribute
-                if (command == null || command.trim().length() == 0) {
+                if (command == null || command.trim().isEmpty()) {
                     Reader reader;
                     if (src instanceof FileResource) {
                         File file = ((FileResource) src).getFile();
                         createClasspath().add(new Path(getProject(), file.getParentFile().getCanonicalPath()));
                         if (encoding != null && !encoding.isEmpty()) {
-                            reader = new LineNumberReader(new InputStreamReader(new FileInputStream(file), encoding));
+                            reader = new LineNumberReader(new InputStreamReader(Files.newInputStream(file.toPath()), encoding));
                         } else {
                             reader = new CharsetToolkit(file).getReader();
                         }
@@ -400,24 +418,7 @@ public class Groovy extends Java {
                             reader = new InputStreamReader(new BufferedInputStream(src.getInputStream()), Charset.defaultCharset());
                         }
                     }
-                    try {
-                        final long len = src.getSize();
-                        log.debug("resource size = " + (len != Resource.UNKNOWN_SIZE ? String.valueOf(len) : "unknown"));
-                        if (len == 0) {
-                            log.info("Ignoring empty resource");
-                            command = null;
-                        } else {
-                            try (ChainReaderHelper.ChainReader chainReader = new ChainReaderHelper(getProject(), reader, filterChains).with(crh -> {
-                                if (len != Resource.UNKNOWN_SIZE && len <= Integer.MAX_VALUE) {
-                                    crh.setBufferSize((int) len);
-                                }
-                            }).getAssembledReader()) {
-                                command = chainReader.readFully();
-                            }
-                        }
-                    } catch (final IOException ioe) {
-                        throw new BuildException("Unable to load resource: ", ioe, getLocation());
-                    }
+                    readCommandFromReader(reader);
                 } else {
                     if (src != null) {
                         log.info("Ignoring supplied resource as direct script text found");
@@ -440,6 +441,32 @@ public class Groovy extends Java {
         log.verbose("Statements executed successfully");
     }
 
+    private void readCommandFromReader(Reader reader) {
+        try {
+            final long len = src.getSize();
+            log.debug("resource size = " + (len != Resource.UNKNOWN_SIZE ? String.valueOf(len) : "unknown"));
+            if (len == 0) {
+                log.info("Ignoring empty resource");
+                command = null;
+            } else {
+                try (ChainReaderHelper.ChainReader chainReader = new ChainReaderHelper(getProject(), reader, filterChains).with(crh -> {
+                    if (len != Resource.UNKNOWN_SIZE && len <= Integer.MAX_VALUE) {
+                        crh.setBufferSize((int) len);
+                    }
+                }).getAssembledReader()) {
+                    command = chainReader.readFully();
+                }
+            }
+        } catch (final IOException ioe) {
+            throw new BuildException("Unable to load resource: ", ioe, getLocation());
+        }
+    }
+
+    /**
+     * Creates a nested command-line argument for the executed script.
+     *
+     * @return the argument to configure
+     */
     @Override
     public Commandline.Argument createArg() {
         return cmdline.createArgument();
@@ -475,7 +502,7 @@ public class Groovy extends Java {
             throws IOException {
         log.debug("runStatements()");
         StringBuilder txt = new StringBuilder();
-        String line = "";
+        String line;
         BufferedReader in = new BufferedReader(reader);
 
         while ((line = in.readLine()) != null) {
@@ -517,6 +544,9 @@ public class Groovy extends Java {
                 super.setFork(fork);
                 super.setClassname(useGroovyShell ? "groovy.lang.GroovyShell" : "org.codehaus.groovy.ant.Groovy");
                 configureCompiler();
+                if (inheritAll) {
+                    passParentAntProperties();
+                }
                 super.execute();
             } catch (Exception e) {
                 Writer writer = new StringBuilderWriter();
@@ -559,9 +589,7 @@ public class Groovy extends Java {
         }
 
         final String scriptName = computeScriptName();
-        final GroovyClassLoader classLoader =
-                AccessController.doPrivileged(
-                        (PrivilegedAction<GroovyClassLoader>) () -> new GroovyClassLoader(baseClassLoader));
+        final GroovyClassLoader classLoader = new GroovyClassLoader(baseClassLoader);
         addClassPathes(classLoader);
         configureCompiler();
         final GroovyShell groovy = new GroovyShell(classLoader, new Binding(), configuration);
@@ -571,6 +599,10 @@ public class Groovy extends Java {
             groovy.resetLoadedClasses();
             groovy.getClassLoader().clearCache();
             if (contextClassLoader || maven) thread.setContextClassLoader(savedLoader);
+            try {
+                classLoader.close();
+            } catch (IOException ignore) {
+            }
         }
     }
 
@@ -639,6 +671,11 @@ public class Groovy extends Java {
         throw new BuildException("Script Failed: " + message, e, getLocation());
     }
 
+    /**
+     * Command-line entry point used when the task executes scripts in forked mode.
+     *
+     * @param args the script file followed by script arguments
+     */
     public static void main(String[] args) {
         final GroovyShell shell = new GroovyShell(new Binding());
         final Groovy groovy = new Groovy();
@@ -698,10 +735,29 @@ public class Groovy extends Java {
         }
     }
 
+    /**
+     * Copies Ant project properties into the forked process unless they were already supplied as
+     * explicit system properties.
+     */
+    void passParentAntProperties() {
+        Set<String> alreadySet = new HashSet<>();
+        for (Environment.Variable v : super.getSysProperties().getVariablesVector()) {
+            alreadySet.add(v.getKey());
+        }
+        for (Map.Entry<String, Object> entry : getProject().getProperties().entrySet()) {
+            Object value = entry.getValue();
+            if (value == null || alreadySet.contains(entry.getKey())) continue;
+            Environment.Variable var = new Environment.Variable();
+            var.setKey(entry.getKey());
+            var.setValue(value.toString());
+            super.addSysproperty(var);
+        }
+    }
+
     private void createNewArgs(String txt) throws IOException {
         final String[] args = cmdline.getCommandline();
         // Temporary file - delete on exit, create (assured unique name).
-        final File tempFile = FileUtils.getFileUtils().createTempFile(PREFIX, SUFFIX, null, true, true);
+        final File tempFile = FileUtils.getFileUtils().createTempFile(null, PREFIX, SUFFIX, null, true, true);
         final String[] commandline = new String[args.length + 1];
         ResourceGroovyMethods.write(tempFile, txt);
         commandline[0] = tempFile.getCanonicalPath();
@@ -714,17 +770,16 @@ public class Groovy extends Java {
     }
 
     /**
-     * Try to build a script name for the script of the groovy task to have an helpful value in stack traces in case of exception
+     * Try to build a script name for the script of the groovy task to have a helpful value in stack traces in case of exception
      *
      * @return the name to use when compiling the script
      */
     private String computeScriptName() {
-        if (src instanceof FileResource) {
-            FileResource fr = (FileResource) src;
+        if (src instanceof FileResource fr) {
             return fr.getFile().getAbsolutePath();
         } else {
             String name = PREFIX;
-            if (getLocation().getFileName().length() > 0)
+            if (!getLocation().getFileName().isEmpty())
                 name += getLocation().getFileName().replaceAll("[^\\w_\\.]", "_").replaceAll("[\\.]", "_dot_");
             else
                 name += SUFFIX;
@@ -753,8 +808,6 @@ public class Groovy extends Java {
      */
     protected void printResults(PrintStream out) {
         log.debug("printResults()");
-//        StringBuilder line = new StringBuilder();
-//        out.println(line);
         out.println();
     }
 

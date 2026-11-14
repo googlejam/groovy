@@ -19,6 +19,7 @@
 package groovy.lang;
 
 import org.codehaus.groovy.runtime.DefaultGroovyMethods;
+import org.codehaus.groovy.runtime.FormatHelper;
 import org.codehaus.groovy.runtime.InvokerHelper;
 import org.codehaus.groovy.runtime.IteratorClosureAdapter;
 import org.codehaus.groovy.runtime.ScriptBytecodeAdapter;
@@ -203,6 +204,9 @@ public class ObjectRange extends AbstractList<Comparable> implements Range<Compa
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public boolean equals(Object that) {
         return (that instanceof ObjectRange) ? equals((ObjectRange) that) : super.equals(that);
@@ -221,21 +225,33 @@ public class ObjectRange extends AbstractList<Comparable> implements Range<Compa
                 && DefaultTypeTransformation.compareEqual(to, that.to);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public Comparable getFrom() {
         return from;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public Comparable getTo() {
         return to;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public boolean isReverse() {
         return reverse;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public Comparable get(int index) {
         if (index < 0) {
@@ -268,6 +284,13 @@ public class ObjectRange extends AbstractList<Comparable> implements Range<Compa
         return contains(value);
     }
 
+    /**
+     * Compares two values using Groovy's number-aware comparison.
+     *
+     * @param first the first value
+     * @param second the second value
+     * @return the comparison result
+     */
     protected int compareTo(Comparable first, Comparable second) {
         return DefaultGroovyMethods.numberAwareCompareTo(first, second);
     }
@@ -280,6 +303,9 @@ public class ObjectRange extends AbstractList<Comparable> implements Range<Compa
         throw new UnsupportedOperationException("size must not be changed");
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public int size() {
         if (size == -1) {
@@ -330,6 +356,9 @@ public class ObjectRange extends AbstractList<Comparable> implements Range<Compa
         return size;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public List<Comparable> subList(int fromIndex, int toIndex) {
         if (fromIndex < 0) {
@@ -365,16 +394,22 @@ public class ObjectRange extends AbstractList<Comparable> implements Range<Compa
         return new ObjectRange(fromValue, toValue, reverse);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public String toString() {
-        return reverse ? "" + to + ".." + from : "" + from + ".." + to;
+        return reverse ? to + ".." + from : from + ".." + to;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public String inspect() {
-        final String toText = InvokerHelper.inspect(to);
-        final String fromText = InvokerHelper.inspect(from);
-        return reverse ? "" + toText + ".." + fromText : "" + fromText + ".." + toText;
+        final String toText = FormatHelper.inspect(to);
+        final String fromText = FormatHelper.inspect(from);
+        return reverse ? toText + ".." + fromText : fromText + ".." + toText;
     }
 
     /**
@@ -394,6 +429,9 @@ public class ObjectRange extends AbstractList<Comparable> implements Range<Compa
         return false;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void step(int step, Closure closure) {
         if (step == 0 && compareTo(from, to) == 0) {
@@ -442,11 +480,17 @@ public class ObjectRange extends AbstractList<Comparable> implements Range<Compa
             }
         }
 
+        /**
+         * {@inheritDoc}
+         */
         @Override
         public void remove() {
             range.remove(index);
         }
 
+        /**
+         * {@inheritDoc}
+         */
         @Override
         public Comparable next() {
             // not thread safe
@@ -458,6 +502,9 @@ public class ObjectRange extends AbstractList<Comparable> implements Range<Compa
             return value;
         }
 
+        /**
+         * {@inheritDoc}
+         */
         @Override
         public boolean hasNext() {
             // not thread safe
@@ -495,6 +542,9 @@ public class ObjectRange extends AbstractList<Comparable> implements Range<Compa
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public List<Comparable> step(int step) {
         final IteratorClosureAdapter<Comparable> adapter = new IteratorClosureAdapter<Comparable>(this);
@@ -529,8 +579,7 @@ public class ObjectRange extends AbstractList<Comparable> implements Range<Compa
         if (operand instanceof Character) {
             return (int) (Character) operand;
         }
-        if (operand instanceof String) {
-            final String string = (String) operand;
+        if (operand instanceof String string) {
 
             if (string.length() == 1) {
                 return (int) string.charAt(0);

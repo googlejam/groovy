@@ -18,22 +18,34 @@
  */
 package org.apache.groovy.nio.extensions
 
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
-
 import groovy.io.FileType
-import org.junit.Rule
-import org.junit.rules.TemporaryFolder
+import org.apache.groovy.nio.runtime.WritablePath
+import org.opentest4j.TestAbortedException
 import spock.lang.Specification
+import spock.lang.TempDir
+
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.NoSuchFileException
+import java.nio.file.StandardCopyOption
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.TimeUnit
 
 class NioExtensionsTest extends Specification {
 
-    @Rule
-    TemporaryFolder temporaryFolder
+    @TempDir
+    private File tempDir
+
+    private File tempFile
+
+    def setup() {
+        tempFile = File.createTempFile('temp', '.ext')
+        tempFile.deleteOnExit()
+    }
 
     def testShouldAppendByteArrayToFile() {
         when:
-        def path = temporaryFolder.newFile().toPath()
+        def path = tempFile.toPath()
         path.write('Hello')
         byte[] bytes = ' World'.bytes
         path.append(bytes)
@@ -44,7 +56,7 @@ class NioExtensionsTest extends Specification {
 
     def testShouldAppendStringToFileUsingDefaultEncoding() {
         when:
-        def path = temporaryFolder.newFile().toPath()
+        def path = tempFile.toPath()
         path.write('Hello')
         path.append(' World')
 
@@ -54,7 +66,7 @@ class NioExtensionsTest extends Specification {
 
     def testShouldAppendTextSuppliedByReaderToFileUsingDefaultEncoding() {
         when:
-        def path = temporaryFolder.newFile().toPath()
+        def path = tempFile.toPath()
         path.write('Hello')
         Reader reader = new StringReader(' World')
         path.append(reader)
@@ -65,7 +77,7 @@ class NioExtensionsTest extends Specification {
 
     def testShouldAppendTextSuppliedByWriterToFileUsingDefaultEncoding() {
         when:
-        def path = temporaryFolder.newFile().toPath()
+        def path = tempFile.toPath()
         path.write('Hello')
         Writer writer = new StringWriter()
         writer.append(' World')
@@ -77,7 +89,7 @@ class NioExtensionsTest extends Specification {
 
     def testShouldAppendStringToFileUsingSpecifiedEncoding() {
         when:
-        def path = temporaryFolder.newFile().toPath()
+        def path = tempFile.toPath()
         String encoding = 'UTF-8'
         path.write('؁', encoding)
         path.append(' ؁', encoding)
@@ -88,10 +100,10 @@ class NioExtensionsTest extends Specification {
 
     def testShouldAppendTextSuppliedByReaderToFileUsingSpecifiedEncoding() {
         when:
-        def path = temporaryFolder.newFile().toPath()
+        def path = tempFile.toPath()
         String encoding = 'UTF-8'
         path.write('؁', encoding)
-        Reader reader = new CharArrayReader([' ','؁'] as char[])
+        Reader reader = new CharArrayReader([' ', '؁'] as char[])
         path.append(reader, encoding)
 
         then:
@@ -100,7 +112,7 @@ class NioExtensionsTest extends Specification {
 
     def testShouldAppendTextSuppliedByWriterToFileUsingSpecifiedEncoding() {
         when:
-        def path = temporaryFolder.newFile().toPath()
+        def path = tempFile.toPath()
         String encoding = 'UTF-8'
         path.write('؁', encoding)
         Writer writer = new CharArrayWriter()
@@ -114,7 +126,7 @@ class NioExtensionsTest extends Specification {
 
     def testShouldAppendStringToFileUsingSpecifiedEncodingWithBom() {
         when:
-        def path = temporaryFolder.newFile().toPath()
+        def path = tempFile.toPath()
         Files.delete(path)
         String encoding = 'UTF-16LE'
         path.write('؁', encoding, true)
@@ -130,11 +142,11 @@ class NioExtensionsTest extends Specification {
 
     def testShouldAppendTextSuppliedByReaderToFileUsingSpecifiedEncodingWithBom() {
         when:
-        def path = temporaryFolder.newFile().toPath()
+        def path = tempFile.toPath()
         Files.delete(path)
         String encoding = 'UTF-16LE'
         path.write('؁', encoding, true)
-        Reader reader = new CharArrayReader([' ','؁'] as char[])
+        Reader reader = new CharArrayReader([' ', '؁'] as char[])
         path.append(reader, encoding, true)
 
         then:
@@ -147,7 +159,7 @@ class NioExtensionsTest extends Specification {
 
     def testShouldAppendTextSuppliedByWriterToFileUsingSpecifiedEncodingWithBom() {
         when:
-        def path = temporaryFolder.newFile().toPath()
+        def path = tempFile.toPath()
         Files.delete(path)
         String encoding = 'UTF-16LE'
         path.write('؁', encoding, true)
@@ -167,17 +179,47 @@ class NioExtensionsTest extends Specification {
     def testPathSize() {
         when:
         def str = 'Hello world!'
-        def path = temporaryFolder.newFile().toPath()
+        def path = tempFile.toPath()
         Files.copy(new ByteArrayInputStream(str.getBytes()), path, StandardCopyOption.REPLACE_EXISTING)
 
         then:
         path.size() == str.size()
     }
 
+    def testPathName() {
+        when:
+        def file = new File(tempFile, 'gradle.properties')
+        def dir = new File(tempFile, 'properties')
+
+        then:
+        file.name == file.toPath().name
+        dir.name == dir.toPath().name
+    }
+
+    def testPathExtension() {
+        when:
+        def filePath = new File(tempFile, 'gradle.properties').toPath()
+        def dirPath = new File(tempFile, 'properties').toPath()
+
+        then:
+        filePath.extension == 'properties'
+        dirPath.extension == ""
+    }
+
+    def testPathBaseName() {
+        when:
+        def filePath = new File(tempFile, 'gradle.properties').toPath()
+        def dirPath = new File(tempFile, 'properties').toPath()
+
+        then:
+        filePath.baseName == 'gradle'
+        dirPath.baseName == 'properties'
+    }
+
     def testNewObjectOutputStream() {
         setup:
         def str = 'Hello world!'
-        def path = temporaryFolder.newFile().toPath()
+        def path = tempFile.toPath()
 
         when:
         def outputStream = path.newObjectOutputStream()
@@ -195,7 +237,7 @@ class NioExtensionsTest extends Specification {
     def testNewObjectInputStream() {
         setup:
         def str = 'Hello world!'
-        def path = temporaryFolder.newFile().toPath()
+        def path = tempFile.toPath()
         def outputStream = new ObjectOutputStream(new FileOutputStream(path.toFile()))
         outputStream.writeObject(str)
         outputStream.close()
@@ -215,7 +257,7 @@ class NioExtensionsTest extends Specification {
         def str1 = 'alpha'
         def str2 = 'beta'
         def str3 = 'delta'
-        def path = temporaryFolder.newFile().toPath()
+        def path = tempFile.toPath()
         def stream = new ObjectOutputStream(new FileOutputStream(path.toFile()))
         stream.writeObject(str1)
         stream.writeObject(str2)
@@ -232,11 +274,10 @@ class NioExtensionsTest extends Specification {
 
     def testReadLines() {
         setup:
-        def file = temporaryFolder.newFile()
-        file.text = 'alpha\nbeta\ndelta'
+        tempFile.text = 'alpha\nbeta\ndelta'
 
         when:
-        def lines = file.toPath().readLines()
+        def lines = tempFile.toPath().readLines()
 
         then:
         lines == ['alpha', 'beta', 'delta']
@@ -245,11 +286,10 @@ class NioExtensionsTest extends Specification {
     def testNewReader() {
         setup:
         def str = 'Hello world!'
-        def file = temporaryFolder.newFile()
-        file.text = str
+        tempFile.text = str
 
         when:
-        def reader = file.toPath().newReader()
+        def reader = tempFile.toPath().newReader()
         def line = reader.readLine()
 
         then:
@@ -259,104 +299,95 @@ class NioExtensionsTest extends Specification {
 
     def testGetBytes() {
         when:
-        def file = temporaryFolder.newFile()
-        file.text = 'Hello world!'
+        tempFile.text = 'Hello world!'
 
         then:
-        file.toPath().getBytes() == 'Hello world!'.getBytes()
+        tempFile.toPath().getBytes() == 'Hello world!'.getBytes()
     }
 
     def testSetBytes() {
         when:
-        def file = temporaryFolder.newFile()
-        file.text = 'Hello world!'
-        file.toPath().setBytes('Ciao mundo!'.getBytes())
+        tempFile.text = 'Hello world!'
+        tempFile.toPath().setBytes('Ciao mundo!'.getBytes())
 
         then:
-        file.text == 'Ciao mundo!'
+        tempFile.text == 'Ciao mundo!'
     }
 
     def testSetText() {
         when:
-        def file = temporaryFolder.newFile()
-        file.toPath().setText('Ciao mundo!')
+        tempFile.toPath().setText('Ciao mundo!')
         // invoke twice to make sure that the content is truncated by the setText method
-        file.toPath().setText('Hello world!')
+        tempFile.toPath().setText('Hello world!')
 
         then:
-        file.text == 'Hello world!'
+        tempFile.text == 'Hello world!'
     }
 
-    def testWrite()  {
+    def testWrite() {
         when:
         def str = 'Hello world!'
-        def file = temporaryFolder.newFile()
-        file.toPath().write(str)
+        tempFile.toPath().write(str)
 
         then:
-        file.text == 'Hello world!'
+        tempFile.text == 'Hello world!'
     }
 
-    def testWriteWithEncoding()  {
+    def testWriteWithEncoding() {
         when:
         def str = 'Hello world!'
-        def file = temporaryFolder.newFile()
-        file.toPath().write('Ciao mundo!')
-        file.toPath().write(str, 'UTF-8')
+        tempFile.toPath().write('Ciao mundo!')
+        tempFile.toPath().write(str, 'UTF-8')
 
         then:
-        file.text == str
+        tempFile.text == str
     }
 
     def testWriteWithEncodingAndBom() {
         when:
         def str = '؁'
-        def file = temporaryFolder.newFile()
-        file.toPath().write(str, 'UTF-16LE', true)
+        tempFile.toPath().write(str, 'UTF-16LE', true)
 
         then:
-        assert file.getBytes() == [-1, -2, 1, 6] as byte[]
+        assert tempFile.getBytes() == [-1, -2, 1, 6] as byte[]
     }
 
     def testAppendObject() {
         setup:
-        def file = temporaryFolder.newFile()
-        file.text = 'alpha'
+        tempFile.text = 'alpha'
 
         when:
-        file.toPath().append('-gamma')
+        tempFile.toPath().append('-gamma')
 
         then:
-        file.text == 'alpha-gamma'
+        tempFile.text == 'alpha-gamma'
     }
 
     def testAppendBytes() {
         setup:
-        def file = temporaryFolder.newFile()
-        file.text = 'alpha'
+        tempFile.text = 'alpha'
 
         when:
-        file.toPath().append('-beta'.getBytes())
+        tempFile.toPath().append('-beta'.getBytes())
 
         then:
-        file.text == 'alpha-beta'
+        tempFile.text == 'alpha-beta'
     }
 
     def testAppendInputStream() {
         setup:
-        def file = temporaryFolder.newFile()
-        file.text = 'alpha'
+        tempFile.text = 'alpha'
 
         when:
-        file.toPath().append(new ByteArrayInputStream('-delta'.getBytes()))
+        tempFile.toPath().append(new ByteArrayInputStream('-delta'.getBytes()))
 
         then:
-        file.text == 'alpha-delta'
+        tempFile.text == 'alpha-delta'
     }
 
     def testLeftShift() {
         setup:
-        def path = temporaryFolder.newFile().toPath()
+        def path = tempFile.toPath()
 
         when:
         path << 'Hello '
@@ -368,15 +399,15 @@ class NioExtensionsTest extends Specification {
 
     def testEachFile() {
         setup:
-        def folder = temporaryFolder.newFolder('test').toPath()
+        def folder = tempDir.toPath()
         def file1 = Files.createTempFile(folder, 'file_1_', null)
         def file2 = Files.createTempFile(folder, 'file_2_', null)
         def file3 = Files.createTempFile(folder, 'file_X_', null)
         def sub1 = Files.createTempDirectory(folder, 'sub1_')
-        def file4  = Files.createTempFile(sub1, 'file_4_', null)
-        def file5  = Files.createTempFile(sub1, 'file_5_', null)
+        def file4 = Files.createTempFile(sub1, 'file_4_', null)
+        def file5 = Files.createTempFile(sub1, 'file_5_', null)
         def sub2 = Files.createTempDirectory(sub1, 'sub2_')
-        def file6  = Files.createTempFile(sub2, 'file_6_', null)
+        def file6 = Files.createTempFile(sub2, 'file_6_', null)
 
         when:
         def result1 = []
@@ -430,7 +461,7 @@ class NioExtensionsTest extends Specification {
 
     def testEachDir() {
         setup:
-        def folder = temporaryFolder.newFolder('test').toPath()
+        def folder = tempDir.toPath()
         def sub1 = Files.createTempDirectory(folder, 'sub_1_')
         def sub2 = Files.createTempDirectory(folder, 'sub_2_')
         def sub3 = Files.createTempDirectory(folder, 'sub_X_')
@@ -463,10 +494,11 @@ class NioExtensionsTest extends Specification {
 
     def testAppendUTF16LE() {
         setup:
-        def path = temporaryFolder.newFile().toPath()
+        def path = tempFile.toPath()
         Files.delete(path)
-        def file = temporaryFolder.newFile()
+        def file = File.createTempFile('temp2', '.ext')
         file.delete()
+        file.deleteOnExit()
         def str = 'Hello world!'
 
         // save using a File, thus uses ResourcesGroovyMethods
@@ -494,7 +526,7 @@ class NioExtensionsTest extends Specification {
 
     def testWriteUTF16LE() {
         setup:
-        def path = temporaryFolder.newFile().toPath()
+        def path = tempFile.toPath()
         def str = 'Hello world!'
 
         when:
@@ -506,7 +538,7 @@ class NioExtensionsTest extends Specification {
 
     def testWriteUTF16LEWithBom() {
         setup:
-        def path = temporaryFolder.newFile().toPath()
+        def path = tempFile.toPath()
         def str = 'Hello world!'
 
         when:
@@ -518,7 +550,7 @@ class NioExtensionsTest extends Specification {
 
     def testWriteUTF16BE() {
         setup:
-        def path = temporaryFolder.newFile().toPath()
+        def path = tempFile.toPath()
         def str = 'Hello world!'
 
         when:
@@ -530,7 +562,7 @@ class NioExtensionsTest extends Specification {
 
     def testWriteUTF16BEWithBom() {
         setup:
-        def path = temporaryFolder.newFile().toPath()
+        def path = tempFile.toPath()
         def str = 'Hello world!'
 
         when:
@@ -540,4 +572,969 @@ class NioExtensionsTest extends Specification {
         assert NioExtensions.getBytes(path) == [-2, -1, 0, 72, 0, 101, 0, 108, 0, 108, 0, 111, 0, 32, 0, 119, 0, 111, 0, 114, 0, 108, 0, 100, 0, 33] as byte[]
     }
 
+    def testAsBoolean() {
+        setup:
+        def path = tempFile.toPath()
+
+        when:
+        path.write('Some text')
+
+        then:
+        assert path
+
+        when:
+        Files.delete(path)
+
+        then:
+        assert !path
+    }
+
+    def testExists() {
+        setup:
+        def path = tempFile.toPath()
+
+        when:
+        path.write('Some text')
+
+        then:
+        NioExtensions.exists(path)
+
+        when:
+        Files.delete(path)
+
+        then:
+        !NioExtensions.exists(path)
+    }
+
+    def testTraverse() {
+        setup:
+        def folder = tempDir.toPath()
+        def sub1 = Files.createTempDirectory(folder, 'sub1_')
+        def file1 = Files.createTempFile(folder, 'file1_', '.txt')
+        def file2 = Files.createTempFile(sub1, 'file2_', '.txt')
+        def sub2 = Files.createTempDirectory(sub1, 'sub2_')
+        def file3 = Files.createTempFile(sub2, 'file3_', '.txt')
+
+        when:
+        def visited = []
+        folder.traverse { visited << it }
+
+        then:
+        visited.containsAll([file1, sub1, file2, sub2, file3])
+    }
+
+    def testTraverseWithOptions() {
+        setup:
+        def folder = tempDir.toPath()
+        def sub1 = Files.createTempDirectory(folder, 'sub1_')
+        def file1 = Files.createTempFile(folder, 'file1_', '.txt')
+        def file2 = Files.createTempFile(sub1, 'file2_', '.txt')
+        Files.createTempFile(sub1, 'other_', '.dat')
+
+        when:
+        def visited = []
+        folder.traverse(type: FileType.FILES, nameFilter: ~/.*\.txt/) { visited << it }
+
+        then:
+        visited.sort() == [file1, file2].sort()
+    }
+
+    def testTraverseWithMaxDepth() {
+        setup:
+        def folder = tempDir.toPath()
+        def sub1 = Files.createTempDirectory(folder, 'sub1_')
+        def file1 = Files.createTempFile(folder, 'file1_', '.txt')
+        def sub2 = Files.createTempDirectory(sub1, 'sub2_')
+        def file2 = Files.createTempFile(sub2, 'file2_', '.txt')
+
+        when:
+        def visited = []
+        folder.traverse(maxDepth: 0) { visited << it }
+
+        then:
+        visited.containsAll([file1, sub1])
+        !visited.contains(file2)
+    }
+
+    def testFilterLine() {
+        setup:
+        tempFile.text = 'alpha\nbeta\ngamma\ndelta'
+        def path = tempFile.toPath()
+
+        when:
+        def writable = path.filterLine { it.startsWith('a') || it.startsWith('g') || it.startsWith('d') }
+        def sw = new StringWriter()
+        writable.writeTo(sw)
+
+        then:
+        sw.toString() == ['alpha','gamma','delta',''].join(System.lineSeparator())
+    }
+
+    def testFilterLineWithCharset() {
+        setup:
+        def path = tempFile.toPath()
+        path.write('alpha\nbeta\ngamma', 'UTF-8')
+
+        when:
+        def writable = path.filterLine('UTF-8') { it.startsWith('a') || it.startsWith('g') }
+        def sw = new StringWriter()
+        writable.writeTo(sw)
+
+        then:
+        sw.toString() == ['alpha','gamma',''].join(System.lineSeparator())
+    }
+
+    def testFilterLineToWriter() {
+        setup:
+        tempFile.text = 'line1\nline2\nline3\nline4'
+        def path = tempFile.toPath()
+        def sw = new StringWriter()
+
+        when:
+        path.filterLine(sw) { it.contains('2') || it.contains('4') }
+
+        then:
+        sw.toString() == ['line2','line4',''].join(System.lineSeparator())
+    }
+
+    def testCreateParentDirectories() {
+        setup:
+        def nestedPath = tempDir.toPath().resolve('a/b/c/file.txt')
+
+        expect:
+        !Files.exists(nestedPath.parent)
+
+        when:
+        nestedPath.createParentDirectories()
+
+        then:
+        Files.exists(nestedPath.parent)
+        Files.isDirectory(nestedPath.parent)
+    }
+
+    def testDeleteDir() {
+        setup:
+        def folder = Files.createTempDirectory(tempDir.toPath(), 'toDelete_')
+        def sub = Files.createTempDirectory(folder, 'sub_')
+        Files.createTempFile(folder, 'file1_', '.txt')
+        Files.createTempFile(sub, 'file2_', '.txt')
+
+        expect:
+        Files.exists(folder)
+
+        when:
+        def result = folder.deleteDir()
+
+        then:
+        result
+        !Files.exists(folder)
+    }
+
+    def testDeleteDirRemovesAJunctionWithoutEnteringIt() {
+        setup:
+        if (!System.getProperty('os.name').containsIgnoreCase('windows')) {
+            throw new TestAbortedException('junctions are a Windows construct')
+        }
+        def base = Files.createTempDirectory(tempDir.toPath(), 'junction_')
+        def outside = Files.createDirectory(base.resolve('outside'))
+        def survivor = outside.resolve('survivor.txt')
+        Files.write(survivor, 'keep'.bytes)
+        def tree = Files.createDirectory(base.resolve('tree'))
+        def junction = tree.resolve('junction')
+        if (['cmd', '/c', 'mklink', '/J', junction.toString(), outside.toString()].execute().waitFor() != 0) {
+            throw new TestAbortedException('could not create a junction')
+        }
+
+        when:
+        def result = tree.deleteDir()
+
+        then:
+        result
+        !Files.exists(tree, LinkOption.NOFOLLOW_LINKS)
+        new String(Files.readAllBytes(survivor)) == 'keep'
+    }
+
+    def testDeleteDirDeletesANamedPipeInsideTheTree() {
+        setup:
+        if (System.getProperty('os.name').containsIgnoreCase('windows')) {
+            throw new TestAbortedException('mkfifo is a POSIX tool')
+        }
+        def base = Files.createTempDirectory(tempDir.toPath(), 'fifo_')
+        def tree = Files.createDirectory(base.resolve('tree'))
+        def fifo = tree.resolve('pipe')
+        if (['mkfifo', fifo.toString()].execute().waitFor() != 0) {
+            throw new TestAbortedException('could not create a fifo')
+        }
+
+        when:
+        def result = tree.deleteDir()
+
+        then:
+        result
+        !Files.exists(tree, LinkOption.NOFOLLOW_LINKS)
+    }
+
+    def testDeleteDirDoesNotFollowSymlink() {
+        setup:
+        def base = Files.createTempDirectory(tempDir.toPath(), 'symlink_')
+        def outside = Files.createDirectory(base.resolve('outside'))
+        def survivor = outside.resolve('survivor.txt')
+        Files.write(survivor, 'keep'.bytes)
+        def tree = Files.createDirectory(base.resolve('tree'))
+        def link = tree.resolve('link')
+        try {
+            Files.createSymbolicLink(link, outside)
+        } catch (IOException | UnsupportedOperationException e) {
+            throw new TestAbortedException("symbolic links not supported on this platform: $e")
+        }
+
+        when:
+        def result = tree.deleteDir()
+
+        then:
+        result
+        !Files.exists(tree)
+        Files.exists(survivor)
+        new String(Files.readAllBytes(survivor)) == 'keep'
+    }
+
+    def testDeleteDirOnSymlinkDoesNotFollowIntoTarget() {
+        setup:
+        def base = Files.createTempDirectory(tempDir.toPath(), 'symlinkSelf_')
+        def outside = Files.createDirectory(base.resolve('outside'))
+        def survivor = outside.resolve('survivor.txt')
+        Files.write(survivor, 'keep'.bytes)
+        def link = base.resolve('link')
+        try {
+            Files.createSymbolicLink(link, outside)
+        } catch (IOException | UnsupportedOperationException e) {
+            throw new TestAbortedException("symbolic links not supported on this platform: $e")
+        }
+
+        when:
+        def result = link.deleteDir()
+
+        then:
+        result
+        !Files.exists(link, LinkOption.NOFOLLOW_LINKS)
+        Files.exists(outside)
+        Files.exists(survivor)
+        new String(Files.readAllBytes(survivor)) == 'keep'
+    }
+
+    def testWithWriter() {
+        setup:
+        def path = tempFile.toPath()
+
+        when:
+        def result = path.withWriter { writer ->
+            writer.write('Hello from withWriter')
+            'return value'
+        }
+
+        then:
+        path.text == 'Hello from withWriter'
+        result == 'return value'
+    }
+
+    def testWithWriterAndCharset() {
+        setup:
+        def path = tempFile.toPath()
+
+        when:
+        path.withWriter('UTF-8') { writer ->
+            writer.write('Hello UTF-8')
+        }
+
+        then:
+        path.getText('UTF-8') == 'Hello UTF-8'
+    }
+
+    def testWithWriterAppend() {
+        setup:
+        def path = tempFile.toPath()
+        path.write('Hello')
+
+        when:
+        path.withWriterAppend { writer ->
+            writer.write(' World')
+        }
+
+        then:
+        path.text == 'Hello World'
+    }
+
+    def testWithWriterAppendAndCharset() {
+        setup:
+        def path = tempFile.toPath()
+        path.write('Hello', 'UTF-8')
+
+        when:
+        path.withWriterAppend('UTF-8') { writer ->
+            writer.write(' World')
+        }
+
+        then:
+        path.getText('UTF-8') == 'Hello World'
+    }
+
+    def testWithPrintWriter() {
+        setup:
+        def path = tempFile.toPath()
+
+        when:
+        def result = path.withPrintWriter { pw ->
+            pw.println('Line 1')
+            pw.println('Line 2')
+            42
+        }
+
+        then:
+        path.readLines() == ['Line 1', 'Line 2']
+        result == 42
+    }
+
+    def testWithPrintWriterAndCharset() {
+        setup:
+        def path = tempFile.toPath()
+
+        when:
+        path.withPrintWriter('UTF-8') { pw ->
+            pw.println('UTF-8 Line')
+        }
+
+        then:
+        path.getText('UTF-8').trim() == 'UTF-8 Line'
+    }
+
+    def testNewPrintWriter() {
+        setup:
+        def path = tempFile.toPath()
+
+        when:
+        def pw = path.newPrintWriter()
+        pw.println('Test line')
+        pw.close()
+
+        then:
+        path.readLines() == ['Test line']
+    }
+
+    def testNewPrintWriterWithCharset() {
+        setup:
+        def path = tempFile.toPath()
+
+        when:
+        def pw = path.newPrintWriter('UTF-8')
+        pw.println('UTF-8 test')
+        pw.close()
+
+        then:
+        path.getText('UTF-8').trim() == 'UTF-8 test'
+    }
+
+    def testEachByte() {
+        setup:
+        def path = tempFile.toPath()
+        path.setBytes([65, 66, 67] as byte[])
+
+        when:
+        def bytes = []
+        path.eachByte { bytes << it }
+
+        then:
+        bytes == [65, 66, 67]
+    }
+
+    def testEachByteWithBufferLen() {
+        setup:
+        def path = tempFile.toPath()
+        path.setBytes([1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as byte[])
+
+        when:
+        def chunks = []
+        path.eachByte(4) { buffer, len ->
+            def bytes = new byte[len]
+            System.arraycopy(buffer, 0, bytes, 0, len)
+            chunks << [bytes: bytes as List, len: len]
+        }
+
+        then:
+        chunks.size() == 3
+        chunks[0].len == 4
+        chunks[1].len == 4
+        chunks[2].len == 2
+    }
+
+    def testNewDataInputStream() {
+        setup:
+        def path = tempFile.toPath()
+        def dos = new DataOutputStream(new FileOutputStream(tempFile))
+        dos.writeInt(42)
+        dos.writeUTF('Hello')
+        dos.close()
+
+        when:
+        def dis = path.newDataInputStream()
+
+        then:
+        dis.readInt() == 42
+        dis.readUTF() == 'Hello'
+
+        cleanup:
+        dis?.close()
+    }
+
+    def testNewDataOutputStream() {
+        setup:
+        def path = tempFile.toPath()
+
+        when:
+        def dos = path.newDataOutputStream()
+        dos.writeInt(123)
+        dos.writeUTF('Test')
+        dos.close()
+        def dis = new DataInputStream(new FileInputStream(tempFile))
+
+        then:
+        dis.readInt() == 123
+        dis.readUTF() == 'Test'
+
+        cleanup:
+        dis?.close()
+    }
+
+    def testNewInputStream() {
+        setup:
+        def path = tempFile.toPath()
+        path.write('Test content')
+
+        when:
+        def is = path.newInputStream()
+        def content = is.text
+
+        then:
+        content == 'Test content'
+
+        cleanup:
+        is?.close()
+    }
+
+    def testNewOutputStream() {
+        setup:
+        def path = tempFile.toPath()
+
+        when:
+        def os = path.newOutputStream()
+        os.write('Output stream test'.bytes)
+        os.close()
+
+        then:
+        path.text == 'Output stream test'
+    }
+
+    def testNewWriter() {
+        setup:
+        def path = tempFile.toPath()
+
+        when:
+        def writer = path.newWriter()
+        writer.write('Writer test')
+        writer.close()
+
+        then:
+        path.text == 'Writer test'
+    }
+
+    def testNewWriterWithCharset() {
+        setup:
+        def path = tempFile.toPath()
+
+        when:
+        def writer = path.newWriter('UTF-8')
+        writer.write('UTF-8 writer')
+        writer.close()
+
+        then:
+        path.getText('UTF-8') == 'UTF-8 writer'
+    }
+
+    def testNewReader() {
+        setup:
+        def path = tempFile.toPath()
+        path.write('Reader test content')
+
+        when:
+        def reader = path.newReader()
+        def content = reader.text
+
+        then:
+        content == 'Reader test content'
+
+        cleanup:
+        reader?.close()
+    }
+
+    def testNewReaderWithCharset() {
+        setup:
+        def path = tempFile.toPath()
+        path.write('UTF-8 content', 'UTF-8')
+
+        when:
+        def reader = path.newReader('UTF-8')
+        def content = reader.text
+
+        then:
+        content == 'UTF-8 content'
+
+        cleanup:
+        reader?.close()
+    }
+
+    def testReadBytes() {
+        setup:
+        def path = tempFile.toPath()
+        def expectedBytes = [72, 101, 108, 108, 111] as byte[]
+        path.setBytes(expectedBytes)
+
+        when:
+        def readBytes = path.readBytes()
+
+        then:
+        readBytes == expectedBytes
+    }
+
+    def testEachLine() {
+        setup:
+        tempFile.text = 'line1\nline2\nline3'
+        def path = tempFile.toPath()
+
+        when:
+        def lines = []
+        path.eachLine { lines << it }
+
+        then:
+        lines == ['line1', 'line2', 'line3']
+    }
+
+    def testEachLineWithCharset() {
+        setup:
+        def path = tempFile.toPath()
+        path.write('utf8-line1\nutf8-line2', 'UTF-8')
+
+        when:
+        def lines = []
+        path.eachLine('UTF-8') { lines << it }
+
+        then:
+        lines == ['utf8-line1', 'utf8-line2']
+    }
+
+    def testEachLineWithLineNumber() {
+        setup:
+        tempFile.text = 'first\nsecond\nthird'
+        def path = tempFile.toPath()
+
+        when:
+        def result = []
+        path.eachLine { line, num -> result << [line: line, num: num] }
+
+        then:
+        result.size() == 3
+        result[0] == [line: 'first', num: 1]
+        result[1] == [line: 'second', num: 2]
+        result[2] == [line: 'third', num: 3]
+    }
+
+    def testSplitEachLine() {
+        setup:
+        tempFile.text = 'a,b,c\n1,2,3\nx,y,z'
+        def path = tempFile.toPath()
+
+        when:
+        def rows = []
+        path.splitEachLine(',') { rows << it }
+
+        then:
+        rows == [['a', 'b', 'c'], ['1', '2', '3'], ['x', 'y', 'z']]
+    }
+
+    def testSplitEachLineWithPattern() {
+        setup:
+        tempFile.text = 'a:b:c\n1:2:3'
+        def path = tempFile.toPath()
+
+        when:
+        def rows = []
+        path.splitEachLine(~/\:/) { rows << it }
+
+        then:
+        rows == [['a', 'b', 'c'], ['1', '2', '3']]
+    }
+
+    def testWithObjectInputStream() {
+        setup:
+        def path = tempFile.toPath()
+        def oos = new ObjectOutputStream(new FileOutputStream(tempFile))
+        oos.writeObject('test object')
+        oos.close()
+
+        when:
+        def result = path.withObjectInputStream { ois ->
+            ois.readObject()
+        }
+
+        then:
+        result == 'test object'
+    }
+
+    // GROOVY-12681
+    def testWithObjectInputStreamAndClassLoaderReadsProxy() {
+        setup:
+        def path = tempFile.toPath()
+        def loader = new GroovyClassLoader(getClass().classLoader)
+        def greeter = loader.parseClass('interface Greeter { String greet() }')
+        def handler = loader.parseClass('''
+            class Handler implements java.lang.reflect.InvocationHandler, Serializable {
+                Object invoke(Object proxy, java.lang.reflect.Method method, Object[] args) {
+                    method.declaringClass == Object ? method.invoke(this, args) : 'hi'
+                }
+            }
+        ''')
+        path.withObjectOutputStream { oos ->
+            oos.writeObject(java.lang.reflect.Proxy.newProxyInstance(loader, [greeter] as Class[], handler.getDeclaredConstructor().newInstance()))
+        }
+
+        when:
+        def result = path.withObjectInputStream(loader) { ois ->
+            ois.readObject()
+        }
+        def ois = path.newObjectInputStream(loader)
+        def again = ois.readObject()
+        ois.close()
+
+        then:
+        greeter.isInstance(result)
+        result.greet() == 'hi'
+        again.greet() == 'hi'
+    }
+
+    def testWithObjectInputStreamAndClassLoader() {
+        setup:
+        def path = tempFile.toPath()
+        def oos = new ObjectOutputStream(new FileOutputStream(tempFile))
+        oos.writeObject(['a', 'b', 'c'])
+        oos.close()
+
+        when:
+        def result = path.withObjectInputStream(getClass().classLoader) { ois ->
+            ois.readObject()
+        }
+
+        then:
+        result == ['a', 'b', 'c']
+    }
+
+    // GROOVY-12676
+    def testWithObjectInputStreamAndClassLoaderReadsPrimitiveClasses() {
+        setup:
+        def path = tempFile.toPath()
+        def oos = new ObjectOutputStream(new FileOutputStream(tempFile))
+        oos.writeObject([int, void])
+        oos.close()
+
+        when:
+        def result = path.withObjectInputStream(getClass().classLoader) { ois ->
+            ois.readObject()
+        }
+
+        then:
+        result == [int, void]
+    }
+
+    def testWithInputStream() {
+        setup:
+        def path = tempFile.toPath()
+        path.write('input stream content')
+
+        when:
+        def result = path.withInputStream { is ->
+            is.text
+        }
+
+        then:
+        result == 'input stream content'
+    }
+
+    def testWithDataInputStream() {
+        setup:
+        def path = tempFile.toPath()
+        def dos = new DataOutputStream(new FileOutputStream(tempFile))
+        dos.writeInt(999)
+        dos.writeBoolean(true)
+        dos.close()
+
+        when:
+        def results = []
+        path.withDataInputStream { dis ->
+            results << dis.readInt()
+            results << dis.readBoolean()
+        }
+
+        then:
+        results == [999, true]
+    }
+
+    def testWithDataOutputStream() {
+        setup:
+        def path = tempFile.toPath()
+
+        when:
+        path.withDataOutputStream { dos ->
+            dos.writeDouble(3.14)
+            dos.writeLong(123456789L)
+        }
+        def dis = new DataInputStream(new FileInputStream(tempFile))
+
+        then:
+        dis.readDouble() == 3.14
+        dis.readLong() == 123456789L
+
+        cleanup:
+        dis?.close()
+    }
+
+    def testWithOutputStream() {
+        setup:
+        def path = tempFile.toPath()
+
+        when:
+        def result = path.withOutputStream { os ->
+            os.write('output stream'.bytes)
+            'done'
+        }
+
+        then:
+        path.text == 'output stream'
+        result == 'done'
+    }
+
+    def testWithReader() {
+        setup:
+        def path = tempFile.toPath()
+        path.write('reader content')
+
+        when:
+        def result = path.withReader { reader ->
+            reader.readLine()
+        }
+
+        then:
+        result == 'reader content'
+    }
+
+    def testWithReaderAndCharset() {
+        setup:
+        def path = tempFile.toPath()
+        path.write('UTF-8 reader', 'UTF-8')
+
+        when:
+        def result = path.withReader('UTF-8') { reader ->
+            reader.text
+        }
+
+        then:
+        result == 'UTF-8 reader'
+    }
+
+    def testAsWritable() {
+        setup:
+        tempFile.text = 'writable content'
+        def path = tempFile.toPath()
+
+        when:
+        def writable = path.asWritable()
+
+        then:
+        writable != null
+        writable instanceof WritablePath
+    }
+
+    def testAsWritableWithCharset() {
+        setup:
+        tempFile.text = 'UTF-8 writable'
+        def path = tempFile.toPath()
+
+        when:
+        def writable = path.asWritable('UTF-8')
+
+        then:
+        writable != null
+        writable instanceof WritablePath
+    }
+
+    def testReadLinesWithCharset() {
+        setup:
+        def path = tempFile.toPath()
+        path.write('line1\nline2\nline3', 'UTF-8')
+
+        when:
+        def lines = path.readLines('UTF-8')
+
+        then:
+        lines == ['line1', 'line2', 'line3']
+    }
+
+    def testGetTextWithCharset() {
+        setup:
+        def path = tempFile.toPath()
+        path.write('charset text', 'UTF-8')
+
+        when:
+        def text = path.getText('UTF-8')
+
+        then:
+        text == 'charset text'
+    }
+
+    def testRenameTo() {
+        setup:
+        def path = tempFile.toPath()
+        path.write('content to rename')
+        def destFile = new File(tempDir, 'renamed_file.txt')
+
+        when:
+        def result = path.renameTo(destFile.absolutePath)
+
+        then:
+        result
+        destFile.exists()
+        !Files.exists(path)
+        destFile.text == 'content to rename'
+    }
+
+    def testRenameToWithString() {
+        setup:
+        def path = tempFile.toPath()
+        path.write('rename by string')
+        def destFile = new File(tempDir, 'renamed_string.txt')
+
+        when:
+        def result = path.renameTo(destFile.absolutePath)
+
+        then:
+        result
+        destFile.exists()
+        !Files.exists(path)
+    }
+
+    def testRenameToWithURI() {
+        setup:
+        def path = tempFile.toPath()
+        path.write('rename by uri')
+        def destPath = tempDir.toPath().resolve('renamed_uri.txt')
+
+        when:
+        def result = path.renameTo(destPath.toUri())
+
+        then:
+        result
+        Files.exists(destPath)
+        !Files.exists(path)
+    }
+
+    // ---- Async extensions ----
+
+    def testGetTextAsync() {
+        given:
+        def path = tempFile.toPath()
+        path.text = 'Hello async'
+
+        when:
+        def future = path.textAsync
+
+        then:
+        future.get(5, TimeUnit.SECONDS) == 'Hello async'
+    }
+
+    def testGetTextAsyncWithCharset() {
+        given:
+        def path = tempFile.toPath()
+        path.write('Héllo àsync', 'UTF-8')
+
+        when:
+        def future = path.getTextAsync('UTF-8')
+
+        then:
+        future.get(5, TimeUnit.SECONDS) == 'Héllo àsync'
+    }
+
+    def testGetBytesAsync() {
+        given:
+        def path = tempFile.toPath()
+        path.bytes = [72, 101, 108, 108, 111] as byte[]
+
+        when:
+        def future = path.bytesAsync
+
+        then:
+        future.get(5, TimeUnit.SECONDS) == [72, 101, 108, 108, 111] as byte[]
+    }
+
+    def testWriteAsync() {
+        given:
+        def path = tempFile.toPath()
+
+        when:
+        path.writeAsync('Hello async').get(5, TimeUnit.SECONDS)
+
+        then:
+        path.text == 'Hello async'
+    }
+
+    def testWriteAsyncWithCharset() {
+        given:
+        def path = tempFile.toPath()
+
+        when:
+        path.writeAsync('Héllo àsync', 'UTF-8').get(5, TimeUnit.SECONDS)
+
+        then:
+        path.getText('UTF-8') == 'Héllo àsync'
+    }
+
+    def testWriteBytesAsync() {
+        given:
+        def path = tempFile.toPath()
+
+        when:
+        path.writeBytesAsync([72, 105] as byte[]).get(5, TimeUnit.SECONDS)
+
+        then:
+        path.bytes == [72, 105] as byte[]
+    }
+
+    def testGetTextAsyncEmptyFile() {
+        given:
+        def path = tempFile.toPath()
+        path.text = ''
+
+        when:
+        def future = path.textAsync
+
+        then:
+        future.get(5, TimeUnit.SECONDS) == ''
+    }
+
+    def testGetBytesAsyncNonExistentFile() {
+        given:
+        def path = tempDir.toPath().resolve('does-not-exist.txt')
+
+        when:
+        path.bytesAsync.get(5, TimeUnit.SECONDS)
+
+        then:
+        def e = thrown(ExecutionException)
+        e.cause instanceof NoSuchFileException
+    }
 }

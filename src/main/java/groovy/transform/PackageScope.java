@@ -20,6 +20,7 @@ package groovy.transform;
 
 import org.codehaus.groovy.transform.GroovyASTTransformationClass;
 
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -61,10 +62,16 @@ import java.lang.annotation.Target;
  *
  * @since 1.8.0
  */
-@java.lang.annotation.Documented
+@Documented
 @Retention(RetentionPolicy.SOURCE)
 @Target({ElementType.TYPE, ElementType.METHOD, ElementType.CONSTRUCTOR, ElementType.FIELD})
 @GroovyASTTransformationClass("org.codehaus.groovy.transform.PackageScopeASTTransformation")
 public @interface PackageScope {
-    groovy.transform.PackageScopeTarget[] value() default {PackageScopeTarget.CLASS};
+    /**
+     * Returns the declaration kinds whose visibility should remain package-private.
+     * Defaults to {@link PackageScopeTarget#CLASS}.
+     *
+     * @return the targeted declaration kinds
+     */
+    PackageScopeTarget[] value() default {PackageScopeTarget.CLASS};
 }

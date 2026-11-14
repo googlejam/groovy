@@ -27,11 +27,13 @@ import org.codehaus.groovy.ast.CodeVisitorSupport;
 import org.codehaus.groovy.ast.MethodNode;
 import org.codehaus.groovy.ast.stmt.Statement;
 
+import java.sql.BatchUpdateException;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -67,9 +69,31 @@ import java.util.Set;
  * }
  * </pre>
  * Currently, the Groovy source code for any accessed POGO must be on the
- * classpath at runtime. Also, at the moment, the expressions (or nested expressions) can only contain
- * references to fields of the POGO or literals (i.e. constant Strings or numbers). This limitation
- * may be removed in a future version of Groovy.
+ * classpath at runtime. The expressions (or nested expressions) can contain
+ * references to fields of the POGO, literals (i.e. constant Strings or numbers),
+ * and variables captured from the enclosing scope. Method calls, arithmetic,
+ * and other complex expressions are not currently supported.
+ *
+ * <h4>SQL identifiers and untrusted input</h4>
+ * The table name and column names handled by a {@code DataSet} are SQL <em>identifiers</em>:
+ * they are included directly in the generated SQL because JDBC cannot bind identifiers as
+ * {@code ?} parameters. Row <em>values</em> are always bound as parameters and so are safe against
+ * SQL injection, but identifiers are not. Treat the table name (the constructor argument) and the
+ * column names (the keys of any {@code Map} passed to {@link #add(Map)}) as <strong>trusted</strong>,
+ * developer-controlled values. If such an identifier originates from less-trusted input, validate or
+ * quote it yourself first &mdash; for example with the driver-aware JDBC methods
+ * {@link java.sql.Statement#isSimpleIdentifier(String)} or
+ * {@link java.sql.Statement#enquoteIdentifier(String, boolean)} (Java 9+), which you can reach via
+ * {@link Sql#cacheConnection(groovy.lang.Closure)}:
+ * <pre>
+ * {@code
+ * db.cacheConnection { con ->
+ *     assert con.createStatement().isSimpleIdentifier(userSuppliedName)
+ * }
+ * }
+ * </pre>
+ * Passing untrusted input as an identifier is a SQL-injection risk, exactly as for any hand-built
+ * SQL string (see the "Avoiding SQL injection" notes on {@link Sql}).
  */
 public class DataSet extends Sql {
 
@@ -89,6 +113,15 @@ public class DataSet extends Sql {
     private final Sql delegate;
     private boolean withinDataSetBatch = false;
 
+    /**
+     * Creates a {@code DataSet} whose table name is derived from the supplied type.
+     * <p>
+     * The table name is the lower-cased simple name of {@code type}, i.e. a trusted,
+     * compile-time-controlled SQL identifier.
+     *
+     * @param sql the backing {@link Sql} instance
+     * @param type the type whose simple name identifies the table
+     */
     public DataSet(Sql sql, Class type) {
         super(sql);
         delegate = sql;
@@ -97,9 +130,18 @@ public class DataSet extends Sql {
         if (idx > 0) {
             table = table.substring(idx + 1);
         }
-        this.table = table.toLowerCase();
+        this.table = table.toLowerCase(Locale.ROOT);
     }
 
+    /**
+     * Creates a {@code DataSet} for the supplied table.
+     * <p>
+     * The {@code table} name is a trusted SQL identifier included directly in the generated SQL;
+     * do not pass untrusted input (see the class-level note on SQL identifiers and untrusted input).
+     *
+     * @param sql the backing {@link Sql} instance
+     * @param table the trusted table name to query and update
+     */
     public DataSet(Sql sql, String table) {
         super(sql);
         delegate = sql;
@@ -131,36 +173,71 @@ public class DataSet extends Sql {
         this.reversed = true;
     }
 
+    /**
+     * {@inheritDoc}
+     * <p>
+     * Delegates connection creation to the backing {@link Sql} instance.
+     */
     @Override
     protected Connection createConnection() throws SQLException {
         return delegate.createConnection();
     }
 
+    /**
+     * {@inheritDoc}
+     * <p>
+     * Delegates resource cleanup to the backing {@link Sql} instance.
+     */
     @Override
     protected void closeResources(Connection connection, java.sql.Statement statement, ResultSet results) {
         delegate.closeResources(connection, statement, results);
     }
 
+    /**
+     * {@inheritDoc}
+     * <p>
+     * Delegates resource cleanup to the backing {@link Sql} instance.
+     */
     @Override
     protected void closeResources(Connection connection, java.sql.Statement statement) {
         delegate.closeResources(connection, statement);
     }
 
+    /**
+     * {@inheritDoc}
+     * <p>
+     * Delegates connection caching to the backing {@link Sql} instance.
+     */
     @Override
     public void cacheConnection(Closure closure) throws SQLException {
         delegate.cacheConnection(closure);
     }
 
+    /**
+     * {@inheritDoc}
+     * <p>
+     * Delegates transaction handling to the backing {@link Sql} instance.
+     */
     @Override
     public void withTransaction(Closure closure) throws SQLException {
         delegate.withTransaction(closure);
     }
 
+    /**
+     * {@inheritDoc}
+     * <p>
+     * Delegates commit handling to the backing {@link Sql} instance.
+     */
     @Override
     public void commit() throws SQLException {
         delegate.commit();
     }
 
+    /**
+     * {@inheritDoc}
+     * <p>
+     * Delegates rollback handling to the backing {@link Sql} instance.
+     */
     @Override
     public void rollback() throws SQLException {
         delegate.rollback();
@@ -176,7 +253,7 @@ public class DataSet extends Sql {
      *         to the order in which commands were added to the batch.
      * @throws SQLException if a database access error occurs,
      *                      or this method is called on a closed <code>Statement</code>, or the
-     *                      driver does not support batch statements. Throws {@link java.sql.BatchUpdateException}
+     *                      driver does not support batch statements. Throws {@link BatchUpdateException}
      *                      (a subclass of <code>SQLException</code>) if one of the commands sent to the
      *                      database fails to execute properly or attempts to return a result set.
      */
@@ -205,7 +282,7 @@ public class DataSet extends Sql {
      *         command in the batch.  The elements of the array are ordered according
      *         to the order in which commands were added to the batch.
      * @throws SQLException if a database access error occurs, or the driver does not support batch statements.
-     *                      Throws {@link java.sql.BatchUpdateException} (a subclass of <code>SQLException</code>)
+     *                      Throws {@link BatchUpdateException} (a subclass of <code>SQLException</code>)
      *                      if one of the commands sent to the database fails to execute properly.
      */
     @Override
@@ -218,6 +295,11 @@ public class DataSet extends Sql {
             return EMPTY_INT_ARRAY;
         }
         Closure transformedClosure = new Closure(null) {
+            /**
+             * Adds each map collected for this batch as one batch entry.
+             *
+             * @throws SQLException if an entry cannot be added
+             */
             public void doCall(BatchingPreparedStatementWrapper stmt) throws SQLException {
                 for (Object next : batchData) {
                     stmt.addBatch(new Object[]{next});
@@ -229,8 +311,13 @@ public class DataSet extends Sql {
 
     /**
      * Adds the provided map of key-value pairs as a new row in the table represented by this DataSet.
+     * <p>
+     * The map <em>values</em> are bound as JDBC parameters, but the map <em>keys</em> are used as
+     * column names and included directly in the generated SQL. Treat the keys as trusted SQL
+     * identifiers; do not use keys taken from untrusted input (see the class-level note on SQL
+     * identifiers and untrusted input).
      *
-     * @param map the key (column-name), value pairs to add as a new row
+     * @param map the key (column-name), value pairs to add as a new row; keys are treated as trusted identifiers
      * @throws SQLException if a database error occurs
      */
     public void add(Map<String, Object> map) throws SQLException {
@@ -363,8 +450,8 @@ public class DataSet extends Sql {
         if (where != null) {
             whereClaus += getSqlWhereVisitor().getWhere();
         }
-        if (parentClaus.length() == 0) return whereClaus;
-        if (whereClaus.length() == 0) return parentClaus;
+        if (parentClaus.isEmpty()) return whereClaus;
+        if (whereClaus.isEmpty()) return parentClaus;
         return parentClaus + " and " + whereClaus;
     }
 
@@ -375,31 +462,41 @@ public class DataSet extends Sql {
             parentClaus = parent.getSqlOrderBy();
         }
         if (reversed) {
-            if (parentClaus.length() > 0) parentClaus += " DESC";
+            if (!parentClaus.isEmpty()) parentClaus += " DESC";
         }
         if (sort != null) {
             sortByClaus += getSqlOrderByVisitor().getOrderBy();
         }
-        if (parentClaus.length() == 0) return sortByClaus;
-        if (sortByClaus.length() == 0) return parentClaus;
+        if (parentClaus.isEmpty()) return sortByClaus;
+        if (sortByClaus.isEmpty()) return parentClaus;
         return parentClaus + ", " + sortByClaus;
     }
 
+    /**
+     * Returns the lazily assembled SQL query represented by this {@code DataSet}.
+     *
+     * @return the SQL query for the current chained view
+     */
     public String getSql() {
         if (sql == null) {
             sql = "select * from " + table;
             String whereClaus = getSqlWhere();
-            if (whereClaus.length() > 0) {
+            if (!whereClaus.isEmpty()) {
                 sql += " where " + whereClaus;
             }
             String orderByClaus = getSqlOrderBy();
-            if (orderByClaus.length() > 0) {
+            if (!orderByClaus.isEmpty()) {
                 sql += " order by " + orderByClaus;
             }
         }
         return sql;
     }
 
+    /**
+     * Returns the positional parameter values corresponding to {@link #getSql()}.
+     *
+     * @return the parameters for the current chained view
+     */
     public List<Object> getParameters() {
         if (params == null) {
             params = new ArrayList<Object>();
@@ -411,53 +508,71 @@ public class DataSet extends Sql {
         return params;
     }
 
+    /**
+     * Returns the lazily initialized visitor used to derive the SQL {@code WHERE} clause.
+     *
+     * @return the visitor for the current filter closure
+     */
     protected SqlWhereVisitor getSqlWhereVisitor() {
         if (visitor == null) {
             visitor = new SqlWhereVisitor();
+            visitor.setClosure(where);
             visit(where, visitor);
         }
         return visitor;
     }
 
+    /**
+     * Returns the lazily initialized visitor used to derive the SQL {@code ORDER BY} clause.
+     *
+     * @return the visitor for the current sort closure
+     */
     protected SqlOrderByVisitor getSqlOrderByVisitor() {
         if (sortVisitor == null) {
             sortVisitor = new SqlOrderByVisitor();
-            visit(sort, sortVisitor);
+            Statement code = closureCode(sort);
+            if (code != null) sortVisitor.visit(code);
         }
         return sortVisitor;
     }
 
     private static void visit(Closure closure, CodeVisitorSupport visitor) {
-        if (closure != null) {
-            ClassNode classNode = closure.getMetaClass().getClassNode();
-            if (classNode == null) {
-                throw new GroovyRuntimeException(
-                        "DataSet unable to evaluate expression. AST not available for closure: " + closure.getMetaClass().getTheClass().getName() +
-                                ". Is the source code on the classpath?");
-            }
-            List methods = classNode.getDeclaredMethods("doCall");
-            if (!methods.isEmpty()) {
-                MethodNode method = (MethodNode) methods.get(0);
-                if (method != null) {
-                    Statement statement = method.getCode();
-                    if (statement != null) {
-                        statement.visit(visitor);
-                    }
-                }
-            }
+        Statement code = closureCode(closure);
+        if (code != null) {
+            code.visit(visitor);
         }
     }
 
-    /*
-    * create a subset of the original dataset
-    */
+    private static Statement closureCode(Closure closure) {
+        if (closure == null) {
+            return null;
+        }
+        ClassNode classNode = closure.getMetaClass().getClassNode();
+        if (classNode == null) {
+            throw new GroovyRuntimeException(
+                    "DataSet unable to evaluate expression. AST not available for closure: " + closure.getMetaClass().getTheClass().getName() +
+                            ". Is the source code on the classpath?");
+        }
+        List methods = classNode.getDeclaredMethods("doCall");
+        if (methods.isEmpty()) {
+            return null;
+        }
+        MethodNode method = (MethodNode) methods.get(0);
+        return method != null ? method.getCode() : null;
+    }
+
+    /**
+     * create a subset of the original dataset.
+     *
+     * @param criteria the filter closure describing the subset
+     * @return a new {@code DataSet} view
+     */
     public DataSet createView(Closure criteria) {
         return new DataSet(this, criteria);
     }
 
     /**
-     * Returns a List of all of the rows from the table a DataSet
-     * represents.
+     * Returns a List of all the rows from the DataSet.
      *
      * @return Returns a list of GroovyRowResult objects from the dataset
      * @throws SQLException if a database error occurs
@@ -492,6 +607,9 @@ public class DataSet extends Sql {
         return (rows.get(0));
     }
 
+    /**
+     * Closes this {@code DataSet} and its backing {@link Sql} resources.
+     */
     @Override
     public void close() {
         delegate.close();

@@ -29,6 +29,7 @@ import org.codehaus.groovy.ast.expr.EmptyExpression;
 import org.codehaus.groovy.ast.expr.Expression;
 import org.codehaus.groovy.ast.expr.PostfixExpression;
 import org.codehaus.groovy.ast.expr.PrefixExpression;
+import org.codehaus.groovy.ast.expr.SwitchExpression;
 import org.codehaus.groovy.ast.expr.TupleExpression;
 import org.codehaus.groovy.ast.expr.VariableExpression;
 import org.codehaus.groovy.ast.stmt.BlockStatement;
@@ -42,11 +43,13 @@ import org.codehaus.groovy.ast.stmt.ReturnStatement;
 import org.codehaus.groovy.ast.stmt.Statement;
 import org.codehaus.groovy.ast.stmt.SwitchStatement;
 import org.codehaus.groovy.ast.stmt.ThrowStatement;
+import org.codehaus.groovy.ast.stmt.YieldStatement;
 import org.codehaus.groovy.ast.stmt.TryCatchStatement;
 import org.codehaus.groovy.control.SourceUnit;
 import org.codehaus.groovy.runtime.DefaultGroovyMethods;
 import org.codehaus.groovy.transform.stc.StaticTypeCheckingSupport;
 
+import java.io.Serial;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -57,7 +60,14 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
+/**
+ * Analyzes variable assignments to determine if variables are effectively final,
+ * which is required for use in closures and lambda expressions. This visitor tracks
+ * variable states through control flow to detect reassignments that would prevent
+ * a variable from being considered effectively final.
+ */
 public class FinalVariableAnalyzer extends ClassCodeVisitorSupport {
 
     private final SourceUnit sourceUnit;
@@ -79,15 +89,24 @@ public class FinalVariableAnalyzer extends ClassCodeVisitorSupport {
             this.isFinal = isFinal;
         }
 
+        /**
+         * Next state after an assignment. {@code is_uninitialized} becomes {@code is_final};
+         * every other state becomes {@code is_var}.
+         *
+         * @return the state that follows this one
+         */
         public VariableState getNext() {
-            switch (this) {
-                case is_uninitialized:
-                    return is_final;
-                default:
-                    return is_var;
-            }
+            return switch (this) {
+                case is_uninitialized -> is_final;
+                default -> is_var;
+            };
         }
 
+        /**
+         * Reports whether this state is {@code is_final}.
+         *
+         * @return {@code true} only for {@code is_final}
+         */
         public boolean isFinal() {
             return isFinal;
         }
@@ -95,10 +114,21 @@ public class FinalVariableAnalyzer extends ClassCodeVisitorSupport {
 
     private final Deque<Map<Variable, VariableState>> assignmentTracker = new LinkedList<>();
 
+    /**
+     * Creates a new final variable analyzer without a callback.
+     *
+     * @param sourceUnit the source unit being analyzed
+     */
     public FinalVariableAnalyzer(final SourceUnit sourceUnit) {
         this(sourceUnit, null);
     }
 
+    /**
+     * Creates a new final variable analyzer with a callback for non-final variable detection.
+     *
+     * @param sourceUnit the source unit being analyzed
+     * @param callback the callback to invoke when a variable is found to not be final, may be null
+     */
     public FinalVariableAnalyzer(final SourceUnit sourceUnit, final VariableNotFinalCallback callback) {
         this.callback = callback;
         this.sourceUnit = sourceUnit;
@@ -129,17 +159,30 @@ public class FinalVariableAnalyzer extends ClassCodeVisitorSupport {
         return assignmentTracker.getLast();
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected SourceUnit getSourceUnit() {
         return sourceUnit;
     }
 
+    /**
+     * Determines if a variable is effectively final, meaning it is not reassigned after initialization.
+     * Parameters without any state information are considered effectively final by default.
+     *
+     * @param v the variable to check
+     * @return true if the variable is effectively final, false otherwise
+     */
     public boolean isEffectivelyFinal(Variable v) {
         VariableState state = getState().get(v);
         return (v instanceof Parameter && state == null)
                 || (state != null && state.isFinal());
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitBlockStatement(final BlockStatement block) {
         Set<Variable> old = declaredFinalVariables;
@@ -148,6 +191,9 @@ public class FinalVariableAnalyzer extends ClassCodeVisitorSupport {
         declaredFinalVariables = old;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitArgumentlistExpression(ArgumentListExpression ale) {
         boolean old = inArgumentList;
@@ -156,6 +202,9 @@ public class FinalVariableAnalyzer extends ClassCodeVisitorSupport {
         inArgumentList = old;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitBinaryExpression(final BinaryExpression expression) {
         boolean assignment = StaticTypeCheckingSupport.isAssignment(expression.getOperation().getType());
@@ -179,8 +228,7 @@ public class FinalVariableAnalyzer extends ClassCodeVisitorSupport {
         if (leftExpression instanceof Variable) {
             boolean uninitialized = isDeclaration && rightExpression instanceof EmptyExpression;
             recordAssignment((Variable) leftExpression, isDeclaration, uninitialized, false, expression);
-        } else if (leftExpression instanceof TupleExpression) {
-            TupleExpression te = (TupleExpression) leftExpression;
+        } else if (leftExpression instanceof TupleExpression te) {
             for (Expression next : te.getExpressions()) {
                 if (next instanceof Variable) {
                     recordAssignment((Variable) next, isDeclaration, false, false, next);
@@ -190,13 +238,11 @@ public class FinalVariableAnalyzer extends ClassCodeVisitorSupport {
     }
 
     private void recordFinalVars(Expression leftExpression) {
-        if (leftExpression instanceof VariableExpression) {
-            VariableExpression var = (VariableExpression) leftExpression;
+        if (leftExpression instanceof VariableExpression var) {
             if (Modifier.isFinal(var.getModifiers())) {
                 declaredFinalVariables.add(var);
             }
-        } else if (leftExpression instanceof TupleExpression) {
-            TupleExpression te = (TupleExpression) leftExpression;
+        } else if (leftExpression instanceof TupleExpression te) {
             for (Expression next : te.getExpressions()) {
                 if (next instanceof Variable) {
                     declaredFinalVariables.add((Variable) next);
@@ -205,6 +251,9 @@ public class FinalVariableAnalyzer extends ClassCodeVisitorSupport {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitClosureExpression(final ClosureExpression expression) {
         boolean old = inAssignmentRHS;
@@ -228,6 +277,9 @@ public class FinalVariableAnalyzer extends ClassCodeVisitorSupport {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitPrefixExpression(final PrefixExpression expression) {
         inAssignmentRHS = expression.getExpression() instanceof VariableExpression;
@@ -236,6 +288,9 @@ public class FinalVariableAnalyzer extends ClassCodeVisitorSupport {
         checkPrePostfixOperation(expression.getExpression(), expression);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitPostfixExpression(final PostfixExpression expression) {
         inAssignmentRHS = expression.getExpression() instanceof VariableExpression;
@@ -256,6 +311,9 @@ public class FinalVariableAnalyzer extends ClassCodeVisitorSupport {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitVariableExpression(final VariableExpression expression) {
         super.visitVariableExpression(expression);
@@ -273,6 +331,9 @@ public class FinalVariableAnalyzer extends ClassCodeVisitorSupport {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitIfElse(final IfStatement ifElse) {
         visitStatement(ifElse);
@@ -290,13 +351,19 @@ public class FinalVariableAnalyzer extends ClassCodeVisitorSupport {
         allVars.addAll(curState.keySet());
         allVars.addAll(ifState.keySet());
         allVars.addAll(elseState.keySet());
+        boolean ifReturning = returningBlock(ifElse.getIfBlock());
+        boolean elseReturning = returningBlock(ifElse.getElseBlock());
         for (Variable var : allVars) {
             VariableState beforeValue = curState.get(var);
             if (beforeValue != null) {
                 VariableState ifValue = ifState.get(var);
                 VariableState elseValue = elseState.get(var);
-                if (ifValue == elseValue) {
+                if (ifValue == elseValue || (elseReturning && !ifReturning)) {
                     curState.put(var, ifValue);
+                } else if (ifReturning && !elseReturning) {
+                    curState.put(var, elseValue);
+                } else if (ifReturning) {
+                    curState.put(var, beforeValue);
                 } else {
                     curState.put(var, beforeValue == VariableState.is_uninitialized ? VariableState.is_ambiguous : VariableState.is_var);
                 }
@@ -304,13 +371,47 @@ public class FinalVariableAnalyzer extends ClassCodeVisitorSupport {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     * <p>
+     * {@link YieldStatement} completes the expression normally, so only
+     * {@code throw}/{@code return} skip the join after it (GROOVY-12255).
+     */
     @Override
-    public void visitSwitch(SwitchStatement switchS) {
+    public void visitSwitchExpression(final SwitchExpression expression) {
+        visitSwitchBranches(expression.getExpression(), expression.getCaseStatements(),
+                expression.getDefaultStatement(), this::completesWithoutReachingAfterExpression);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void visitSwitch(final SwitchStatement switchS) {
         visitStatement(switchS);
-        switchS.getExpression().visit(this);
-        List<Statement> branches = new ArrayList<>(switchS.getCaseStatements());
-        if (!(switchS.getDefaultStatement() instanceof EmptyStatement)) {
-            branches.add(switchS.getDefaultStatement());
+        visitSwitchBranches(switchS.getExpression(), switchS.getCaseStatements(),
+                switchS.getDefaultStatement(), this::returningBlock);
+    }
+
+    /**
+     * Path-sensitive analysis shared by {@link SwitchStatement} and
+     * {@link SwitchExpression}. Each case is a possible entry; fall-through
+     * into later arms is followed until a terminator or the last arm. Paths
+     * for which {@code leavesJoin} is true are dropped; the rest are merged
+     * into the enclosing assignment state.
+     *
+     * @param selector the switch selector
+     * @param caseStatements case arms in source order
+     * @param defaultStatement default arm; {@link EmptyStatement} means none
+     * @param leavesJoin {@code true} when the completed arm does not reach
+     *                   the code after the switch
+     */
+    private void visitSwitchBranches(final Expression selector, final List<CaseStatement> caseStatements,
+            final Statement defaultStatement, final Predicate<Statement> leavesJoin) {
+        selector.visit(this);
+        List<Statement> branches = new ArrayList<>(caseStatements);
+        if (!(defaultStatement instanceof EmptyStatement)) {
+            branches.add(defaultStatement);
         }
         List<Map<Variable, VariableState>> afterStates = new ArrayList<>();
 
@@ -319,22 +420,21 @@ public class FinalVariableAnalyzer extends ClassCodeVisitorSupport {
         for (int i = 0; i <= lastIndex; i++) {
             pushState();
             boolean done = false;
-            boolean returning = false;
+            boolean leaves = false;
             for (int j = i; !done; j++) {
                 Statement branch = branches.get(j);
                 Statement block = branch; // default branch
-                if (branch instanceof CaseStatement) {
-                    CaseStatement caseS = (CaseStatement) branch;
+                if (branch instanceof CaseStatement caseS) {
                     block = caseS.getCode();
                     caseS.getExpression().visit(this);
                 }
                 block.visit(this);
                 done = j == lastIndex || !fallsThrough(block);
                 if (done) {
-                    returning = returningBlock(block);
+                    leaves = leavesJoin.test(block);
                 }
             }
-            if (!returning) {
+            if (!leaves) {
                 afterStates.add(getState());
             }
             popState();
@@ -365,6 +465,9 @@ public class FinalVariableAnalyzer extends ClassCodeVisitorSupport {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitTryCatchFinally(final TryCatchStatement statement) {
         visitStatement(statement);
@@ -432,21 +535,39 @@ public class FinalVariableAnalyzer extends ClassCodeVisitorSupport {
     }
 
     /**
+     * True when every path through {@code block} leaves the enclosing method
+     * (return) or throws, so assignments in that arm do not reach the code
+     * after a switch expression (GROOVY-12255). {@link YieldStatement}
+     * completes the expression normally and therefore does reach that code.
+     */
+    private boolean completesWithoutReachingAfterExpression(final Statement block) {
+        if (block instanceof ReturnStatement || block instanceof ThrowStatement) {
+            return true;
+        }
+        if (block instanceof YieldStatement) {
+            return false;
+        }
+        if (block instanceof BlockStatement bs && !bs.getStatements().isEmpty()) {
+            return completesWithoutReachingAfterExpression(DefaultGroovyMethods.last(bs.getStatements()));
+        }
+        return false;
+    }
+
+    /**
      * @return true if the block's last statement is a return or throw
      */
     private boolean returningBlock(Statement block) {
-        if (block instanceof ReturnStatement || block instanceof  ThrowStatement) {
+        if (block instanceof ReturnStatement || block instanceof ThrowStatement || block instanceof YieldStatement) {
             return true;
         }
-        if (!(block instanceof BlockStatement)) {
+        if (!(block instanceof BlockStatement bs)) {
             return false;
         }
-        BlockStatement bs = (BlockStatement) block;
-        if (bs.getStatements().size() == 0) {
+        if (bs.getStatements().isEmpty()) {
             return false;
         }
         Statement last = DefaultGroovyMethods.last(bs.getStatements());
-        if (last instanceof ReturnStatement || last instanceof ThrowStatement) {
+        if (last instanceof ReturnStatement || last instanceof ThrowStatement || last instanceof YieldStatement) {
             return true;
         }
         return false;
@@ -463,11 +584,11 @@ public class FinalVariableAnalyzer extends ClassCodeVisitorSupport {
             return false;
         }
         BlockStatement block = (BlockStatement) statement; // currently only possibility
-        if (block.getStatements().size() == 0) {
+        if (block.getStatements().isEmpty()) {
             return true;
         }
         Statement last = DefaultGroovyMethods.last(block.getStatements());
-        boolean completesAbruptly = last instanceof ReturnStatement || last instanceof BreakStatement || last instanceof ThrowStatement || last instanceof ContinueStatement;
+        boolean completesAbruptly = last instanceof ReturnStatement || last instanceof BreakStatement || last instanceof ThrowStatement || last instanceof ContinueStatement || last instanceof YieldStatement;
         return !completesAbruptly;
     }
 
@@ -523,9 +644,12 @@ public class FinalVariableAnalyzer extends ClassCodeVisitorSupport {
         }
     }
 
+    /**
+     * Callback interface notified when effectively final analysis detects a problem.
+     */
     public interface VariableNotFinalCallback {
         /**
-         * Callback called whenever an assignment transforms an effectively final variable into a non final variable
+         * Callback called whenever an assignment transforms an effectively final variable into a non-final variable
          * (aka, breaks the "final" modifier contract)
          *
          * @param var  the variable detected as not final
@@ -542,6 +666,7 @@ public class FinalVariableAnalyzer extends ClassCodeVisitorSupport {
     }
 
     private static class StateMap extends HashMap<Variable, VariableState> {
+        @Serial
         private static final long serialVersionUID = -5881634573411342092L;
 
         @Override

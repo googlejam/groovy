@@ -16,24 +16,25 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class ClassInNamedParamsBug extends GroovyTestCase {
-    
+final class ClassInNamedParamsBug {
+
+    @Test
     void testBug() {
         def foo = method(class:'cheese', name:'cheddar')
-        
+
         assert foo.name == "cheddar"
         assert foo.class == "cheese"
-        
+
         foo = method(name:'cheddar', class:'cheese')
-        
+
         assert foo.name == "cheddar"
         assert foo.class == "cheese"
     }
-    
+
     def method(Map data) {
         data
     }

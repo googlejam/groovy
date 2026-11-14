@@ -18,28 +18,30 @@
  */
 package metaprogramming
 
-import groovy.test.GroovyTestCase
 import groovy.xml.Entity
+import org.junit.jupiter.api.Test
 
 // tag::meta_class_interception[]
-class InterceptionThroughMetaClassTest extends GroovyTestCase {
+final class InterceptionThroughMetaClassTest {
 
+    @Test
     void testPOJOMetaClassInterception() {
         String invoking = 'ha'
         invoking.metaClass.invokeMethod = { String name, Object args ->
             'invoked'
         }
-        
+
         assert invoking.length() == 'invoked'
         assert invoking.someMethod() == 'invoked'
     }
 
+    @Test
     void testPOGOMetaClassInterception() {
         Entity entity = new Entity('Hello')
         entity.metaClass.invokeMethod = { String name, Object args ->
             'invoked'
         }
-        
+
         assert entity.build(new Object()) == 'invoked'
         assert entity.someMethod() == 'invoked'
     }

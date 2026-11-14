@@ -20,14 +20,40 @@ plugins {
     id 'org.apache.groovy-library'
 }
 
+repositories {
+// For testing new JLine versions
+//    mavenLocal()
+    mavenCentral()
+}
+
 dependencies {
-    implementation rootProject
-    implementation project(':groovy-console')
-    implementation project(':groovy-templates')
-    implementation project(':groovy-xml')
-    testImplementation project(':groovy-test')
-    implementation("jline:jline:${versions.jline}") {
-        exclude(group: 'junit', module: 'junit')
+    implementation project(':')
+    implementation projects.groovyTemplates
+    implementation projects.groovyXml
+    implementation projects.groovyJson
+    implementation projects.groovyNio
+    // Direct implementation dependency. LSP4J stays off this module's published API.
+    implementation projects.groovyLsp
+    // /console and /inspect --gui load groovy.console.ui by name when that jar
+    // is present. The shell does not compile against it.
+    testRuntimeOnly projects.groovyConsole
+    testImplementation projects.groovyTest
+    testImplementation projects.groovyCsv         // for /slurp .csv default coverage
+    testImplementation projects.groovyMarkdown    // for /slurp .md default coverage
+    testImplementation projects.groovyTestJunit6  // for @ForkedJvm in CSV fallback tests
+    // glob expansion uses Ant's DirectoryScanner when it is on the classpath, which the
+    // distribution supplies but this module deliberately does not depend on; supply it to
+    // the tests so that path is exercised rather than skipped
+    testRuntimeOnly "org.apache.ant:ant:${versions.ant}"
+    implementation "net.java.dev.jna:jna:${versions.jna}"
+    implementation "org.jline:jansi:${versions.jline}"
+    implementation "org.jline:jline-builtins:${versions.jline}"
+    implementation "org.jline:jline-reader:${versions.jline}"
+    implementation "org.jline:jline-console:${versions.jline}"
+    implementation "org.jline:jline-shell:${versions.jline}"
+    implementation "org.jline:jline-terminal-jni:${versions.jline}"
+    implementation("org.jline:jline-terminal:${versions.jline}") {
+//        exclude(group: 'junit', module: 'junit')
     }
 }
 
@@ -35,4 +61,22 @@ plugins.withId('eclipse') {
     eclipse.classpath.file.whenMerged {
         entries.removeAll { entry -> entry.path in ['/groovy-xml', '/groovy-swing', '/groovy-templates'] }
     }
+}
+
+// Forward -Djunit.network from the Gradle invocation to the test JVM so that
+// @EnabledIfSystemProperty in network-gated tests (e.g. SlurpCsvFallbackTest)
+// can see it.
+tasks.named('test') {
+    def network = System.getProperty('junit.network')
+    if (network) {
+        systemProperty 'junit.network', network
+    }
+}
+
+tasks.named('rat') {
+    excludes << '**/jline/GroovyEngine.java' // BSD license as per NOTICE/LICENSE files
+    excludes << '**/jline/ObjectInspector.groovy' // BSD license as per NOTICE/LICENSE files
+    excludes << '**/jline/Utils.groovy' // BSD license as per NOTICE/LICENSE files
+    excludes << '**/jline/JrtJavaBasePackages.java' // BSD license as per NOTICE/LICENSE files
+    excludes << '**/jline/PackageHelper.java' // BSD license as per NOTICE/LICENSE files
 }

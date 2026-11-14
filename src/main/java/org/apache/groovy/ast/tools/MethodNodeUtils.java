@@ -18,13 +18,21 @@
  */
 package org.apache.groovy.ast.tools;
 
-import org.codehaus.groovy.ast.ClassHelper;
+import org.codehaus.groovy.ast.ClassNode;
+import org.codehaus.groovy.ast.ConstructorNode;
 import org.codehaus.groovy.ast.MethodNode;
 import org.codehaus.groovy.ast.Parameter;
 import org.codehaus.groovy.ast.stmt.BlockStatement;
+import org.codehaus.groovy.ast.stmt.EmptyStatement;
 import org.codehaus.groovy.ast.stmt.Statement;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
 import static org.apache.groovy.util.BeanUtils.decapitalize;
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveBoolean;
+import static org.objectweb.asm.Opcodes.ACC_ABSTRACT;
 
 /**
  * Utility class for working with MethodNodes
@@ -32,6 +40,14 @@ import static org.apache.groovy.util.BeanUtils.decapitalize;
 public class MethodNodeUtils {
 
     private MethodNodeUtils() { }
+
+    private static void appendTypeName(final StringBuilder sb, ClassNode cn) {
+        while (cn.isArray()) {
+            cn = cn.getComponentType();
+            sb.append('[');
+        }
+        sb.append(cn.getName());
+    }
 
     /**
      * Return the method node's descriptor including its
@@ -44,7 +60,8 @@ public class MethodNodeUtils {
         StringBuilder sb = new StringBuilder();
         sb.append(mNode.getName()).append(':');
         for (Parameter p : mNode.getParameters()) {
-            sb.append(ClassNodeUtils.formatTypeName(p.getType())).append(',');
+            appendTypeName(sb, p.getType());
+            sb.append(';');
         }
         return sb.toString();
     }
@@ -57,19 +74,49 @@ public class MethodNodeUtils {
      * @return the method node's descriptor
      */
     public static String methodDescriptor(final MethodNode mNode) {
-        StringBuilder sb = new StringBuilder(mNode.getName().length() + mNode.getParameters().length * 10);
-        sb.append(mNode.getReturnType().getName());
-        sb.append(' ');
-        sb.append(mNode.getName());
+        return methodDescriptor(mNode, false);
+    }
+
+    /**
+     * Return the method node's descriptor which includes its return type,
+     * name and parameter types without generics.
+     *
+     * @param mNode the method node
+     * @param pretty whether to quote a name with spaces
+     * @return the method node's descriptor
+     */
+    public static String methodDescriptor(final MethodNode mNode, final boolean pretty) {
+        String name = mNode.getName();
+        Parameter[] parameters = mNode.getParameters();
+        int nParameters = (parameters == null ? 0 : parameters.length);
+
+        StringBuilder sb = new StringBuilder((name.length() * 2) + (nParameters * 10));
+        if (pretty && !mNode.isConstructor()) {
+            sb.append(ClassNodeUtils.formatTypeName(mNode.getReturnType()));
+            sb.append(' ');
+        }
+        if (name.contains(" ")) {
+            sb.append('"').append(name).append('"');
+        } else {
+            sb.append(name);
+        }
         sb.append('(');
-        for (int i = 0; i < mNode.getParameters().length; i++) {
+        for (int i = 0; i < nParameters; i += 1) {
             if (i > 0) {
-                sb.append(", ");
+                sb.append(',');
+                if (pretty) sb.append(' ');
             }
-            Parameter p = mNode.getParameters()[i];
-            sb.append(ClassNodeUtils.formatTypeName(p.getType()));
+            if (pretty) {
+                sb.append(ClassNodeUtils.formatTypeName(parameters[i].getType()));
+            } else {
+                appendTypeName(sb, parameters[i].getType());
+            }
         }
         sb.append(')');
+        if (!pretty && !mNode.isConstructor()) {
+            sb.append(':');
+            appendTypeName(sb, mNode.getReturnType());
+        }
         return sb.toString();
     }
 
@@ -84,21 +131,21 @@ public class MethodNodeUtils {
         final int nameLength = name.length();
         if (nameLength > 2) {
             switch (name.charAt(0)) {
-                case 'g':
-                    if (nameLength > 3 && name.charAt(1) == 'e' && name.charAt(2) == 't' && mNode.getParameters().length == 0 && !mNode.getReturnType().equals(ClassHelper.VOID_TYPE)) {
-                        return decapitalize(name.substring(3));
-                    }
-                    break;
-                case 's':
-                    if (nameLength > 3 && name.charAt(1) == 'e' && name.charAt(2) == 't' && mNode.getParameters().length == 1 /*&& mNode.getReturnType().equals(ClassHelper.VOID_TYPE)*/) {
-                        return decapitalize(name.substring(3));
-                    }
-                    break;
-                case 'i':
-                    if (name.charAt(1) == 's' && mNode.getParameters().length == 0 && (mNode.getReturnType().equals(ClassHelper.boolean_TYPE) /*|| mNode.getReturnType().equals(ClassHelper.Boolean_TYPE)*/)) {
-                        return decapitalize(name.substring(2));
-                    }
-                    break;
+              case 'g':
+                if (nameLength > 3 && name.charAt(1) == 'e' && name.charAt(2) == 't' && mNode.getParameters().length == 0 && !mNode.isVoidMethod()) {
+                    return decapitalize(name.substring(3));
+                }
+                break;
+              case 's':
+                if (nameLength > 3 && name.charAt(1) == 'e' && name.charAt(2) == 't' && mNode.getParameters().length == 1 /*&& mNode.isVoidMethod()*/) {
+                    return decapitalize(name.substring(3));
+                }
+                break;
+              case 'i':
+                if (name.charAt(1) == 's' && mNode.getParameters().length == 0 && (isPrimitiveBoolean(mNode.getReturnType()) /*|| isWrapperBoolean(mNode.getReturnType())*/)) {
+                    return decapitalize(name.substring(2));
+                }
+                break;
             }
         }
         return null;
@@ -111,11 +158,11 @@ public class MethodNodeUtils {
      * Otherwise the existing block statement will be returned.
      * The original {@code node} is not modified.
      *
-     * @param node the method (or constructor) node
+     * @param mNode the method (or constructor) node
      * @return the found or created block statement
      */
-    public static BlockStatement getCodeAsBlock(final MethodNode node) {
-        Statement code = node.getCode();
+    public static BlockStatement getCodeAsBlock(final MethodNode mNode) {
+        Statement code = mNode.getCode();
         BlockStatement block;
         if (code == null) {
             block = new BlockStatement();
@@ -126,5 +173,60 @@ public class MethodNodeUtils {
             block = (BlockStatement) code;
         }
         return block;
+    }
+
+    /**
+     * Determines if given method is a getter candidate.
+     *
+     * @since 4.0.0
+     */
+    public static boolean isGetterCandidate(final MethodNode mNode) {
+        Parameter[] parameters = mNode.getParameters();
+        return (parameters == null || parameters.length == 0)
+                && mNode.isPublic() && !mNode.isStatic() && !mNode.isAbstract() && !mNode.isVoidMethod();
+    }
+
+    /**
+     * Returns new list that includes methods that will be generated for default
+     * argument expressions.
+     *
+     * @since 5.0.0
+     */
+    public static List<MethodNode> withDefaultArgumentMethods(final List<? extends MethodNode> methods) {
+        List<MethodNode> result = new ArrayList<>(methods.size());
+
+        for (MethodNode method : methods) {
+            result.add(method);
+
+            if (!method.hasDefaultValue()) continue;
+
+            Parameter[] parameters = method.getParameters();
+            var n = Arrays.stream(parameters).filter(Parameter::hasInitialExpression).count();
+            for (int i = 1; i <= n; i += 1) { // drop parameters with value from right to left
+                Parameter[] newParams = new Parameter[parameters.length - i];
+                int j = 1, index = 0;
+                for (Parameter parameter : parameters) {
+                    if (j > n - i && parameter.hasInitialExpression()) {
+                        ;
+                    } else {
+                        newParams[index++] = parameter;
+                    }
+                    if (parameter.hasInitialExpression()) j += 1;
+                }
+
+                MethodNode stub;
+                if (method.isConstructor()) {
+                    stub = new ConstructorNode(method.getModifiers(), newParams, method.getExceptions(), EmptyStatement.INSTANCE);
+                } else {
+                    stub = new MethodNode(method.getName(), method.getModifiers() & ~ACC_ABSTRACT, method.getReturnType(), newParams, method.getExceptions(), EmptyStatement.INSTANCE);
+                }
+                stub.setDeclaringClass(method.getDeclaringClass());
+                stub.setGenericsTypes(method.getGenericsTypes());
+                stub.setSynthetic(true);
+                result.add(stub);
+            }
+        }
+
+        return result;
     }
 }

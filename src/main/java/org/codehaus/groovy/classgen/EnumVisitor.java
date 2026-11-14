@@ -25,44 +25,59 @@ import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.ConstructorNode;
 import org.codehaus.groovy.ast.EnumConstantClassNode;
 import org.codehaus.groovy.ast.FieldNode;
-import org.codehaus.groovy.ast.InnerClassNode;
 import org.codehaus.groovy.ast.MethodNode;
 import org.codehaus.groovy.ast.Parameter;
 import org.codehaus.groovy.ast.expr.ArgumentListExpression;
-import org.codehaus.groovy.ast.expr.ArrayExpression;
-import org.codehaus.groovy.ast.expr.BinaryExpression;
-import org.codehaus.groovy.ast.expr.BooleanExpression;
 import org.codehaus.groovy.ast.expr.ClassExpression;
-import org.codehaus.groovy.ast.expr.ConstantExpression;
 import org.codehaus.groovy.ast.expr.ConstructorCallExpression;
-import org.codehaus.groovy.ast.expr.DeclarationExpression;
 import org.codehaus.groovy.ast.expr.Expression;
-import org.codehaus.groovy.ast.expr.FieldExpression;
 import org.codehaus.groovy.ast.expr.ListExpression;
 import org.codehaus.groovy.ast.expr.MapEntryExpression;
-import org.codehaus.groovy.ast.expr.MapExpression;
 import org.codehaus.groovy.ast.expr.MethodCallExpression;
-import org.codehaus.groovy.ast.expr.SpreadExpression;
-import org.codehaus.groovy.ast.expr.StaticMethodCallExpression;
 import org.codehaus.groovy.ast.expr.VariableExpression;
-import org.codehaus.groovy.ast.stmt.BlockStatement;
-import org.codehaus.groovy.ast.stmt.EmptyStatement;
 import org.codehaus.groovy.ast.stmt.ExpressionStatement;
-import org.codehaus.groovy.ast.stmt.IfStatement;
-import org.codehaus.groovy.ast.stmt.ReturnStatement;
 import org.codehaus.groovy.ast.stmt.Statement;
 import org.codehaus.groovy.control.CompilationUnit;
 import org.codehaus.groovy.control.SourceUnit;
 import org.codehaus.groovy.control.messages.SyntaxErrorMessage;
 import org.codehaus.groovy.syntax.SyntaxException;
-import org.codehaus.groovy.syntax.Token;
-import org.codehaus.groovy.syntax.Types;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.StringJoiner;
 
 import static org.apache.groovy.ast.tools.ClassNodeUtils.addGeneratedMethod;
+import static org.apache.groovy.ast.tools.ClassNodeUtils.hasNoArgConstructor;
+import static org.apache.groovy.ast.tools.MethodNodeUtils.methodDescriptor;
+import static org.codehaus.groovy.ast.ClassHelper.int_TYPE;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.args;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.arrayX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.assignS;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.assignX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.block;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.callThisX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.callX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.classX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.constX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.ctorThisX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.declS;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.fieldX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.geX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.ifS;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.indexX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.localVarX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.ltX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.mapX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.minusX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.nullX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.param;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.params;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.plusX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.propX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.returnS;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.spreadX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.varX;
+import static org.codehaus.groovy.runtime.StreamGroovyMethods.stream;
 import static org.objectweb.asm.Opcodes.ACC_ABSTRACT;
 import static org.objectweb.asm.Opcodes.ACC_FINAL;
 import static org.objectweb.asm.Opcodes.ACC_PRIVATE;
@@ -70,19 +85,36 @@ import static org.objectweb.asm.Opcodes.ACC_PUBLIC;
 import static org.objectweb.asm.Opcodes.ACC_STATIC;
 import static org.objectweb.asm.Opcodes.ACC_SYNTHETIC;
 
+/**
+ * Transforms enum classes by adding required methods and fields according to Java enum semantics.
+ * This visitor adds the synthetic {@code $VALUES} field, {@code values()} and {@code valueOf(String)}
+ * methods that are required for all enum types.
+ */
 public class EnumVisitor extends ClassCodeVisitorSupport {
 
     private final SourceUnit sourceUnit;
 
+    /**
+     * Creates a new enum visitor.
+     *
+     * @param cu the compilation unit (currently unused but kept for API compatibility)
+     * @param su the source unit for error reporting
+     */
     public EnumVisitor(final CompilationUnit cu, final SourceUnit su) {
         sourceUnit = su;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected SourceUnit getSourceUnit() {
         return sourceUnit;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public void visitClass(final ClassNode node) {
         if (node.isEnum()) completeEnum(node);
@@ -107,34 +139,48 @@ public class EnumVisitor extends ClassCodeVisitorSupport {
                 } else if (!ctor.isPrivate()) {
                     addError(ctor, "Illegal modifier for the enum constructor; only private is permitted.");
                 }
+                if (ctor.firstStatementIsSpecialConstructorCall()) {
+                    var ctorCall = (ConstructorCallExpression) ((ExpressionStatement) ctor.getFirstStatement()).getExpression();
+                    if (ctorCall.isSuperCall()) {
+                        var spec = new StringJoiner(",", enumClass.getNameWithoutPackage() + "(", ")");
+                        for (Parameter p : ctor.getParameters()) spec.add(p.getType().getUnresolvedName());
+                        addError(ctorCall, "Cannot invoke super constructor from enum constructor " + spec);
+                    }
+                }
             }
 
-            addMethods(enumClass, values);
-            checkForAbstractMethods(enumClass);
+            // GROOVY-10811: final and abstract are implicit modifiers
+            boolean isInnerClass = (enumClass.getOuterClass() != null);
+            if ((enumClass.getModifiers() & (ACC_ABSTRACT | ACC_FINAL)) != 0) {
+                String name = enumClass.getNameWithoutPackage(); // TODO: substring after the $
+                String permitted = (!isInnerClass ? "public is" : "public, private, protected & static are");
+                addError(enumClass, "Illegal modifier for the enum " + name + "; only " + permitted + " permitted.");
+            }
+
+            addMethods(enumClass, values, minValue, maxValue);
+
+            if (isAnyAbstract(enumClass)) enumClass.setModifiers(enumClass.getModifiers() | ACC_ABSTRACT);
+            else if (isNotExtended(enumClass)) enumClass.setModifiers(enumClass.getModifiers() | ACC_FINAL);
         }
 
         addInit(enumClass, minValue, maxValue, values, isAIC);
     }
 
-    private static void checkForAbstractMethods(final ClassNode enumClass) {
-        for (MethodNode method : enumClass.getMethods()) {
-            if (method.isAbstract()) {
-                // make the class abstract also; see Effective Java p.152
-                enumClass.setModifiers(enumClass.getModifiers() | ACC_ABSTRACT);
-                break;
-            }
-        }
-    }
-
-    private static void addMethods(final ClassNode enumClass, final FieldNode values) {
-        List<MethodNode> methods = enumClass.getMethods();
+    private static void addMethods(final ClassNode enumClass, final FieldNode values, FieldNode minValue, FieldNode maxValue) {
 
         boolean hasNext = false;
         boolean hasPrevious = false;
-        for (MethodNode m : methods) {
-            if (m.getName().equals("next") && m.getParameters().length == 0) hasNext = true;
-            if (m.getName().equals("previous") && m.getParameters().length == 0) hasPrevious = true;
+        for (MethodNode m : enumClass.getMethods()) {
+            if ("next".equals(m.getName()) && m.getParameters().length == 0) hasNext = true;
+            if ("previous".equals(m.getName()) && m.getParameters().length == 0) hasPrevious = true;
             if (hasNext && hasPrevious) break;
+        }
+        boolean empty = true;
+        for (FieldNode f : enumClass.getFields()) {
+            if (f.isEnum()) {
+                empty = false;
+                break;
+            }
         }
 
         ClassNode enumRef = enumClass.getPlainNodeReference();
@@ -143,153 +189,55 @@ public class EnumVisitor extends ClassCodeVisitorSupport {
             // create values() method
             MethodNode valuesMethod = new MethodNode("values", ACC_FINAL | ACC_PUBLIC | ACC_STATIC, enumRef.makeArray(), Parameter.EMPTY_ARRAY, ClassNode.EMPTY_ARRAY, null);
             valuesMethod.setSynthetic(true);
-            BlockStatement code = new BlockStatement();
-            MethodCallExpression cloneCall = new MethodCallExpression(new FieldExpression(values), "clone", MethodCallExpression.NO_ARGUMENTS);
+            MethodCallExpression cloneCall = callX(fieldX(values), "clone");
             cloneCall.setMethodTarget(values.getType().getMethod("clone", Parameter.EMPTY_ARRAY));
-            code.addStatement(new ReturnStatement(cloneCall));
-            valuesMethod.setCode(code);
+            valuesMethod.setCode(block(returnS(cloneCall)));
             addGeneratedMethod(enumClass, valuesMethod);
         }
 
         if (!hasNext) {
             // create next() method, code:
-            //     Day next() {
-            //        int ordinal = ordinal().next()
-            //        if (ordinal >= values().size()) ordinal = 0
+            //     Enum next() {
+            //        int ordinal = ordinal() + 1
+            //        if (ordinal >= values().size()) return MIN_VALUE
             //        return values()[ordinal]
             //     }
-            Token assign = Token.newSymbol(Types.ASSIGN, -1, -1);
-            Token ge = Token.newSymbol(Types.COMPARE_GREATER_THAN_EQUAL, -1, -1);
             MethodNode nextMethod = new MethodNode("next", ACC_PUBLIC, enumRef, Parameter.EMPTY_ARRAY, ClassNode.EMPTY_ARRAY, null);
             nextMethod.setSynthetic(true);
-            BlockStatement code = new BlockStatement();
-            BlockStatement ifStatement = new BlockStatement();
-            ifStatement.addStatement(
-                    new ExpressionStatement(
-                            new BinaryExpression(new VariableExpression("ordinal"), assign, new ConstantExpression(0))
-                    )
-            );
-
-            code.addStatement(
-                    new ExpressionStatement(
-                            new DeclarationExpression(
-                                    localVarX("ordinal"),
-                                    assign,
-                                    new MethodCallExpression(
-                                            new MethodCallExpression(
-                                                    VariableExpression.THIS_EXPRESSION,
-                                                    "ordinal",
-                                                    MethodCallExpression.NO_ARGUMENTS),
-                                            "next",
-                                            MethodCallExpression.NO_ARGUMENTS
-                                    )
-                            )
-                    )
-            );
-            code.addStatement(
-                    new IfStatement(
-                            new BooleanExpression(new BinaryExpression(
-                                    new VariableExpression("ordinal"),
-                                    ge,
-                                    new MethodCallExpression(
-                                            new FieldExpression(values),
-                                            "size",
-                                            MethodCallExpression.NO_ARGUMENTS
-                                    )
-                            )),
-                            ifStatement,
-                            EmptyStatement.INSTANCE
-                    )
-            );
-            code.addStatement(
-                    new ReturnStatement(
-                            new MethodCallExpression(new FieldExpression(values), "getAt", new VariableExpression("ordinal"))
-                    )
-            );
-            nextMethod.setCode(code);
+            VariableExpression ordinal = localVarX("ordinal", int_TYPE);
+            nextMethod.setCode(empty ? block(returnS(nullX())) : block(
+                declS(ordinal, plusX(callThisX("ordinal"), constX(1, true))),
+                ifS(geX(ordinal, propX(fieldX(values), "length")), returnS(varX(minValue))),
+                returnS(indexX(fieldX(values), ordinal))
+            ));
             addGeneratedMethod(enumClass, nextMethod);
         }
 
         if (!hasPrevious) {
             // create previous() method, code:
-            //    Day previous() {
-            //        int ordinal = ordinal().previous()
-            //        if (ordinal < 0) ordinal = values().size() - 1
+            //    Enum previous() {
+            //        int ordinal = ordinal() - 1
+            //        if (ordinal < 0) return MAX_VALUE
             //        return values()[ordinal]
             //    }
-            Token assign = Token.newSymbol(Types.ASSIGN, -1, -1);
-            Token lt = Token.newSymbol(Types.COMPARE_LESS_THAN, -1, -1);
             MethodNode prevMethod = new MethodNode("previous", ACC_PUBLIC, enumRef, Parameter.EMPTY_ARRAY, ClassNode.EMPTY_ARRAY, null);
             prevMethod.setSynthetic(true);
-            BlockStatement code = new BlockStatement();
-            BlockStatement ifStatement = new BlockStatement();
-            ifStatement.addStatement(
-                    new ExpressionStatement(
-                            new BinaryExpression(new VariableExpression("ordinal"), assign,
-                                    new MethodCallExpression(
-                                            new MethodCallExpression(
-                                                    new FieldExpression(values),
-                                                    "size",
-                                                    MethodCallExpression.NO_ARGUMENTS
-                                            ),
-                                            "minus",
-                                            new ConstantExpression(1)
-                                    )
-                            )
-                    )
-            );
-
-            code.addStatement(
-                    new ExpressionStatement(
-                            new DeclarationExpression(
-                                    localVarX("ordinal"),
-                                    assign,
-                                    new MethodCallExpression(
-                                            new MethodCallExpression(
-                                                    VariableExpression.THIS_EXPRESSION,
-                                                    "ordinal",
-                                                    MethodCallExpression.NO_ARGUMENTS),
-                                            "previous",
-                                            MethodCallExpression.NO_ARGUMENTS
-                                    )
-                            )
-                    )
-            );
-            code.addStatement(
-                    new IfStatement(
-                            new BooleanExpression(new BinaryExpression(
-                                    new VariableExpression("ordinal"),
-                                    lt,
-                                    new ConstantExpression(0)
-                            )),
-                            ifStatement,
-                            EmptyStatement.INSTANCE
-                    )
-            );
-            code.addStatement(
-                    new ReturnStatement(
-                            new MethodCallExpression(new FieldExpression(values), "getAt", new VariableExpression("ordinal"))
-                    )
-            );
-            prevMethod.setCode(code);
+            VariableExpression ordinal = localVarX("ordinal", int_TYPE);
+            prevMethod.setCode(empty ? block(returnS(nullX())) : block(
+                declS(ordinal, minusX(callThisX("ordinal"), constX(1, true))),
+                ifS(ltX(ordinal, constX(0, true)), returnS(varX(maxValue))),
+                returnS(indexX(fieldX(values), ordinal))
+            ));
             addGeneratedMethod(enumClass, prevMethod);
         }
 
         {
             // create valueOf
-            Parameter stringParameter = new Parameter(ClassHelper.STRING_TYPE, "name");
-            MethodNode valueOfMethod = new MethodNode("valueOf", ACC_PUBLIC | ACC_STATIC, enumRef, new Parameter[]{stringParameter}, ClassNode.EMPTY_ARRAY, null);
-            ArgumentListExpression callArguments = new ArgumentListExpression();
-            callArguments.addExpression(new ClassExpression(enumClass));
-            callArguments.addExpression(new VariableExpression("name"));
-
-            BlockStatement code = new BlockStatement();
-            code.addStatement(
-                    new ReturnStatement(
-                            new MethodCallExpression(new ClassExpression(ClassHelper.Enum_Type), "valueOf", callArguments)
-                    )
-            );
-            valueOfMethod.setCode(code);
+            Parameter stringParameter = param(ClassHelper.STRING_TYPE, "name");
+            MethodNode valueOfMethod = new MethodNode("valueOf", ACC_PUBLIC | ACC_STATIC, enumRef, params(stringParameter), ClassNode.EMPTY_ARRAY, null);
+            valueOfMethod.setCode(block(returnS(
+                callX(ClassHelper.Enum_Type, "valueOf", args(classX(enumClass), varX("name")))
+            )));
             valueOfMethod.setSynthetic(true);
             addGeneratedMethod(enumClass, valueOfMethod);
         }
@@ -308,71 +256,55 @@ public class EnumVisitor extends ClassCodeVisitorSupport {
         //  return this(*para)
         // }
         ClassNode enumRef = enumClass.getPlainNodeReference();
-        Parameter[] parameter = new Parameter[]{new Parameter(ClassHelper.OBJECT_TYPE.makeArray(), "para")};
+        Parameter[] parameter = params(param(ClassHelper.OBJECT_TYPE.makeArray(), "para"));
         MethodNode initMethod = new MethodNode("$INIT", ACC_FINAL | ACC_PUBLIC | ACC_STATIC | ACC_SYNTHETIC, enumRef, parameter, ClassNode.EMPTY_ARRAY, null);
         initMethod.setSynthetic(true);
-        ConstructorCallExpression cce = new ConstructorCallExpression(
-                ClassNode.THIS,
-                new ArgumentListExpression(
-                        new SpreadExpression(new VariableExpression("para"))
-                )
-        );
-        BlockStatement code = new BlockStatement();
-        code.addStatement(new ReturnStatement(cce));
-        initMethod.setCode(code);
+        ConstructorCallExpression cce = ctorThisX(args(spreadX(varX("para"))));
+        initMethod.setCode(block(returnS(cce)));
         addGeneratedMethod(enumClass, initMethod);
 
         // static init
         List<FieldNode> fields = enumClass.getFields();
+        List<ExpressionStatement> directInit = canInitDirectly(enumClass, fields) ? new ArrayList<>() : null;
         List<Expression> arrayInit = new ArrayList<>();
-        int value = -1;
-        Token assign = Token.newSymbol(Types.ASSIGN, -1, -1);
         List<Statement> block = new ArrayList<>();
+        int index = -1;
         FieldNode tempMin = null;
         FieldNode tempMax = null;
         for (FieldNode field : fields) {
             if (!field.isEnum()) continue;
-            value += 1;
+            index += 1; // the next ordinal
             if (tempMin == null) tempMin = field;
             tempMax = field;
 
-            ClassNode enumBase = enumClass;
-            ArgumentListExpression args = new ArgumentListExpression();
-            args.addExpression(new ConstantExpression(field.getName()));
-            args.addExpression(new ConstantExpression(value));
+            ClassNode enumType = enumClass;
+            ArgumentListExpression args = args(constX(field.getName()), constX(index));
             if (field.getInitialExpression() == null) {
                 if (enumClass.isAbstract()) {
-                    addError(field, "The enum constant " + field.getName() + " must override abstract methods from " + enumBase.getName() + ".");
-                    continue;
+                    addError(field, "The enum constant " + field.getName() + " must override abstract methods from " + enumClass.getName() + ".");
+                }
+                if (!(hasNoArgConstructor(enumClass) || enumClass.getDeclaredConstructors().isEmpty())) { // GROOVY-10811
+                    addError(field, "The constructor " + enumClass.getNameWithoutPackage() + "() is undefined.");
                 }
             } else {
-                ListExpression oldArgs = (ListExpression) field.getInitialExpression();
+                ListExpression initList = getConstantArguments(field);
                 List<MapEntryExpression> savedMapEntries = new ArrayList<>();
-                for (Expression exp : oldArgs.getExpressions()) {
+                for (Expression exp : initList.getExpressions()) {
                     if (exp instanceof MapEntryExpression) {
                         savedMapEntries.add((MapEntryExpression) exp);
                         continue;
                     }
 
-                    InnerClassNode inner = null;
-                    if (exp instanceof ClassExpression) {
-                        ClassExpression clazzExp = (ClassExpression) exp;
-                        ClassNode ref = clazzExp.getType();
-                        if (ref instanceof EnumConstantClassNode) {
-                            inner = (InnerClassNode) ref;
-                        }
-                    }
-                    if (inner != null) {
-                        List<MethodNode> baseMethods = enumBase.getMethods();
-                        for (MethodNode methodNode : baseMethods) {
+                    if (exp instanceof ClassExpression && exp.getType() instanceof EnumConstantClassNode inner) {
+                        for (MethodNode methodNode : enumClass.getMethods()) {
                             if (!methodNode.isAbstract()) continue;
                             MethodNode enumConstMethod = inner.getMethod(methodNode.getName(), methodNode.getParameters());
                             if (enumConstMethod == null || enumConstMethod.isAbstract()) {
-                                addError(field, "Can't have an abstract method in enum constant " + field.getName() + ". Implement method '" + methodNode.getTypeDescriptor() + "'.");
+                                addError(field, "Can't have an abstract method in enum constant " + field.getName() + ". Implement method '" + methodDescriptor(methodNode, true) + "'.");
                             }
                         }
                         if (inner.getVariableScope() == null) {
-                            enumBase = inner;
+                            enumType = inner;
                             /*
                              * GROOVY-3985: Remove the final modifier from $INIT method in this case
                              * so that subclasses of enum generated for enum constants (aic) can provide
@@ -385,67 +317,107 @@ public class EnumVisitor extends ClassCodeVisitorSupport {
                     args.addExpression(exp);
                 }
                 if (!savedMapEntries.isEmpty()) {
-                    args.getExpressions().add(2, new MapExpression(savedMapEntries));
+                    args.getExpressions().add(2, mapX(savedMapEntries));
                 }
+                field.setInitialValueExpression(null);
             }
-            field.setInitialValueExpression(null);
-            block.add(
-                    new ExpressionStatement(
-                            new BinaryExpression(
-                                    new FieldExpression(field),
-                                    assign,
-                                    new StaticMethodCallExpression(enumBase, "$INIT", args)
-                            )
-                    )
-            );
-            arrayInit.add(new FieldExpression(field));
+            arrayInit.add(fieldX(field));
+            var init = new ExpressionStatement(assignX(fieldX(field), callX(enumType, "$INIT", args)));
+            if (directInit != null) directInit.add(init);
+            block.add(init);
         }
+        if (directInit != null) EnumConstantInit.record(enumClass, directInit);
 
         if (!isAIC) {
             if (tempMin != null) {
-                block.add(
-                        new ExpressionStatement(
-                                new BinaryExpression(
-                                        new FieldExpression(minValue),
-                                        assign,
-                                        new FieldExpression(tempMin)
-                                )
-                        )
-                );
-                block.add(
-                        new ExpressionStatement(
-                                new BinaryExpression(
-                                        new FieldExpression(maxValue),
-                                        assign,
-                                        new FieldExpression(tempMax)
-                                )
-                        )
-                );
+                block.add(assignS(fieldX(minValue), fieldX(tempMin)));
+                block.add(assignS(fieldX(maxValue), fieldX(tempMax)));
                 enumClass.addField(minValue);
                 enumClass.addField(maxValue);
             }
 
-            block.add(
-                    new ExpressionStatement(
-                            new BinaryExpression(new FieldExpression(values), assign, new ArrayExpression(enumClass, arrayInit))
-                    )
-            );
+            block.add(assignS(fieldX(values), arrayX(enumClass, arrayInit)));
             enumClass.addField(values);
         }
+
         enumClass.addStaticInitializerStatements(block, true);
     }
 
-    private void addError(final AnnotatedNode exp, final String msg) {
+    /**
+     * Determines whether the constants of the given enum can be initialized with a direct
+     * constructor call rather than with a call to the synthetic {@code $INIT} helper.
+     * <p>
+     * This is only attempted when every constant is either a plain identifier, which
+     * supplies no arguments of its own, or declared with positional arguments.  Whether
+     * the constructor that the meta class would select for a constant, and the arguments
+     * it would receive, are known at compile time is decided when the class generator
+     * starts on the enum, from the {@code $INIT} calls as the transforms left them (see
+     * {@link EnumConstantInit}).  Constants declared with named arguments or with a class
+     * body keep the {@code $INIT} path, as do enums with a plain constant whose own
+     * constructor cannot accept just the name and the ordinal.  An explicit empty argument
+     * list, e.g. {@code ONE()}, also keeps the {@code $INIT} path without otherwise
+     * changing the meaning of the enum, which serves as the opt-out for the rare code that
+     * intercepts constant creation through a meta class registered before the enum
+     * initializes (see {@link EnumConstantInit}).
+     *
+     * @param enumClass the enum being completed
+     * @param fields    the fields of {@code enumClass}, before any initial value is cleared
+     * @return {@code true} if a direct constructor call may be attempted
+     */
+    private static boolean canInitDirectly(final ClassNode enumClass, final List<FieldNode> fields) {
+        // an abstract enum or one that is extended has constants with a body, i.e. subclasses
+        if (isAnonymousInnerClass(enumClass) || enumClass.isAbstract() || !isNotExtended(enumClass)) return false;
+        for (FieldNode field : fields) {
+            if (!field.isEnum()) continue;
+            if (field.getInitialExpression() == null) {
+                // GROOVY-10811: a declared constructor must be callable with no user-supplied argument
+                if (!enumClass.getDeclaredConstructors().isEmpty() && !hasNoArgConstructor(enumClass)) return false;
+            } else {
+                List<Expression> arguments = getConstantArguments(field).getExpressions();
+                if (arguments.isEmpty() || arguments.stream().anyMatch(MapEntryExpression.class::isInstance)) return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Returns the arguments of the given enum constant, which has an initial value.  The
+     * parser leaves them in a list; any other expression, such as one that another parser
+     * plugin leaves there, is the only argument, as for {@code EnumHelper.addEnumConstant}.
+     */
+    private static ListExpression getConstantArguments(final FieldNode field) {
+        Expression init = field.getInitialExpression();
+        if (init instanceof ListExpression list) return list;
+        var list = new ListExpression();
+        list.addExpression(init);
+        return list;
+    }
+
+    private void addError(final AnnotatedNode an, final String msg) {
         getSourceUnit().getErrorCollector().addErrorAndContinue(
                 new SyntaxErrorMessage(
-                        new SyntaxException(msg + '\n', exp),
+                        new SyntaxException(msg + '\n', an),
                         getSourceUnit()
                 )
         );
     }
 
+    /**
+     * Determines whether the enum node represents an anonymous enum constant body.
+     *
+     * @param enumClass the enum-related class node to test
+     * @return {@code true} if the node represents an anonymous inner enum class
+     */
     static boolean isAnonymousInnerClass(final ClassNode enumClass) {
         return enumClass instanceof EnumConstantClassNode
             && ((EnumConstantClassNode) enumClass).getVariableScope() == null;
+    }
+
+    private static boolean isAnyAbstract(final ClassNode enumClass) {
+        return enumClass.getMethods().stream().anyMatch(MethodNode::isAbstract);
+    }
+
+    private static boolean isNotExtended(final ClassNode enumClass) {
+        return stream(enumClass.getInnerClasses()).noneMatch(it -> it instanceof EnumConstantClassNode);
     }
 }

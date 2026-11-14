@@ -18,31 +18,38 @@
  */
 package org.apache.groovy.yaml.util;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
-import com.fasterxml.jackson.dataformat.yaml.YAMLMapper;
 import groovy.yaml.YamlRuntimeException;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.dataformat.yaml.YAMLMapper;
 
-import java.io.IOException;
 import java.io.Reader;
+import java.util.List;
 
 /**
  *  A converter for converting YAML to JSON, vice versa
  *  @since 3.0.0
  */
-public class YamlConverter {
+public final class YamlConverter {
+    // Jackson 2's defaults keep the conversion producing what it did before Jackson 3;
+    // both mappers are thread-safe once built, so they are shared
+    private static final JsonMapper JSON_MAPPER = JsonMapper.builderWithJackson2Defaults().build();
+    private static final YAMLMapper YAML_MAPPER = YAMLMapper.builder().configureForJackson2().build();
+
     /**
      * Convert yaml to json
      * @param yamlReader the reader of yaml
      * @return the text of json
      */
     public static String convertYamlToJson(Reader yamlReader) {
-        try (Reader reader = yamlReader) {
-            Object yaml = new ObjectMapper(new YAMLFactory()).readValue(reader, Object.class);
-
-            return new ObjectMapper().writeValueAsString(yaml);
-        } catch (IOException e) {
+        try {
+            // an explicit parser keeps a root-level sequence intact: an ObjectReader would treat it
+            // as a wrapped sequence of values and drop the outer list
+            List<Object> resultList = YAML_MAPPER.readValues(YAML_MAPPER.createParser(yamlReader), Object.class).readAll();
+            Object yaml = 1 == resultList.size() ? resultList.get(0) : resultList;
+            return JSON_MAPPER.writeValueAsString(yaml);
+        } catch (JacksonException e) {
             throw new YamlRuntimeException(e);
         }
     }
@@ -53,11 +60,11 @@ public class YamlConverter {
      * @return the text of yaml
      */
     public static String convertJsonToYaml(Reader jsonReader) {
-        try (Reader reader = jsonReader) {
-            JsonNode json = new ObjectMapper().readTree(reader);
+        try {
+            JsonNode json = JSON_MAPPER.readTree(jsonReader);
 
-            return new YAMLMapper().writeValueAsString(json);
-        } catch (IOException e) {
+            return YAML_MAPPER.writeValueAsString(json);
+        } catch (JacksonException e) {
             throw new YamlRuntimeException(e);
         }
     }

@@ -18,24 +18,53 @@
  */
 package org.codehaus.groovy.control.customizers;
 
+import org.codehaus.groovy.GroovyBugError;
 import org.codehaus.groovy.control.CompilationUnit;
 import org.codehaus.groovy.control.CompilePhase;
+import org.codehaus.groovy.control.CompilerConfiguration;
 
 /**
  * Users wanting to customize the configuration process such as adding imports, restricting the
  * language features or apply AST transformations by default should implement this class, then
- * call the {@link org.codehaus.groovy.control.CompilerConfiguration#addCompilationCustomizers(CompilationCustomizer...)}
+ * call the {@link CompilerConfiguration#addCompilationCustomizers(CompilationCustomizer...)}
  * method.
+ * <p>
+ * A customizer is registered for a particular compilation and is invoked for every primary class
+ * node of it. Two consequences are easy to overlook:
+ * <ul>
+ * <li>The {@code SourceUnit} passed to
+ * {@link CompilationUnit.IPrimaryClassNodeOperation#call(org.codehaus.groovy.control.SourceUnit,
+ * org.codehaus.groovy.classgen.GeneratorContext, org.codehaus.groovy.ast.ClassNode) call} may be
+ * {@code null}, for class nodes supplied directly via
+ * {@link CompilationUnit#addClassNode(org.codehaus.groovy.ast.ClassNode) addClassNode} rather than
+ * parsed from source. Guard accordingly; an unguarded dereference surfaces as a
+ * {@link GroovyBugError} rather than as your own exception.</li>
+ * <li>A customizer should not assume the class nodes it sees belong to the compilation it was
+ * registered for. A configuration may be copied for a nested compilation, which carries its
+ * customizers along unless
+ * {@linkplain CompilerConfiguration#CompilerConfiguration(CompilerConfiguration,
+ * boolean) the two-argument copy constructor} is used to omit them.</li>
+ * </ul>
  *
  * @since 1.8.0
  */
 public abstract class CompilationCustomizer implements CompilationUnit.IPrimaryClassNodeOperation {
     private final CompilePhase phase;
 
+    /**
+     * Creates a customizer bound to the supplied compile phase.
+     *
+     * @param phase the phase in which this customizer should run
+     */
     public CompilationCustomizer(final CompilePhase phase) {
         this.phase = phase;
     }
 
+    /**
+     * Returns the compile phase in which this customizer runs.
+     *
+     * @return the configured compile phase
+     */
     public CompilePhase getPhase() {
         return phase;
     }

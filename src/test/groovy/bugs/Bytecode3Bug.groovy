@@ -16,16 +16,15 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-/**
- */
-class Bytecode3Bug extends GroovyTestCase {
-    
+final class Bytecode3Bug {
+
     def count
-         
+
+    @Test
     void testIncrementPropertyInclosure() {
         def args = [1, 2, 3]
         def m = [:]
@@ -33,9 +32,9 @@ class Bytecode3Bug extends GroovyTestCase {
         doLoop(args, m)
         assert count == 3
     }
-    
+
     void doLoop(args, m) {
-        args.each { 
+        args.each {
             m.put(it, count++)
         }
     }

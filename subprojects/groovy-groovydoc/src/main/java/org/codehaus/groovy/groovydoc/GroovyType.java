@@ -18,13 +18,21 @@
  */
 package org.codehaus.groovy.groovydoc;
 
+/**
+ * Describes a type reference used throughout the Groovydoc model.
+ */
 public interface GroovyType {
 
+    /**
+     * Indicates whether this type is a Java primitive type.
+     *
+     * @return {@code true} if this type is primitive
+     */
     boolean isPrimitive();
 
     /**
      * The qualified name of this type excluding any dimension information.
-     * For example, a two dimensional array of String returns "<code>java.lang.String</code>".
+     * For example, a two-dimensional array of String returns "<code>java.lang.String</code>".
      */
     String qualifiedTypeName();
 
@@ -36,13 +44,13 @@ public interface GroovyType {
 
     /**
      * The unqualified name of this type excluding any dimension information.
-     * For example, a two dimensional array of String returns "<code>String</code>".
+     * For example, a two-dimensional array of String returns "<code>String</code>".
      */
     String typeName();
 
     /**
      * The qualified name including any dimension information.
-     * For example, a two dimensional array of String returns
+     * For example, a two-dimensional array of String returns
      * "<code>java.lang.String[][]</code>", and the parameterized type
      * <code>List&lt;Integer&gt;</code> returns "<code>java.util.List&lt;java.lang.Integer&gt;</code>".
      */

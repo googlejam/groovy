@@ -18,14 +18,16 @@
  */
 package org.codehaus.groovy.classgen.asm;
 
+import groovy.lang.Reference;
 import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
-import org.codehaus.groovy.ast.expr.ArgumentListExpression;
-import org.codehaus.groovy.ast.expr.BooleanExpression;
+import org.codehaus.groovy.ast.Parameter;
+import org.codehaus.groovy.ast.expr.BinaryExpression;
 import org.codehaus.groovy.ast.expr.ClosureListExpression;
-import org.codehaus.groovy.ast.expr.ConstantExpression;
+import org.codehaus.groovy.ast.expr.DeclarationExpression;
 import org.codehaus.groovy.ast.expr.EmptyExpression;
 import org.codehaus.groovy.ast.expr.Expression;
+import org.codehaus.groovy.ast.expr.MethodCall;
 import org.codehaus.groovy.ast.expr.MethodCallExpression;
 import org.codehaus.groovy.ast.stmt.AssertStatement;
 import org.codehaus.groovy.ast.stmt.BlockStatement;
@@ -44,125 +46,313 @@ import org.codehaus.groovy.ast.stmt.SynchronizedStatement;
 import org.codehaus.groovy.ast.stmt.ThrowStatement;
 import org.codehaus.groovy.ast.stmt.TryCatchStatement;
 import org.codehaus.groovy.ast.stmt.WhileStatement;
+import org.codehaus.groovy.ast.CodeVisitorSupport;
+import org.codehaus.groovy.classgen.AsmClassGenerator;
+import org.codehaus.groovy.classgen.VariableScopeVisitor;
+import org.codehaus.groovy.classgen.VariableScopeVisitor.InstanceofFlowBindings;
 import org.codehaus.groovy.classgen.asm.CompileStack.BlockRecorder;
+import org.codehaus.groovy.syntax.Types;
 import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Optional;
+import java.util.Map;
+import java.util.Set;
 import java.util.function.Consumer;
 
+import static org.apache.groovy.ast.tools.ExpressionUtils.isNullConstant;
+import static org.apache.groovy.ast.tools.SwitchPatternUtils.getElementsVariable;
+import static org.apache.groovy.ast.tools.SwitchPatternUtils.getSubjectVariable;
+import static org.apache.groovy.ast.tools.SwitchPatternUtils.isPatternArm;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.ConditionValue;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.callX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.castX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.constantBooleanValue;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.isEmptyStatement;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.mayCompleteNormally;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.mayReachLoopCondition;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.maybeFallsThrough;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.maybeFallsThroughToNextSwitchCase;
 import static org.objectweb.asm.Opcodes.ALOAD;
 import static org.objectweb.asm.Opcodes.ATHROW;
 import static org.objectweb.asm.Opcodes.CHECKCAST;
 import static org.objectweb.asm.Opcodes.GOTO;
+import static org.objectweb.asm.Opcodes.IADD;
+import static org.objectweb.asm.Opcodes.ICONST_1;
+import static org.objectweb.asm.Opcodes.ICONST_M1;
 import static org.objectweb.asm.Opcodes.IFEQ;
+import static org.objectweb.asm.Opcodes.IFNULL;
+import static org.objectweb.asm.Opcodes.INVOKEVIRTUAL;
 import static org.objectweb.asm.Opcodes.MONITORENTER;
 import static org.objectweb.asm.Opcodes.MONITOREXIT;
 import static org.objectweb.asm.Opcodes.NOP;
 import static org.objectweb.asm.Opcodes.RETURN;
 
+/**
+ * Generates bytecode for Groovy statements by visiting AST statement nodes
+ * and emitting corresponding JVM instructions via the {@link WriterController}.
+ * Handles control flow (loops, branches, try/catch), synchronization, assertions,
+ * and expression statements.
+ */
 public class StatementWriter {
 
     private static final MethodCaller iteratorHasNextMethod = MethodCaller.newInterface(Iterator.class, "hasNext");
     private static final MethodCaller iteratorNextMethod = MethodCaller.newInterface(Iterator.class, "next");
 
+    /** The controller coordinating all bytecode writers for the current class. */
     protected final WriterController controller;
 
+    /**
+     * Creates a statement writer backed by the given controller.
+     *
+     * @param controller the writer controller for the current compilation
+     */
     public StatementWriter(final WriterController controller) {
         this.controller = controller;
     }
 
+    /**
+     * Emits bytecode labels for any statement labels attached to {@code statement}.
+     * Called before emitting the body of every statement so that named labels
+     * ({@code break foo} / {@code continue foo}) resolve correctly.
+     *
+     * @param statement the statement whose labels should be emitted
+     */
     protected void writeStatementLabel(final Statement statement) {
-        Optional.ofNullable(statement.getStatementLabels()).ifPresent(labels -> {
-            labels.stream().map(controller.getCompileStack()::createLocalLabel).forEach(label -> {
-                controller.getMethodVisitor().visitLabel(label);
-            });
-        });
+        List<String> labels = statement.getStatementLabels();
+        if (labels != null) {
+            CompileStack  cs = controller.getCompileStack ();
+            MethodVisitor mv = controller.getMethodVisitor();
+            for (String label : labels) {
+                mv.visitLabel(cs.createLocalLabel(label));
+            }
+        }
     }
 
+    /**
+     * Generates bytecode for a block statement by visiting each contained statement.
+     * Pushes the block's variable scope, emits the statements, and pops afterward.
+     * Named labels on the block create a breakable region so that {@code break label}
+     * within the block jumps to the end of it.
+     *
+     * @param block the block statement to compile
+     */
     public void writeBlockStatement(final BlockStatement block) {
         writeStatementLabel(block);
 
-        int mark = controller.getOperandStack().getStackLength();
         CompileStack compileStack = controller.getCompileStack();
+        OperandStack operandStack = controller.getOperandStack();
+
+        int mark = operandStack.getStackLength();
         compileStack.pushVariableScope(block.getVariableScope());
+        List<String> labels = block.getStatementLabels(); // GROOVY-6844
+        Label end = (labels != null && !labels.isEmpty()) ? compileStack.pushBreakable(labels) : null;
+
         for (Statement statement : block.getStatements()) {
             statement.visit(controller.getAcg());
         }
-        compileStack.pop();
 
-        controller.getOperandStack().popDownTo(mark);
+        if (end != null) {
+            controller.getMethodVisitor().visitLabel(end);
+            compileStack.pop();
+        }
+        compileStack.pop();
+        operandStack.popDownTo(mark);
     }
 
+    /**
+     * Generates bytecode for a for statement.
+     * Delegates to {@link #writeForLoopWithClosureList} for C-style loops (using a
+     * {@link ClosureListExpression}), or to {@link #writeForInLoop} for for-in loops.
+     *
+     * @param statement the for statement to compile
+     */
     public void writeForStatement(final ForStatement statement) {
-        if (statement.getVariable() == ForStatement.FOR_LOOP_DUMMY) {
+        if (statement.getCollectionExpression() instanceof ClosureListExpression) {
             writeForLoopWithClosureList(statement);
         } else {
             writeForInLoop(statement);
         }
     }
 
+    /**
+     * Generates bytecode for a for-in loop by calling {@code iterator()} on the
+     * collection expression and delegating loop control to
+     * {@link #writeForInLoopControlAndBlock}.
+     *
+     * @param statement the for-in statement to compile
+     */
     protected void writeForInLoop(final ForStatement statement) {
         controller.getAcg().onLineNumber(statement, "visitForLoop");
         writeStatementLabel(statement);
 
         CompileStack compileStack = controller.getCompileStack();
-        OperandStack operandStack = controller.getOperandStack();
-
         compileStack.pushLoop(statement.getVariableScope(), statement.getStatementLabels());
 
         // then get the iterator and generate the loop control
-        MethodCallExpression iterator = new MethodCallExpression(statement.getCollectionExpression(), "iterator", new ArgumentListExpression());
+        Expression iterator = callX(statement.getCollectionExpression(), "iterator");
+        ((MethodCallExpression) iterator).setImplicitThis(false);
+        iterator = castX(ClassHelper.Iterator_TYPE, iterator);
         iterator.visit(controller.getAcg());
-        operandStack.doGroovyCast(ClassHelper.Iterator_TYPE);
 
         writeForInLoopControlAndBlock(statement);
         compileStack.pop();
     }
 
+    /**
+     * Emits the loop-control structure and body for a for-in loop.
+     * Assumes the iterator object is already on the operand stack.
+     * Declares loop variables, emits the {@code hasNext}/{@code next} check-and-advance,
+     * generates the loop body, and handles index-variable increment when present.
+     *
+     * @param statement the for-in statement whose control and body should be emitted
+     */
     protected void writeForInLoopControlAndBlock(ForStatement statement) {
         CompileStack compileStack = controller.getCompileStack();
         MethodVisitor mv = controller.getMethodVisitor();
         OperandStack operandStack = controller.getOperandStack();
 
-        // declare the loop counter
-        BytecodeVariable variable = compileStack.defineVariable(statement.getVariable(), false);
+        // declare the loop index and value variables
+        BytecodeVariable indexVariable = defineLoopIndexVariable(statement);
+        BytecodeVariable valueVariable = compileStack.defineVariable(statement.getValueVariable(), false);
 
         // get the iterator and generate the loop control
-        int iteratorIndex = compileStack.defineTemporaryVariable("iterator", ClassHelper.Iterator_TYPE, true);
-        Label continueLabel = compileStack.getContinueLabel();
-        Label breakLabel = compileStack.getBreakLabel();
+        int iterator = compileStack.defineTemporaryVariable("iterator", ClassHelper.Iterator_TYPE, true);
+        Label breakLabel = compileStack.getBreakLabel(), continueLabel = compileStack.getContinueLabel();
+        boolean bodyMayReachContinue = mayReachLoopCondition(statement);
+
+        mv.visitVarInsn(ALOAD, iterator);
+        mv.visitJumpInsn(IFNULL, breakLabel);
 
         mv.visitLabel(continueLabel);
-        mv.visitVarInsn(ALOAD, iteratorIndex);
-        writeIteratorHasNext(mv);
-        // note: ifeq tests for ==0, a boolean is 0 if it is false
-        mv.visitJumpInsn(IFEQ, breakLabel);
 
-        mv.visitVarInsn(ALOAD, iteratorIndex);
+        mv.visitVarInsn(ALOAD, iterator);
+        writeIteratorHasNext(mv);
+        mv.visitJumpInsn(IFEQ, breakLabel); // jump if zero (aka false)
+
+        mv.visitVarInsn(ALOAD, iterator);
         writeIteratorNext(mv);
         operandStack.push(ClassHelper.OBJECT_TYPE);
-        operandStack.storeVar(variable);
+        storeForLoopVariable(valueVariable);
+        if (indexVariable != null) {
+            incrementForLoopIndexVariable(indexVariable);
+        }
 
         // generate the loop body
         statement.getLoopBlock().visit(controller.getAcg());
+        writeLoopBackEdge(continueLabel, bodyMayReachContinue);
 
-        mv.visitJumpInsn(GOTO, continueLabel);
         mv.visitLabel(breakLabel);
-
-        compileStack.removeVar(iteratorIndex);
+        compileStack.removeVar(iterator);
     }
 
+    /**
+     * Stores the top-of-stack value into a for-in loop variable slot.
+     * <p>
+     * Applies the for-in per-iteration capture policy
+     * ({@link WriterController#isForInPerIterationCaptureEnabled()}, GROOVY-11792): when
+     * enabled, a shared (holder) loop variable receives a fresh
+     * {@link Reference} so deferred closures, lambdas, and
+     * anonymous inner classes observe this iteration's value. When disabled,
+     * the historical in-place {@code Reference#set} path is used. Non-holder
+     * variables always take the plain store path.
+     * <p>
+     * Bytecode emission is delegated to
+     * {@link CompileStack#storeVar(BytecodeVariable, boolean)}.
+     *
+     * @param variable the for-in value (or similarly stored) loop variable
+     */
+    protected final void storeForLoopVariable(final BytecodeVariable variable) {
+        controller.getCompileStack().storeVar(variable, controller.isForInPerIterationCaptureEnabled());
+    }
+
+    /**
+     * Increments the for-in index variable by one.
+     * <p>
+     * Plain (non-shared) indexes use {@code IINC}. Shared indexes are loaded
+     * from their {@link Reference}, unboxed, incremented, then
+     * stored via {@link #storeForLoopVariable(BytecodeVariable)} so the same
+     * per-iteration capture policy applies as for value variables
+     * (GROOVY-11751, GROOVY-11792).
+     *
+     * @param indexVariable the for-in index variable; must not be {@code null}
+     */
+    protected final void incrementForLoopIndexVariable(final BytecodeVariable indexVariable) {
+        MethodVisitor mv = controller.getMethodVisitor();
+        if (!indexVariable.isHolder()) {
+            mv.visitIincInsn(indexVariable.getIndex(), 1);
+            return;
+        }
+        // GROOVY-11751: shared Reference — load, unbox, add 1, then store with
+        // the for-in recapture policy (storeForLoopVariable / GROOVY-11792).
+        mv.visitVarInsn(ALOAD, indexVariable.getIndex());
+        mv.visitMethodInsn(INVOKEVIRTUAL, "groovy/lang/Reference", "get", "()Ljava/lang/Object;", false);
+        mv.visitTypeInsn(CHECKCAST, "java/lang/Integer");
+        mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Integer", "intValue", "()I", false);
+        mv.visitInsn(ICONST_1);
+        mv.visitInsn(IADD);
+        controller.getOperandStack().push(ClassHelper.int_TYPE);
+        storeForLoopVariable(indexVariable);
+    }
+
+    /**
+     * Defines the for-in index variable and initializes it from a {@code -1}
+     * pushed on the operand stack, so the first increment lands on {@code 0}
+     * when it is paired with {@code next()}.
+     *
+     * @param statement the for-in statement
+     * @return the index variable, or {@code null} when {@code statement} declares none
+     */
+    protected final BytecodeVariable defineLoopIndexVariable(final ForStatement statement) {
+        Parameter indexVariable = statement.getIndexVariable();
+        if (indexVariable == null) return null;
+        controller.getMethodVisitor().visitInsn(ICONST_M1); // initialize to -1 so increment can pair with next()
+        return controller.getCompileStack().defineVariable(indexVariable, true);
+    }
+
+    /**
+     * Emits {@code GOTO} to {@code continueLabel} when the loop body can reach
+     * a continue. A body that cannot reach the continue leaves no back edge.
+     *
+     * @param continueLabel the continue target
+     * @param bodyMayReachContinue whether the body can fall through or continue to that label
+     */
+    protected final void writeLoopBackEdge(final Label continueLabel, final boolean bodyMayReachContinue) {
+        if (bodyMayReachContinue) {
+            controller.getMethodVisitor().visitJumpInsn(GOTO, continueLabel);
+        }
+    }
+
+    /**
+     * Emits the {@link Iterator#hasNext()} call via the given visitor.
+     * Overrideable so subclasses can substitute a specialized or inlined variant.
+     *
+     * @param mv the method visitor to write to
+     */
     protected void writeIteratorHasNext(final MethodVisitor mv) {
         iteratorHasNextMethod.call(mv);
     }
 
+    /**
+     * Emits the {@link Iterator#next()} call via the given visitor.
+     * Overrideable so subclasses can substitute a specialized or inlined variant.
+     *
+     * @param mv the method visitor to write to
+     */
     protected void writeIteratorNext(final MethodVisitor mv) {
         iteratorNextMethod.call(mv);
     }
 
+    /**
+     * Generates bytecode for a C-style {@code for(init; cond; incr)} loop.
+     * The collection expression is a {@link ClosureListExpression} whose middle
+     * element is the boolean condition, lower elements are initializers, and
+     * upper elements are incrementors.
+     *
+     * @param statement the for statement with a {@link ClosureListExpression} collection
+     */
     protected void writeForLoopWithClosureList(final ForStatement statement) {
         controller.getAcg().onLineNumber(statement, "visitForLoop");
         writeStatementLabel(statement);
@@ -189,30 +379,25 @@ public class StatementWriter {
 
         Label cond = new Label();
         mv.visitLabel(cond);
-        // visit condition leave boolean on stack
-        {
-            int mark = controller.getOperandStack().getStackLength();
-            Expression condExpr = expressions.get(condIndex);
-            condExpr.visit(controller.getAcg());
-            controller.getOperandStack().castToBool(mark, true);
+        ConditionValue conditionValue = visitConditionOfLoopStatement(expressions.get(condIndex), breakLabel, mv);
+        boolean bodyMayReachContinue = mayReachLoopCondition(statement);
+        if (conditionValue != ConditionValue.ALWAYS_FALSE) {
+            // Generate the loop body
+            statement.getLoopBlock().visit(controller.getAcg());
+
+            if (bodyMayReachContinue) {
+                // visit increment
+                mv.visitLabel(continueLabel);
+                // fix for being on the wrong line when debugging for loop
+                controller.getAcg().onLineNumber(statement, "increment condition");
+                for (int i = condIndex + 1; i < size; i += 1) {
+                    visitExpressionOfLoopStatement(expressions.get(i));
+                }
+
+                // jump to test the condition again
+                writeLoopBackEdge(cond, true);
+            }
         }
-        // jump if we don't want to continue
-        // note: ifeq tests for ==0, a boolean is 0 if it is false
-        controller.getOperandStack().jump(IFEQ, breakLabel);
-
-        // Generate the loop body
-        statement.getLoopBlock().visit(controller.getAcg());
-
-        // visit increment
-        mv.visitLabel(continueLabel);
-        // fix for being on the wrong line when debugging for loop
-        controller.getAcg().onLineNumber(statement, "increment condition");
-        for (int i = condIndex + 1; i < size; i += 1) {
-            visitExpressionOfLoopStatement(expressions.get(i));
-        }
-
-        // jump to test the condition again
-        mv.visitJumpInsn(GOTO, cond);
 
         // loop end
         mv.visitLabel(breakLabel);
@@ -236,85 +421,177 @@ public class StatementWriter {
         }
     }
 
-    private void visitConditionOfLoopingStatement(final BooleanExpression expression, final Label breakLabel, final MethodVisitor mv) {
-        boolean boolHandled = false;
-        if (expression.getExpression() instanceof ConstantExpression) {
-            ConstantExpression constant = (ConstantExpression) expression.getExpression();
-            if (constant.getValue() == Boolean.TRUE) {
-                boolHandled = true;
-                // do nothing
-            } else if (constant.getValue() == Boolean.FALSE) {
-                boolHandled = true;
-                mv.visitJumpInsn(GOTO, breakLabel);
-            }
+    private ConditionValue visitConditionOfLoopStatement(final Expression expression, final Label breakLabel, final MethodVisitor mv) {
+        ConditionValue conditionValue = constantBooleanValue(expression);
+        if (conditionValue == ConditionValue.ALWAYS_FALSE) {
+            mv.visitJumpInsn(GOTO, breakLabel); // unconditional exit
+            return conditionValue;
         }
-        if (!boolHandled) {
-            expression.visit(controller.getAcg());
-            controller.getOperandStack().jump(IFEQ, breakLabel);
+        if (conditionValue == ConditionValue.ALWAYS_TRUE) {
+            return conditionValue; // unconditional loop
         }
+
+        int mark = controller.getOperandStack().getStackLength();
+        expression.visit(controller.getAcg());
+        controller.getOperandStack().castToBool(mark, true);
+        controller.getOperandStack().jump(IFEQ, breakLabel);
+        return ConditionValue.UNKNOWN;
     }
 
+    /**
+     * Generates bytecode for a while loop.
+     *
+     * @param statement the while statement to compile
+     */
     public void writeWhileLoop(final WhileStatement statement) {
         controller.getAcg().onLineNumber(statement, "visitWhileLoop");
         writeStatementLabel(statement);
 
+        CompileStack compileStack = controller.getCompileStack();
+        compileStack.pushLoop(statement.getStatementLabels());
+        Label continueLabel = compileStack.getContinueLabel();
+        Label breakLabel = compileStack.getBreakLabel();
+        boolean bodyMayReachContinue = mayReachLoopCondition(statement);
+
         MethodVisitor mv = controller.getMethodVisitor();
-
-        controller.getCompileStack().pushLoop(statement.getStatementLabels());
-        Label continueLabel = controller.getCompileStack().getContinueLabel();
-        Label breakLabel = controller.getCompileStack().getBreakLabel();
-
         mv.visitLabel(continueLabel);
 
-        visitConditionOfLoopingStatement(statement.getBooleanExpression(), breakLabel, mv);
-        statement.getLoopBlock().visit(controller.getAcg());
-
-        mv.visitJumpInsn(GOTO, continueLabel);
+        if (visitConditionOfLoopStatement(statement.getBooleanExpression(), breakLabel, mv) != ConditionValue.ALWAYS_FALSE) {
+            statement.getLoopBlock().visit(controller.getAcg());
+            writeLoopBackEdge(continueLabel, bodyMayReachContinue);
+        }
         mv.visitLabel(breakLabel);
 
-        controller.getCompileStack().pop();
+        compileStack.pop();
     }
 
+    /**
+     * Generates bytecode for a do-while loop.
+     *
+     * @param statement the do-while statement to compile
+     */
     public void writeDoWhileLoop(final DoWhileStatement statement) {
         writeStatementLabel(statement);
 
-        controller.getCompileStack().pushLoop(statement.getStatementLabels());
-        Label continueLabel = controller.getCompileStack().getContinueLabel();
-        Label breakLabel = controller.getCompileStack().getBreakLabel();
+        CompileStack compileStack = controller.getCompileStack();
+        compileStack.pushLoop(statement.getStatementLabels());
+        Label continueLabel = compileStack.getContinueLabel();
+        Label breakLabel = compileStack.getBreakLabel();
+        Label blockLabel = new Label();
 
         MethodVisitor mv = controller.getMethodVisitor();
-        mv.visitLabel(continueLabel);
+        mv.visitLabel(blockLabel);
 
         statement.getLoopBlock().visit(controller.getAcg());
-        visitConditionOfLoopingStatement(statement.getBooleanExpression(), breakLabel, mv);
-
-        mv.visitJumpInsn(GOTO, continueLabel);
+        if (mayReachLoopCondition(statement)) {
+            mv.visitLabel(continueLabel); // GROOVY-11739: continue jumps to condition
+            if (visitConditionOfLoopStatement(statement.getBooleanExpression(), breakLabel, mv) != ConditionValue.ALWAYS_FALSE) {
+                mv.visitJumpInsn(GOTO, blockLabel);
+            }
+        }
         mv.visitLabel(breakLabel);
 
-        controller.getCompileStack().pop();
+        compileStack.pop();
     }
 
+    /**
+     * Generates bytecode for an if/else statement.
+     * <p>
+     * GROOVY-7463: a labeled {@code if} registers a breakable frame around the
+     * <em>then</em> arm only (same region as before GROOVY-12242). The else arm
+     * runs after that frame is popped so labeled-break scoping for the then
+     * arm is unchanged. Named break labels remain registered for the method
+     * (CompileStack does not un-register them on pop).
+     * <p>
+     * GROOVY-12242 / JEP 394: pattern slots are allocated on the outer frame
+     * during the condition (needed for short-circuit {@code &&} RHS). Each arm
+     * then uses {@link CompileStack#pushState}/{@link CompileStack#hidePatternVariablesExcept}/
+     * {@link CompileStack#pop} so only path-live names are visible. Path-live
+     * names come from {@link InstanceofFlowBindings} metadata attached by
+     * {@link VariableScopeVisitor} — classgen
+     * does not re-run the flow analysis. After both arms, non-survivors are
+     * permanently hidden on the outer frame (JLS §6.3.2.2-200-C).
+     *
+     * @param statement the if statement to compile
+     */
     public void writeIfElse(final IfStatement statement) {
         controller.getAcg().onLineNumber(statement, "visitIfElse");
         writeStatementLabel(statement);
 
+        CompileStack compileStack = controller.getCompileStack();
+        // Name view of the visitor's analysis; never re-analyse the condition.
+        InstanceofFlowBindings bindings = InstanceofFlowBindings.get(statement);
+
+        // Pattern slots on the outer frame so survivors need no put-back after pop.
+        Map<String, BytecodeVariable> beforePatterns = compileStack.snapshotPatternVariables();
         statement.getBooleanExpression().visit(controller.getAcg());
-        Label l0 = controller.getOperandStack().jump(IFEQ);
+        Set<String> introduced = compileStack.patternVariablesIntroducedSince(beforePatterns);
+
+        // GROOVY-7463: breakable wraps then only (historical region).
+        Label exitPath = compileStack.pushBreakable(statement.getStatementLabels());
+
+        boolean ifFallsThrough = maybeFallsThrough(statement.getIfBlock());
+        boolean elseEmpty = statement.getElseBlock().isEmpty();
+        boolean elseFallsThrough = elseEmpty || maybeFallsThrough(statement.getElseBlock());
+
+        // Then path: only whenTrue names among those this condition introduced.
+        Label elsePath = controller.getOperandStack().jump(IFEQ);
+        compileStack.pushState();
+        compileStack.hidePatternVariablesExcept(introduced, bindings.whenTrueNames());
         statement.getIfBlock().visit(controller.getAcg());
+        compileStack.pop();
+        compileStack.pop(); // ends breakable (before else — same as pre-GROOVY-12242)
 
         MethodVisitor mv = controller.getMethodVisitor();
-        if (statement.getElseBlock().isEmpty()) {
-            mv.visitLabel(l0);
+        if (elseEmpty) {
+            mv.visitLabel(elsePath);
         } else {
-            Label l1 = new Label();
-            mv.visitJumpInsn(GOTO, l1);
-            mv.visitLabel(l0);
-
+            if (ifFallsThrough) {
+                mv.visitJumpInsn(GOTO, exitPath);
+            }
+            mv.visitLabel(elsePath);
+            // Else path (outside breakable): only whenFalse names.
+            compileStack.pushState();
+            compileStack.hidePatternVariablesExcept(introduced, bindings.whenFalseNames());
             statement.getElseBlock().visit(controller.getAcg());
-            mv.visitLabel(l1);
+            compileStack.pop();
         }
+
+        // Survivors per JLS §6.3.2.2-200-C on the outer frame: an arm that cannot
+        // complete normally (§14.22, so break/continue count -- the same predicate
+        // as VariableScopeVisitor) introduces the other path's bindings after the if.
+        Set<String> survivors = new HashSet<>();
+        if (!mayCompleteNormally(statement.getIfBlock())) {
+            survivors.addAll(bindings.whenFalseNames());
+        }
+        if (!elseEmpty && !mayCompleteNormally(statement.getElseBlock())) {
+            survivors.addAll(bindings.whenTrueNames());
+        }
+        survivors.retainAll(introduced);
+        compileStack.hidePatternVariablesExcept(introduced, survivors);
+        mv.visitLabel(exitPath);
     }
 
+    /**
+     * Generates bytecode for a try/catch/finally statement.
+     * <p>
+     * A {@link BlockRecorder} is always registered for the try (and catch)
+     * regions so that:
+     * <ul>
+     *   <li>a non-empty finally is inlined on every abrupt exit
+     *       ({@code return}/{@code break}/{@code continue});</li>
+     *   <li>exception-table ranges are closed before any enclosing finally is
+     *       inlined (required when an inner try/catch without its own finally
+     *       sits inside an outer try/finally — see GROOVY-8229);</li>
+     *   <li>GROOVY-9805 stack-map casts remain active for assignments in the
+     *       region ({@link CompileStack#hasBlockRecorder()}).</li>
+     * </ul>
+     * When the finally clause is empty (plain {@code try}/{@code catch}), the
+     * catch-all identity rethrow and the empty shared-finally block are omitted
+     * so the shape matches javac more closely and stays more JIT-friendly.
+     *
+     * @param statement the try/catch/finally statement to compile
+     */
     public void writeTryCatchFinally(final TryCatchStatement statement) {
         writeStatementLabel(statement);
 
@@ -324,83 +601,111 @@ public class StatementWriter {
 
         Statement tryStatement = statement.getTryStatement();
         Statement finallyStatement = statement.getFinallyStatement();
+        boolean hasFinally = !isEmptyStatement(finallyStatement);
+        List<CatchStatement> catchStatements = statement.getCatchStatements();
+
         BlockRecorder tryBlock = makeBlockRecorder(finallyStatement);
 
         startRange(tryBlock, mv);
         tryStatement.visit(controller.getAcg());
 
-        // skip past catch block(s)
-        Label finallyStart = new Label();
-        mv.visitJumpInsn(GOTO, finallyStart);
-
+        // Destination for normal completion: shared finally when present, else
+        // the join point after all catch handlers.
+        Label afterHandlers = new Label();
+        boolean fallthrough = false;
+        if (maybeFallsThrough(tryStatement)) {
+            // Keeps an otherwise-empty try range non-empty and skips handlers.
+            mv.visitJumpInsn(GOTO, afterHandlers);
+            fallthrough = true;
+        }
         closeRange(tryBlock, mv);
-        // pop for BlockRecorder
+        // pop for try BlockRecorder
         compileStack.pop();
 
-        BlockRecorder catches = makeBlockRecorder(finallyStatement);
-        for (CatchStatement catchStatement : statement.getCatchStatements()) {
-            Label catchBlock = startRange(catches, mv);
+        BlockRecorder catches = null;
+        if (!catchStatements.isEmpty()) {
+            catches = makeBlockRecorder(finallyStatement);
+            for (CatchStatement catchStatement : catchStatements) {
+                Label catchBlock = startRange(catches, mv);
 
-            // create variable for the exception
-            compileStack.pushState();
-            // TODO: Is it okay that "catch (e)" makes variable type Object?
-            compileStack.defineVariable(catchStatement.getVariable(), true);
-            // handle catch body
-            catchStatement.visit(controller.getAcg());
-            // placeholder to avoid problems with empty catch block
-            mv.visitInsn(NOP);
-            // pop for the variable
-            compileStack.pop();
+                compileStack.pushState();
+                ClassNode type = catchStatement.getExceptionType();
+                compileStack.defineVariable(catchStatement.getVariable(), type, true);
+                catchStatement.visit(controller.getAcg());
+                // Non-empty catch range / LVT span for empty catch bodies
+                // (defineVariable starts the LVT after the store).
+                mv.visitInsn(NOP);
+                compileStack.pop();
 
-            // end of catch
-            closeRange(catches, mv);
-            mv.visitJumpInsn(GOTO, finallyStart);
-            compileStack.writeExceptionTable(tryBlock, catchBlock,
-                    BytecodeHelper.getClassInternalName(catchStatement.getExceptionType()));
+                closeRange(catches, mv);
+                if (maybeFallsThrough(catchStatement.getCode())) {
+                    mv.visitJumpInsn(GOTO, afterHandlers);
+                    fallthrough = true;
+                }
+                compileStack.writeExceptionTable(tryBlock, catchBlock, BytecodeHelper.getClassInternalName(type));
+            }
         }
 
-        // used to handle exceptions in catches and regularly visited finals
-        Label catchAll = new Label();
+        if (hasFinally) {
+            // Catch-all after typed handlers so it does not supersede them.
+            Label catchAll = new Label(), afterCatchAll = new Label();
+            compileStack.writeExceptionTable(tryBlock, catchAll, null);
+            if (catches != null) {
+                compileStack.writeExceptionTable(catches, catchAll, null);
+                compileStack.pop(); // catches BlockRecorder
+            }
 
-        // add "catch all" block to exception table for try part; we do this
-        // after the exception blocks so they are not superseded by this one
-        compileStack.writeExceptionTable(tryBlock, catchAll, null);
-        // same for the catch parts
-        compileStack.writeExceptionTable(catches , catchAll, null);
+            if (fallthrough) {
+                mv.visitLabel(afterHandlers);
+                finallyStatement.visit(controller.getAcg());
+                // Skip over the catch-all finally/rethrow path.
+                mv.visitJumpInsn(GOTO, afterCatchAll);
+            }
 
-        // pop for BlockRecorder
-        compileStack.pop();
+            mv.visitLabel(catchAll);
+            operandStack.push(ClassHelper.THROWABLE_TYPE);
+            int anyThrowable = compileStack.defineTemporaryVariable("throwable", ClassHelper.THROWABLE_TYPE, true);
 
-        // start finally
-        mv.visitLabel(finallyStart);
-        finallyStatement.visit(controller.getAcg());
+            finallyStatement.visit(controller.getAcg());
 
-        // skip past all-catching block
-        Label afterCatchAll = new Label();
-        mv.visitJumpInsn(GOTO, afterCatchAll);
+            mv.visitVarInsn(ALOAD, anyThrowable);
+            mv.visitInsn(ATHROW);
 
-        mv.visitLabel(catchAll);
-        operandStack.push(ClassHelper.make(Throwable.class));
-        int anyThrowableIndex = compileStack.defineTemporaryVariable("throwable", true);
-
-        finallyStatement.visit(controller.getAcg());
-
-        // load the throwable and rethrow it
-        mv.visitVarInsn(ALOAD, anyThrowableIndex);
-        mv.visitInsn(ATHROW);
-
-        mv.visitLabel(afterCatchAll);
-        compileStack.removeVar(anyThrowableIndex);
+            if (fallthrough) {
+                mv.visitLabel(afterCatchAll);
+            }
+            compileStack.removeVar(anyThrowable);
+        } else {
+            // No catch-all identity rethrow — uncaught exceptions propagate.
+            if (catches != null) {
+                compileStack.pop(); // catches BlockRecorder
+            }
+            if (fallthrough) {
+                mv.visitLabel(afterHandlers);
+            }
+        }
     }
 
+    /**
+     * Pushes a {@link BlockRecorder} that inlines {@code finallyStatement} on
+     * abrupt exits from the protected region (return/break/continue), while
+     * excluding that inlined body from the exception table so finally is not
+     * applied twice. When the finally is empty the excluded statement is a
+     * no-op, but the recorder still splits exception-table ranges around
+     * enclosing finally inlines.
+     */
     private BlockRecorder makeBlockRecorder(final Statement finallyStatement) {
         BlockRecorder recorder = new BlockRecorder();
+        final CompileStack compileStack = controller.getCompileStack();
+
         recorder.excludedStatement = () -> {
-            controller.getCompileStack().pushBlockRecorderVisit(recorder);
-            finallyStatement.visit(controller.getAcg());
-            controller.getCompileStack().popBlockRecorderVisit(recorder);
+            if (isEmptyStatement(finallyStatement)) return;
+            // GROOVY-4721, GROOVY-12062: emit the finally with the try-block locals
+            // hidden, then restore the try scope (and its variables) afterwards.
+            compileStack.visitExcludedFinally(recorder, () -> finallyStatement.visit(controller.getAcg()));
         };
-        controller.getCompileStack().pushBlockRecorder(recorder);
+
+        compileStack.pushBlockRecorder(recorder);
         return recorder;
     }
 
@@ -411,22 +716,44 @@ public class StatementWriter {
         return label;
     }
 
-    private static void  closeRange(final BlockRecorder br, final MethodVisitor mv) {
+    private static void closeRange(final BlockRecorder br, final MethodVisitor mv) {
         Label label = new Label();
         mv.visitLabel(label);
         br.closeRange(label);
     }
 
+    /**
+     * Generates bytecode for a switch statement.
+     * Each {@code case} expression is compared using Groovy's {@code isCase} operator,
+     * so non-integer switch expressions are supported.
+     *
+     * @param statement the switch statement to compile
+     */
     public void writeSwitch(final SwitchStatement statement) {
         controller.getAcg().onLineNumber(statement, "visitSwitch");
         writeStatementLabel(statement);
 
         statement.getExpression().visit(controller.getAcg());
+        ClassNode exprType = controller.getOperandStack().getTopOperand();
+        if (ClassHelper.isPrimitiveType(exprType)) exprType = ClassHelper.getWrapper(exprType);
 
-        // switch does not have a continue label. use its parent's for continue
-        Label breakLabel = controller.getCompileStack().pushSwitch();
+        // switch does not have a continue label; use enclosing continue label
+        CompileStack compileStack = controller.getCompileStack();
+        Label breakLabel = compileStack.pushSwitch(statement.getStatementLabels());
 
-        int switchVariableIndex = controller.getCompileStack().defineTemporaryVariable("switch", true);
+        Parameter subject = getSubjectVariable(statement);
+        int switchVariableIndex;
+        if (subject != null) { // GEP-19: pattern tests and bindings read the selector by name
+            controller.getOperandStack().box();
+            controller.getOperandStack().remove(1);
+            switchVariableIndex = compileStack.defineVariable(subject, exprType, true).getIndex();
+            Parameter elements = getElementsVariable(statement);
+            if (elements != null) { // the selector as a list, materialised by the first list pattern arm
+                compileStack.defineVariable(elements, ClassHelper.LIST_TYPE, false);
+            }
+        } else {
+            switchVariableIndex = compileStack.defineTemporaryVariable("switch", exprType, true);
+        }
 
         List<CaseStatement> caseStatements = statement.getCaseStatements();
         int caseCount = caseStatements.size();
@@ -437,65 +764,102 @@ public class StatementWriter {
 
         int i = 0;
         for (Iterator<CaseStatement> iter = caseStatements.iterator(); iter.hasNext(); i += 1) {
-            writeCaseStatement(iter.next(), switchVariableIndex, labels[i], labels[i + 1]);
+            writeCaseStatement(iter.next(), statement, switchVariableIndex, exprType, labels[i], labels[i + 1]);
         }
 
         statement.getDefaultStatement().visit(controller.getAcg());
 
-        controller.getMethodVisitor().visitLabel(breakLabel);
-
-        controller.getCompileStack().removeVar(switchVariableIndex);
-        controller.getCompileStack().pop();
+        if (maybeFallsThrough(statement) || statement.getStatementLabels() != null) {
+            controller.getMethodVisitor().visitLabel(breakLabel);
+        }
+        if (subject == null) compileStack.removeVar(switchVariableIndex);
+        compileStack.pop();
     }
 
-    private void writeCaseStatement(final CaseStatement statement, final int switchVariableIndex, final Label thisLabel, final Label nextLabel) {
-        controller.getAcg().onLineNumber(statement, "visitCaseStatement");
+    /**
+     * Emits one {@code isCase} test, leaving a boolean on the operand stack.
+     * The seam a statically compiled switch overrides so that a label resolves
+     * the same way it does in a switch expression (GROOVY-12407).
+     *
+     * @param caseStatement the arm whose label is being tested
+     * @param selectorIndex local variable slot holding the switch selector
+     * @param selectorType  type of that slot
+     */
+    protected void writeIsCaseComparison(final CaseStatement caseStatement,
+            final int selectorIndex, final ClassNode selectorType) {
+        controller.getBinaryExpressionHelper().writeIsCase(selectorIndex, selectorType, caseStatement.getExpression());
+    }
+
+    private void writeCaseStatement(final CaseStatement caseStatement, final SwitchStatement switchStatement, final int switchVariableIndex, final ClassNode switchType, final Label thisLabel, final Label nextLabel) {
+        controller.getAcg().onLineNumber(caseStatement, "visitCaseStatement");
         MethodVisitor mv = controller.getMethodVisitor();
-        OperandStack operandStack = controller.getOperandStack();
 
-        mv.visitVarInsn(ALOAD, switchVariableIndex);
-
-        statement.getExpression().visit(controller.getAcg());
-        operandStack.box();
-        controller.getBinaryExpressionHelper().getIsCaseMethod().call(mv);
-        operandStack.replace(ClassHelper.boolean_TYPE);
+        boolean patternArm = isPatternArm(caseStatement);
+        if (patternArm) { // GEP-19: the label is a boolean test on the subject variable
+            caseStatement.getExpression().visit(controller.getAcg());
+            controller.getOperandStack().doGroovyCast(ClassHelper.boolean_TYPE);
+        } else {
+            writeIsCaseComparison(caseStatement, switchVariableIndex, switchType);
+        }
 
         Label l0 = controller.getOperandStack().jump(IFEQ);
 
         mv.visitLabel(thisLabel);
 
-        statement.getCode().visit(controller.getAcg());
+        if (patternArm) { // `break <arm>` in the matching steps continues with the next case test
+            controller.getCompileStack().pushBreakable(caseStatement.getStatementLabels(), l0);
+        }
+        caseStatement.getCode().visit(controller.getAcg());
+        if (patternArm) {
+            controller.getCompileStack().pop();
+        }
 
         // now if we don't finish with a break we need to jump past the next comparison
-        if (nextLabel != null) {
+        if (nextLabel != null && maybeFallsThroughToNextSwitchCase(caseStatement.getCode(), switchStatement)) {
             mv.visitJumpInsn(GOTO, nextLabel);
         }
 
         mv.visitLabel(l0);
     }
 
+    /**
+     * Generates bytecode for a break statement, applying any intervening
+     * finally blocks before the jump.
+     *
+     * @param statement the break statement to compile
+     */
     public void writeBreak(final BreakStatement statement) {
         controller.getAcg().onLineNumber(statement, "visitBreakStatement");
         writeStatementLabel(statement);
 
-        String name = statement.getLabel();
-        Label breakLabel = controller.getCompileStack().getNamedBreakLabel(name);
-        controller.getCompileStack().applyFinallyBlocks(breakLabel, true);
-
-        controller.getMethodVisitor().visitJumpInsn(GOTO, breakLabel);
+        Label label = controller.getCompileStack().getNamedBreakLabel(statement.getLabel());
+        controller.getCompileStack().applyFinallyBlocks(label, true);
+        controller.getMethodVisitor().visitJumpInsn(GOTO, label);
     }
 
+    /**
+     * Generates bytecode for a continue statement, applying any intervening
+     * finally blocks before the jump.
+     *
+     * @param statement the continue statement to compile
+     */
     public void writeContinue(final ContinueStatement statement) {
         controller.getAcg().onLineNumber(statement, "visitContinueStatement");
         writeStatementLabel(statement);
 
-        String name = statement.getLabel();
-        Label continueLabel = controller.getCompileStack().getContinueLabel();
-        if (name != null) continueLabel = controller.getCompileStack().getNamedContinueLabel(name);
-        controller.getCompileStack().applyFinallyBlocks(continueLabel, false);
-        controller.getMethodVisitor().visitJumpInsn(GOTO, continueLabel);
+        Label label = controller.getCompileStack().getNamedContinueLabel(statement.getLabel());
+        controller.getCompileStack().applyFinallyBlocks(label, false);
+        controller.getMethodVisitor().visitJumpInsn(GOTO, label);
     }
 
+    /**
+     * Generates bytecode for a synchronized statement.
+     * Stores the monitor object in a local variable, emits
+     * {@code MONITORENTER}/{@code MONITOREXIT} guards, and registers
+     * a catch-all exception handler that exits the monitor before rethrowing.
+     *
+     * @param statement the synchronized statement to compile
+     */
     public void writeSynchronized(final SynchronizedStatement statement) {
         controller.getAcg().onLineNumber(statement, "visitSynchronizedStatement");
         writeStatementLabel(statement);
@@ -513,7 +877,7 @@ public class StatementWriter {
         mv.visitVarInsn(ALOAD, index);
         mv.visitInsn(MONITORENTER);
         mv.visitLabel(synchronizedStart);
-        // place holder for "empty" synchronized blocks, for example
+        // placeholder for "empty" synchronized blocks, for example
         // if there is only a break/continue.
         mv.visitInsn(NOP);
 
@@ -530,22 +894,38 @@ public class StatementWriter {
         compileStack.writeExceptionTable(fb, catchAll, null);
         compileStack.pop(); //pop fb
 
-        finallyPart.run();
-        mv.visitJumpInsn(GOTO, synchronizedEnd);
+        boolean fallthrough = maybeFallsThrough(statement.getCode());
+        if (fallthrough) {
+            finallyPart.run();
+            mv.visitJumpInsn(GOTO, synchronizedEnd);
+        }
         mv.visitLabel(catchAll);
         finallyPart.run();
         mv.visitInsn(ATHROW);
 
-        mv.visitLabel(synchronizedEnd);
+        if (fallthrough) {
+            mv.visitLabel(synchronizedEnd);
+        }
         compileStack.removeVar(index);
     }
 
+    /**
+     * Generates bytecode for an assert statement.
+     *
+     * @param statement the assert statement to compile
+     */
     public void writeAssert(final AssertStatement statement) {
         controller.getAcg().onLineNumber(statement, "visitAssertStatement");
         writeStatementLabel(statement);
         controller.getAssertionWriter().writeAssertStatement(statement);
     }
 
+    /**
+     * Generates bytecode for a throw statement.
+     * Casts the expression to {@code Throwable} and emits {@code ATHROW}.
+     *
+     * @param statement the throw statement to compile
+     */
     public void writeThrow(final ThrowStatement statement) {
         controller.getAcg().onLineNumber(statement, "visitThrowStatement");
         writeStatementLabel(statement);
@@ -560,46 +940,115 @@ public class StatementWriter {
         controller.getOperandStack().remove(1);
     }
 
+    /**
+     * Generates bytecode for a return statement.
+     * For void methods emits {@code RETURN} after applying any finally blocks.
+     * For value-returning methods evaluates the expression, casts it to the
+     * declared return type, and emits the appropriate typed return instruction.
+     *
+     * @param statement the return statement to compile
+     */
     public void writeReturn(final ReturnStatement statement) {
         controller.getAcg().onLineNumber(statement, "visitReturnStatement");
         writeStatementLabel(statement);
-        MethodVisitor mv = controller.getMethodVisitor();
-        OperandStack operandStack = controller.getOperandStack();
-        ClassNode returnType = controller.getReturnType();
 
-        if (returnType.equals(ClassHelper.VOID_TYPE)) {
+        var cs = controller.getCompileStack();
+        var os = controller.getOperandStack();
+        var mv = controller.getMethodVisitor();
+
+        var returnType = controller.getReturnType();
+        if (ClassHelper.isPrimitiveVoid(returnType)) {
             if (!statement.isReturningNullOrVoid()) { // TODO: move to Verifier
                 controller.getAcg().throwException("Cannot use return statement with an expression on a method that returns void");
             }
-            controller.getCompileStack().applyBlockRecorder();
+            cs.applyBlockRecorder();
             mv.visitInsn(RETURN);
-            return;
+        } else { // return value
+            Expression expression = statement.getExpression();
+            expression.visit(controller.getAcg());
+
+            if (!isNullConstant(expression) || ClassHelper.isPrimitiveType(returnType)) {
+                os.doGroovyCast(returnType);
+            } else { // GROOVY-10617
+                os.replace(returnType);
+            }
+
+            if (cs.hasBlockRecorder()) {
+                int rv = cs.defineTemporaryVariable("returnValue", returnType, true);
+                cs.applyBlockRecorder(); // handle finally block
+                BytecodeHelper.load(mv, returnType, rv);
+                BytecodeHelper.doReturn(mv, returnType);
+                cs.removeVar(rv);
+            } else {
+                BytecodeHelper.doReturn(mv, returnType);
+                os.remove(1);
+            }
         }
-
-        Expression expression = statement.getExpression();
-        expression.visit(controller.getAcg());
-
-        operandStack.doGroovyCast(returnType);
-
-        if (controller.getCompileStack().hasBlockRecorder()) {
-            ClassNode type = operandStack.getTopOperand();
-            int returnValueIdx = controller.getCompileStack().defineTemporaryVariable("returnValue", returnType, true);
-            controller.getCompileStack().applyBlockRecorder();
-            operandStack.load(type, returnValueIdx);
-            controller.getCompileStack().removeVar(returnValueIdx);
-        }
-
-        BytecodeHelper.doReturn(mv, returnType);
-        operandStack.remove(1);
     }
 
+    /**
+     * Generates bytecode for an expression statement.
+     * Evaluates the expression and discards any value left on the operand stack.
+     * Marks method-call and binary expressions so that unused return values
+     * are elided rather than boxed.
+     * <p>
+     * GROOVY-12242: non-declaration statements that contain an {@code instanceof}
+     * type pattern run in a nested CompileStack state ({@code pushState}/{@code pop})
+     * so pattern locals defined during evaluation cannot leak past the statement.
+     *
+     * @param statement the expression statement to compile
+     */
     public void writeExpressionStatement(final ExpressionStatement statement) {
-        controller.getAcg().onLineNumber(statement, "visitExpressionStatement: " + statement.getExpression().getClass().getName());
+        Expression expression = statement.getExpression();
+
+        controller.getAcg().onLineNumber(statement, "visitExpressionStatement: " + expression.getClass().getName());
         writeStatementLabel(statement);
 
-        int mark = controller.getOperandStack().getStackLength();
-        Expression expression = statement.getExpression();
-        expression.visit(controller.getAcg());
-        controller.getOperandStack().popDownTo(mark);
+        if (expression instanceof MethodCall || expression instanceof BinaryExpression)
+            expression.putNodeMetaData(AsmClassGenerator.ELIDE_EXPRESSION_VALUE, Boolean.TRUE);
+
+        CompileStack compileStack = controller.getCompileStack();
+        // Declaration LHS isolation is in evaluateEqual; multi-assign must not be wrapped.
+        boolean isolatesPatternVars = !(expression instanceof DeclarationExpression)
+                && containsTypePattern(expression);
+        if (isolatesPatternVars) {
+            compileStack.pushState();
+        }
+        try {
+            var operandStack = controller.getOperandStack();
+            int mark = operandStack.getStackLength();
+            expression.visit(controller.getAcg());
+            operandStack.popDownTo(mark);
+        } finally {
+            if (isolatesPatternVars) {
+                compileStack.pop();
+            }
+        }
+    }
+
+    /**
+     * Structural check: does {@code expression} contain any JEP&nbsp;394 type
+     * pattern ({@code e instanceof T t})? Not a flow analysis — used only to
+     * decide whether an expression statement needs CompileStack isolation.
+     */
+    private static boolean containsTypePattern(final Expression expression) {
+        if (expression == null) return false;
+        boolean[] found = {false};
+        expression.visit(new CodeVisitorSupport() {
+            @Override
+            public void visitBinaryExpression(final BinaryExpression be) {
+                if (found[0]) return;
+                int op = be.getOperation().getType();
+                if ((op == Types.KEYWORD_INSTANCEOF || op == Types.COMPARE_NOT_INSTANCEOF)
+                        && be.getRightExpression() instanceof DeclarationExpression decl
+                        && !decl.isMultipleAssignmentDeclaration()
+                        && decl.getVariableExpression() != null) {
+                    found[0] = true;
+                    return;
+                }
+                super.visitBinaryExpression(be);
+            }
+        });
+        return found[0];
     }
 }

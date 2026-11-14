@@ -24,13 +24,11 @@ import groovy.util.IFileNameFinder;
 import junit.framework.Test;
 import junit.framework.TestCase;
 import junit.framework.TestSuite;
-import org.codehaus.groovy.control.CompilationFailedException;
 import org.apache.groovy.test.ScriptTestAdapter;
+import org.codehaus.groovy.control.CompilationFailedException;
 
 import java.io.File;
 import java.io.IOException;
-import java.security.AccessController;
-import java.security.PrivilegedAction;
 import java.util.List;
 import java.util.logging.Logger;
 
@@ -77,13 +75,11 @@ public class AllTestSuite extends TestSuite {
 
     private static final Logger LOG = Logger.getLogger(AllTestSuite.class.getName());
     private static final ClassLoader JAVA_LOADER = AllTestSuite.class.getClassLoader();
-    private static final GroovyClassLoader GROOVY_LOADER =
-            AccessController.doPrivileged(
-                    (PrivilegedAction<GroovyClassLoader>) () -> new GroovyClassLoader(JAVA_LOADER)
-            );
+
+    private static final GroovyClassLoader GROOVY_LOADER = new GroovyClassLoader(JAVA_LOADER);
 
     private static final String[] EMPTY_ARGS = new String[]{};
-    private static IFileNameFinder finder = null;
+    private static IFileNameFinder finder;
 
     static { // this is only needed since the Groovy Build compiles *.groovy files after *.java files
         try {
@@ -94,6 +90,11 @@ public class AllTestSuite extends TestSuite {
         }
     }
 
+    /**
+     * Creates a suite using the configured system-property defaults.
+     *
+     * @return the populated test suite
+     */
     public static Test suite() {
         String basedir = System.getProperty(SYSPROP_TEST_DIR, "./test/");
         String pattern = System.getProperty(SYSPROP_TEST_PATTERN, "**/*Test.groovy");
@@ -101,13 +102,28 @@ public class AllTestSuite extends TestSuite {
         return suite(basedir, pattern, excludesPattern);
     }
 
+    /**
+     * Creates a suite for tests matching the supplied include pattern.
+     *
+     * @param basedir the base directory to search
+     * @param pattern the include pattern used to find test sources
+     * @return the populated test suite
+     */
     public static Test suite(String basedir, String pattern) {
         return suite(basedir, pattern, "");
     }
 
+    /**
+     * Creates a suite for tests matching the supplied include and exclude patterns.
+     *
+     * @param basedir the base directory to search
+     * @param pattern the include pattern used to find test sources
+     * @param excludesPattern the exclude pattern used to filter matching sources
+     * @return the populated test suite
+     */
     public static Test suite(String basedir, String pattern, String excludesPattern) {
         AllTestSuite suite = new AllTestSuite();
-        List<String> filenames = excludesPattern.length() > 0
+        List<String> filenames = !excludesPattern.isEmpty()
                 ? finder.getFileNames(basedir, pattern, excludesPattern)
                 : finder.getFileNames(basedir, pattern);
         for (String filename : filenames) {
@@ -124,6 +140,13 @@ public class AllTestSuite extends TestSuite {
         return suite;
     }
 
+    /**
+     * Compiles the supplied source file and adds the resulting test to this suite.
+     *
+     * @param filename the Groovy source file to compile
+     * @throws CompilationFailedException if compilation fails
+     * @throws IOException if the source cannot be read
+     */
     @SuppressWarnings("unchecked")
     protected void loadTest(String filename) throws CompilationFailedException, IOException {
         Class type = compile(filename);
@@ -136,6 +159,14 @@ public class AllTestSuite extends TestSuite {
         }
     }
 
+    /**
+     * Compiles the supplied Groovy source file into a class.
+     *
+     * @param filename the Groovy source file to compile
+     * @return the compiled class
+     * @throws CompilationFailedException if compilation fails
+     * @throws IOException if the source cannot be read
+     */
     protected Class compile(String filename) throws CompilationFailedException, IOException {
         return GROOVY_LOADER.parseClass(new File(filename));
     }

@@ -18,6 +18,7 @@
  */
 package org.codehaus.groovy.transform;
 
+import org.apache.groovy.ast.tools.AnnotatedNodeUtils;
 import org.codehaus.groovy.ast.ASTNode;
 import org.codehaus.groovy.ast.AnnotatedNode;
 import org.codehaus.groovy.ast.AnnotationNode;
@@ -32,7 +33,6 @@ import org.codehaus.groovy.ast.expr.ConstantExpression;
 import org.codehaus.groovy.ast.expr.EmptyExpression;
 import org.codehaus.groovy.ast.expr.Expression;
 import org.codehaus.groovy.ast.expr.MethodCallExpression;
-import org.codehaus.groovy.ast.expr.VariableExpression;
 import org.codehaus.groovy.ast.stmt.BlockStatement;
 import org.codehaus.groovy.ast.stmt.Statement;
 import org.codehaus.groovy.ast.stmt.SynchronizedStatement;
@@ -44,7 +44,6 @@ import java.lang.ref.SoftReference;
 
 import static org.apache.groovy.ast.tools.ClassNodeUtils.addGeneratedMethod;
 import static org.apache.groovy.util.BeanUtils.capitalize;
-import static org.codehaus.groovy.ast.ClassHelper.makeWithoutCaching;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.assignS;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.assignX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.block;
@@ -77,7 +76,7 @@ import static org.objectweb.asm.Opcodes.ACC_SYNTHETIC;
 @GroovyASTTransformation(phase = CompilePhase.SEMANTIC_ANALYSIS)
 public class LazyASTTransformation extends AbstractASTTransformation {
 
-    private static final ClassNode SOFT_REF = makeWithoutCaching(SoftReference.class, false);
+    private static final ClassNode SOFT_REF = ClassHelper.makeWithoutCaching(SoftReference.class, false);
 
     @Override
     public void visit(ASTNode[] nodes, SourceUnit source) {
@@ -85,8 +84,7 @@ public class LazyASTTransformation extends AbstractASTTransformation {
         AnnotatedNode parent = (AnnotatedNode) nodes[1];
         AnnotationNode node = (AnnotationNode) nodes[0];
 
-        if (parent instanceof FieldNode) {
-            final FieldNode fieldNode = (FieldNode) parent;
+        if (parent instanceof FieldNode fieldNode) {
             visitField(this, node, fieldNode);
         }
     }
@@ -98,6 +96,7 @@ public class LazyASTTransformation extends AbstractASTTransformation {
         String backingFieldName = "$" + fieldNode.getName();
         fieldNode.rename(backingFieldName);
         fieldNode.setModifiers(ACC_PRIVATE | ACC_SYNTHETIC | (fieldNode.getModifiers() & (~(ACC_PUBLIC | ACC_PROTECTED))));
+        AnnotatedNodeUtils.markAsInternal(fieldNode);
         PropertyNode pNode = fieldNode.getDeclaringClass().getProperty(backingFieldName);
         if (pNode != null) {
             fieldNode.getDeclaringClass().getProperties().remove(pNode);
@@ -150,18 +149,23 @@ public class LazyASTTransformation extends AbstractASTTransformation {
     }
 
     private static void addDoubleCheckedLockingBody(BlockStatement body, FieldNode fieldNode, Expression initExpr) {
-        final Expression fieldExpr = varX(fieldNode);
-        final VariableExpression localVar = localVarX(fieldNode.getName() + "_local");
-        body.addStatement(declS(localVar, fieldExpr));
+        ClassNode fieldType = fieldNode.getType();
+        if (ClassHelper.isPrimitiveType(fieldType)) {
+            fieldType = ClassHelper.getWrapper(fieldType);
+        }
+        final Expression localVar = localVarX(fieldNode.getName() + "_local", fieldType);
+        final Expression theField = varX(fieldNode);
+
+        body.addStatement(declS(localVar, theField));
         body.addStatement(ifElseS(
                 notNullX(localVar),
                 returnS(localVar),
                 new SynchronizedStatement(
                         syncTarget(fieldNode),
                         ifElseS(
-                                notNullX(fieldExpr),
-                                returnS(fieldExpr),
-                                returnS(assignX(fieldExpr, initExpr))
+                                notNullX(theField),
+                                returnS(theField),
+                                returnS(assignX(theField, initExpr))
                         )
                 )
         ));
@@ -178,7 +182,7 @@ public class LazyASTTransformation extends AbstractASTTransformation {
         String propName = capitalize(fieldNode.getName().substring(1));
         ClassNode declaringClass = fieldNode.getDeclaringClass();
         addGeneratedMethodOrError(declaringClass, "get" + propName, visibility, type, body, xform, fieldNode);
-        if (ClassHelper.boolean_TYPE.equals(type)) {
+        if (ClassHelper.isPrimitiveBoolean(type)) {
             addGeneratedMethodOrError(declaringClass, "is" + propName, visibility, type, stmt(callThisX("get" + propName)), xform, fieldNode);
         }
         // expect no setter

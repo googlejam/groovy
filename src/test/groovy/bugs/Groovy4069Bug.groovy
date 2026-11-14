@@ -16,31 +16,33 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy4069Bug extends GroovyTestCase {
 
+class Groovy4069Bug {
+
+    @Test
     void testEMCConstructorWithSubClassingTest1V1() {
         def shell = new GroovyShell()
         shell.evaluate """
             ExpandoMetaClass.enableGlobally()
-            try {            
+            try {
                 // ChildX.metaClass
                 def oldMetaClass = ParentX.metaClass
-                
+
                 def emc = new ExpandoMetaClass(ParentX, true, true)
                 emc.initialize()
                 GroovySystem.metaClassRegistry.setMetaClass(ParentX, emc)
-                
+
                 emc.constructor = { Map m -> ParentX.newInstance() }
-                
+
                 assert new ChildX([:]).class.name == 'ChildX'
-                
-                GroovySystem.metaClassRegistry.removeMetaClass(ParentX) 
+
+                GroovySystem.metaClassRegistry.removeMetaClass(ParentX)
                 GroovySystem.metaClassRegistry.setMetaClass(ParentX, oldMetaClass)
-                
+
                 assert new ChildX([:]).class.name == 'ChildX'
             } finally {
                 ExpandoMetaClass.disableGlobally()
@@ -49,7 +51,8 @@ class Groovy4069Bug extends GroovyTestCase {
             class ChildX extends ParentX { def b }
         """
     }
-    
+
+    @Test
     void testEMCConstructorWithSubClassingTest1V2() {
         def shell = new GroovyShell()
         shell.evaluate """
@@ -57,18 +60,18 @@ class Groovy4069Bug extends GroovyTestCase {
             try {
                 ChildX.metaClass
                 def oldMetaClass = ParentX.metaClass
-                
+
                 def emc = new ExpandoMetaClass(ParentX, true, true)
                 emc.initialize()
                 GroovySystem.metaClassRegistry.setMetaClass(ParentX, emc)
-                
+
                 emc.constructor = { Map m -> ParentX.newInstance() }
-                
+
                 assert new ChildX([:]).class.name == 'ChildX'
-                
-                GroovySystem.metaClassRegistry.removeMetaClass(ParentX) 
+
+                GroovySystem.metaClassRegistry.removeMetaClass(ParentX)
                 GroovySystem.metaClassRegistry.setMetaClass(ParentX, oldMetaClass)
-                
+
                 assert new ChildX([:]).class.name == 'ChildX'
             } finally {
                 ExpandoMetaClass.disableGlobally()
@@ -77,26 +80,27 @@ class Groovy4069Bug extends GroovyTestCase {
             class ChildX extends ParentX { def b }
         """
     }
-    
+
+    @Test
     void testEMCConstructorWithSubClassingTest2V1() {
         def shell = new GroovyShell()
         shell.evaluate """
             ExpandoMetaClass.enableGlobally()
-            try {            
+            try {
                 // ChildY.metaClass
                 def oldMetaClass = ChildY.metaClass
-                
+
                 def emc = new ExpandoMetaClass(ChildY, true, true)
                 emc.initialize()
                 GroovySystem.metaClassRegistry.setMetaClass(ChildY, emc)
-                
+
                 emc.constructor = { Map m -> ParentY.newInstance() }
-                
+
                 assert new ChildY([:]).class.name == 'ParentY'
-                
-                GroovySystem.metaClassRegistry.removeMetaClass(ChildY) 
+
+                GroovySystem.metaClassRegistry.removeMetaClass(ChildY)
                 GroovySystem.metaClassRegistry.setMetaClass(ChildY, oldMetaClass)
-                
+
                 assert new ChildY([:]).class.name == 'ChildY'
             } finally {
                 ExpandoMetaClass.disableGlobally()
@@ -106,25 +110,26 @@ class Groovy4069Bug extends GroovyTestCase {
         """
     }
 
+    @Test
     void testEMCConstructorWithSubClassingTest2V2() {
         def shell = new GroovyShell()
         shell.evaluate """
             ExpandoMetaClass.enableGlobally()
-            try {            
+            try {
                 ChildY.metaClass
                 def oldMetaClass = ChildY.metaClass
-                
+
                 def emc = new ExpandoMetaClass(ChildY, true, true)
                 emc.initialize()
                 GroovySystem.metaClassRegistry.setMetaClass(ChildY, emc)
-                
+
                 emc.constructor = { Map m -> ParentY.newInstance() }
-                
+
                 assert new ChildY([:]).class.name == 'ParentY'
-                
-                GroovySystem.metaClassRegistry.removeMetaClass(ChildY) 
+
+                GroovySystem.metaClassRegistry.removeMetaClass(ChildY)
                 GroovySystem.metaClassRegistry.setMetaClass(ChildY, oldMetaClass)
-                
+
                 assert new ChildY([:]).class.name == 'ChildY'
             } finally {
                 ExpandoMetaClass.disableGlobally()

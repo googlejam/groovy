@@ -18,11 +18,11 @@
  */
 package org.apache.groovy.contracts.classgen.asm;
 
-import org.codehaus.groovy.ast.ASTNode;
 import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.CodeVisitorSupport;
 import org.codehaus.groovy.ast.DynamicVariable;
+import org.codehaus.groovy.ast.GenericsType;
 import org.codehaus.groovy.ast.InnerClassNode;
 import org.codehaus.groovy.ast.MethodNode;
 import org.codehaus.groovy.ast.Parameter;
@@ -30,7 +30,6 @@ import org.codehaus.groovy.ast.Variable;
 import org.codehaus.groovy.ast.VariableScope;
 import org.codehaus.groovy.ast.expr.ArgumentListExpression;
 import org.codehaus.groovy.ast.expr.ClosureExpression;
-import org.codehaus.groovy.ast.expr.TupleExpression;
 import org.codehaus.groovy.ast.expr.VariableExpression;
 import org.codehaus.groovy.ast.stmt.BlockStatement;
 
@@ -39,10 +38,11 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
+import static org.codehaus.groovy.ast.ClassHelper.isPrimitiveVoid;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.args;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.block;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.callThisX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.ctorSuperX;
-import static org.codehaus.groovy.ast.tools.GeneralUtils.param;
-import static org.codehaus.groovy.ast.tools.GeneralUtils.params;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.returnS;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.stmt;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.varX;
@@ -59,16 +59,27 @@ public class ContractClosureWriter {
 
     private int closureCount = 1;
 
+    /**
+     * Generates a synthetic closure implementation class for the supplied contract closure.
+     *
+     * @param classNode the declaring class
+     * @param methodNode the owning method or constructor, or {@code null} for class invariants
+     * @param expression the rewritten closure body
+     * @param addOldVariable whether to expose the {@code old} map parameter
+     * @param addResultVariable whether to expose the {@code result} parameter
+     * @param mods the access modifiers to apply to the generated class
+     * @return the generated closure implementation class
+     */
     public ClassNode createClosureClass(ClassNode classNode, MethodNode methodNode, ClosureExpression expression, boolean addOldVariable, boolean addResultVariable, int mods) {
         ClassNode outerClass = getOutermostClass(classNode);
         String name = outerClass.getName() + "$" + getClosureInnerName(outerClass, classNode);
 
         // fetch all method parameters, and possibly add 'old' and 'result'
-        ArrayList<Parameter> parametersTemp = new ArrayList<Parameter>(Arrays.asList(expression.getParameters()));
+        List<Parameter> parametersTemp = new ArrayList<>(Arrays.asList(expression.getParameters()));
         removeParameter("old", parametersTemp);
         removeParameter("result", parametersTemp);
 
-        if (methodNode != null && addResultVariable && methodNode.getReturnType() != ClassHelper.VOID_TYPE) {
+        if (methodNode != null && addResultVariable && !isPrimitiveVoid(methodNode.getReturnType())) {
             parametersTemp.add(new Parameter(methodNode.getReturnType(), "result"));
         }
 
@@ -77,26 +88,23 @@ public class ContractClosureWriter {
         }
 
         // contains all params of the original method
-        ArrayList<Parameter> closureParameters = new ArrayList<Parameter>();
+        List<Parameter> closureParameters = new ArrayList<>();
         for (Parameter param : parametersTemp) {
-            Parameter closureParameter = new Parameter(param.getType().getPlainNodeReference(), param.getName());
-            closureParameters.add(closureParameter);
+            closureParameters.add(new Parameter(plainNodeReferenceWithGenerics(param.getType()), param.getName()));
         }
 
         ClassNode answer = new ClassNode(name, mods | ACC_FINAL, ClassHelper.CLOSURE_TYPE.getPlainNodeReference());
-        answer.setSynthetic(true);
         answer.setSourcePosition(expression);
+        answer.setSynthetic(true);
 
-        MethodNode method =
-                answer.addMethod("doCall", ACC_PUBLIC, ClassHelper.Boolean_TYPE, closureParameters.toArray(new Parameter[closureParameters.size()]), ClassNode.EMPTY_ARRAY, expression.getCode());
-        method.setSourcePosition(expression);
+        MethodNode doCall = answer.addMethod("doCall", ACC_PUBLIC, ClassHelper.Boolean_TYPE, closureParameters.toArray(Parameter.EMPTY_ARRAY), ClassNode.EMPTY_ARRAY, expression.getCode());
+        doCall.setSourcePosition(expression);
 
         VariableScope varScope = expression.getVariableScope();
         if (varScope == null) {
-            throw new RuntimeException(
-                    "Must have a VariableScope by now! for expression: " + expression + " class: " + name);
+            throw new RuntimeException("Must have a VariableScope by now! for expression: " + expression + " class: " + name);
         } else {
-            method.setVariableScope(varScope.copy());
+            doCall.setVariableScope(varScope.copy());
         }
 
         // let's add a typesafe call method
@@ -109,15 +117,15 @@ public class ContractClosureWriter {
                 "call",
                 ACC_PUBLIC,
                 ClassHelper.Boolean_TYPE,
-                closureParameters.toArray(new Parameter[closureParameters.size()]),
+                closureParameters.toArray(Parameter.EMPTY_ARRAY),
                 ClassNode.EMPTY_ARRAY,
-                returnS(callThisX("doCall", arguments)));
-
+                returnS(callThisX("doCall", arguments))
+        );
         call.setSourcePosition(expression);
         call.setSynthetic(true);
 
         // let's make the constructor
-        BlockStatement block = new BlockStatement();
+        BlockStatement block = block();
         // this block does not get a source position, because we don't
         // want this synthetic constructor to show up in corbertura reports
         VariableExpression outer = varX("_outerInstance");
@@ -126,21 +134,71 @@ public class ContractClosureWriter {
         VariableExpression thisObject = varX("_thisObject");
         thisObject.setSourcePosition(expression);
         block.getVariableScope().putReferencedLocalVariable(thisObject);
-        TupleExpression conArgs = new TupleExpression(outer, thisObject);
-        block.addStatement(stmt(ctorSuperX(conArgs)));
+        block.addStatement(stmt(ctorSuperX(args(outer, thisObject))));
 
-        Parameter[] consParams = params(
-                param(ClassHelper.OBJECT_TYPE, "_outerInstance"),
-                param(ClassHelper.OBJECT_TYPE, "_thisObject"));
-
-        ASTNode sn = answer.addConstructor(ACC_PUBLIC, consParams, ClassNode.EMPTY_ARRAY, block);
-        sn.setSourcePosition(expression);
-        correctAccessedVariable(method, expression);
+        Parameter[] ctorParams = {
+                new Parameter(ClassHelper.OBJECT_TYPE, "_outerInstance"),
+                new Parameter(ClassHelper.OBJECT_TYPE, "_thisObject")
+        };
+        var ctor = answer.addConstructor(ACC_PUBLIC, ctorParams, ClassNode.EMPTY_ARRAY, block);
+        ctor.setSourcePosition(expression);
+        correctAccessedVariable(doCall, expression);
         return answer;
     }
 
     private void removeParameter(String name, List<Parameter> parameters) {
         parameters.removeIf(parameter -> parameter.getName().equals(name));
+    }
+
+    /**
+     * Returns a plain node reference for the supplied closure-parameter type but, unlike
+     * {@link ClassNode#getPlainNodeReference()} on its own, carries over any concrete generics
+     * information (GROOVY-12071). This lets static type checking of a contract closure see, for
+     * example, that a {@code result} parameter typed {@code Map<String, Integer>} yields
+     * {@code Integer} values, removing the need for explicit casts in {@code @Ensures} conditions.
+     * <p>
+     * Generics that mention a type-parameter placeholder (e.g. the {@code T} of a {@code <T> T m(...)}
+     * method, or the {@code Class<T>} of one of its parameters) are dropped: the generated closure
+     * class does not declare those type parameters, so carrying the placeholder through would leave
+     * an unresolved type variable that breaks downstream generic-signature handling (e.g. JavaBeans
+     * introspection of the closure class).
+     */
+    private static ClassNode plainNodeReferenceWithGenerics(ClassNode type) {
+        ClassNode ref = type.getPlainNodeReference();
+        GenericsType[] genericsTypes = type.getGenericsTypes();
+        if (genericsTypes != null && genericsTypes.length > 0 && !usesPlaceholder(type)) {
+            ref.setGenericsTypes(genericsTypes);
+            ref.setUsingGenerics(true);
+        }
+        return ref;
+    }
+
+    /**
+     * Reports whether {@code type} mentions a generics placeholder (an unresolved type-parameter
+     * reference such as {@code T}) at any nesting depth of its generics or array component.
+     */
+    private static boolean usesPlaceholder(ClassNode type) {
+        if (type == null) return false;
+        if (type.isArray()) return usesPlaceholder(type.getComponentType());
+        if (type.isGenericsPlaceHolder()) return true;
+        GenericsType[] genericsTypes = type.getGenericsTypes();
+        if (genericsTypes != null) {
+            for (GenericsType gt : genericsTypes) {
+                if (gt.isPlaceholder()) return true;
+                if (gt.isWildcard()) {
+                    if (usesPlaceholder(gt.getLowerBound())) return true;
+                    ClassNode[] upperBounds = gt.getUpperBounds();
+                    if (upperBounds != null) {
+                        for (ClassNode upperBound : upperBounds) {
+                            if (usesPlaceholder(upperBound)) return true;
+                        }
+                    }
+                } else if (usesPlaceholder(gt.getType())) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private ClassNode getOutermostClass(ClassNode outermostClass) {
@@ -150,8 +208,12 @@ public class ContractClosureWriter {
         return outermostClass;
     }
 
-    private void correctAccessedVariable(final MethodNode methodNode, ClosureExpression ce) {
+    private void correctAccessedVariable(MethodNode methodNode, ClosureExpression ce) {
         CodeVisitorSupport visitor = new CodeVisitorSupport() {
+            /**
+             * When {@code expression} reads a {@link DynamicVariable}, retargets that
+             * read at the generated method parameter of the same name.
+             */
             @Override
             public void visitVariableExpression(VariableExpression expression) {
                 Variable v = expression.getAccessedVariable();

@@ -16,12 +16,15 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.assertScript
 
 
-class Groovy4999Bug extends GroovyTestCase {
+class Groovy4999Bug {
+    @Test
     void testStaticOverloadedMixinMethods() {
         assertScript """
             @Mixin(UtilClass)
@@ -30,13 +33,13 @@ class Groovy4999Bug extends GroovyTestCase {
                     MainClass mc = new MainClass()
                     mc.callMixinMethods()
                 }
-            
+
                 void callMixinMethods() {
                     println callClassOverloadedMethod("")
                     println callStaticOverloadedMethod("")
                 }
             }
-            
+
             class UtilClass {
                 def callClassOverloadedMethod(String s) {
                     "callClassOverloadedMethod(String)"

@@ -23,6 +23,7 @@ import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.expr.ConstantExpression;
 import org.codehaus.groovy.ast.expr.VariableExpression;
+import org.codehaus.groovy.ast.stmt.AssertStatement;
 import org.codehaus.groovy.ast.stmt.BlockStatement;
 import org.codehaus.groovy.ast.stmt.CatchStatement;
 import org.codehaus.groovy.ast.stmt.EmptyStatement;
@@ -48,11 +49,19 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.tryCatchS;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.varX;
 
 /**
- * Creates a try-catch block around a given {@link org.codehaus.groovy.ast.stmt.AssertStatement} and catches
+ * Creates a try-catch block around a given {@link AssertStatement} and catches
  * a PowerAssertionError to reuse the generated visual output.
  */
 public class TryCatchBlockGenerator {
 
+    /**
+     * Wraps an inline assertion block so a Groovy power assertion is converted into the requested violation type.
+     *
+     * @param assertionErrorClass the assertion violation class to instantiate on failure
+     * @param message the message prefix to prepend to the power assertion output
+     * @param assertStatement the assertion block to execute
+     * @return the generated try/catch wrapper
+     */
     public static BlockStatement generateTryCatchBlockForInlineMode(final ClassNode assertionErrorClass, final String message, final Statement assertStatement) {
 
         final Class powerAssertionErrorClass = loadPowerAssertionErrorClass();
@@ -81,6 +90,14 @@ public class TryCatchBlockGenerator {
                 catchStatement));
     }
 
+    /**
+     * Wraps an assertion block so it returns a boolean result while preserving Groovy power assertion details.
+     *
+     * @param assertionErrorClass the assertion violation class to instantiate on failure
+     * @param message the message prefix to prepend to the power assertion output
+     * @param assertStatement the assertion block to execute
+     * @return the generated try/catch wrapper that returns the assertion outcome
+     */
     public static BlockStatement generateTryCatchBlock(final ClassNode assertionErrorClass, final String message, final Statement assertStatement) {
 
         final String $_gc_closure_result = "$_gc_closure_result";
@@ -88,8 +105,7 @@ public class TryCatchBlockGenerator {
         final VariableExpression variableExpression = localVarX($_gc_closure_result, ClassHelper.Boolean_TYPE);
 
         // if the assert statement is successful the return variable will be true else false
-        final BlockStatement overallBlock = new BlockStatement();
-        overallBlock.addStatement(declS(variableExpression, ConstantExpression.FALSE));
+        final BlockStatement overallBlock = block(declS(variableExpression, ConstantExpression.FALSE));
 
         final BlockStatement assertBlockStatement = block(
                 assertStatement,

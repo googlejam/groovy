@@ -30,7 +30,7 @@ import org.codehaus.groovy.control.SourceUnit;
  * method:</p>
  * <code>void foo(A firstArg, B secondArg, Closure c) {...}</code>
  * <p>If the <i>c</i> closure should be <code>{ B it {@code ->} ...}</code>, then we can see that the parameter type
- * should be picked from the second parameter of the foo method, which is what {@link groovy.transform.stc.PickAnyArgumentHint}
+ * should be picked from the second parameter of the foo method, which is what {@link PickAnyArgumentHint}
  * lets you do.</p>
  * <p>Alternatively, the method may look like this:</p>
  * <code>void &lt;T&gt; foo(A&lt;T&gt; firstArg, B secondArg, Closure c) {...}</code>
@@ -46,7 +46,7 @@ public class PickAnyArgumentHint extends SingleSignatureClosureHint {
     private final int genericTypeIndex;
 
     /**
-     * Creates the an argument picker which extracts the type of the first parameter.
+     * Creates an argument picker which extracts the type of the first parameter.
      */
     public PickAnyArgumentHint() {
         this(0,-1);
@@ -63,6 +63,9 @@ public class PickAnyArgumentHint extends SingleSignatureClosureHint {
         this.genericTypeIndex = genericTypeIndex;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public ClassNode[] getParameterTypes(final MethodNode node, final String[] options, final SourceUnit sourceUnit, final CompilationUnit unit, final ASTNode usage) {
         ClassNode type = node.getParameters()[parameterIndex].getOriginType();

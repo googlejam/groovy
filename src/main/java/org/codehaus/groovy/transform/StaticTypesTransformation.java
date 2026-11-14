@@ -19,66 +19,129 @@
 package org.codehaus.groovy.transform;
 
 import groovy.transform.CompilationUnitAware;
+import groovy.transform.TypeChecked;
 import org.codehaus.groovy.ast.ASTNode;
-import org.codehaus.groovy.ast.AnnotatedNode;
 import org.codehaus.groovy.ast.AnnotationNode;
+import org.codehaus.groovy.ast.ClassCodeExpressionTransformer;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.MethodNode;
-import org.codehaus.groovy.ast.PropertyNode;
+import org.codehaus.groovy.ast.expr.ClosureExpression;
 import org.codehaus.groovy.ast.expr.ConstantExpression;
+import org.codehaus.groovy.ast.expr.SwitchExpression;
 import org.codehaus.groovy.ast.expr.Expression;
 import org.codehaus.groovy.ast.expr.ListExpression;
+import org.codehaus.groovy.ast.expr.PropertyExpression;
+import org.codehaus.groovy.ast.expr.VariableExpression;
 import org.codehaus.groovy.control.CompilationUnit;
 import org.codehaus.groovy.control.CompilePhase;
 import org.codehaus.groovy.control.SourceUnit;
-import org.codehaus.groovy.syntax.SyntaxException;
 import org.codehaus.groovy.transform.stc.GroovyTypeCheckingExtensionSupport;
 import org.codehaus.groovy.transform.stc.StaticTypeCheckingVisitor;
+import org.codehaus.groovy.transform.stc.StaticTypesMarker;
 
 import java.util.Collections;
 import java.util.Map;
 
+import static org.codehaus.groovy.ast.tools.GeneralUtils.classX;
+import static org.codehaus.groovy.ast.tools.GeneralUtils.propX;
+
 /**
- * Handles the implementation of the {@link groovy.transform.TypeChecked} transformation.
+ * Handles the implementation of the {@link TypeChecked} transformation.
  */
 @GroovyASTTransformation(phase = CompilePhase.INSTRUCTION_SELECTION)
 public class StaticTypesTransformation implements ASTTransformation, CompilationUnitAware {
 
+    /**
+     * Prefix prepended to every static type-checking error.
+     * The text is {@code "[Static type checking] - "}.
+     */
     public static final String STATIC_ERROR_PREFIX = "[Static type checking] - ";
+    /**
+     * The compilation unit passed to the type-checking visitor and to extensions.
+     * Set by {@link #setCompilationUnit(CompilationUnit)}.
+     */
     protected CompilationUnit compilationUnit;
 
-    //    @Override
     @Override
     public void visit(ASTNode[] nodes, SourceUnit source) {
         AnnotationNode annotationInformation = (AnnotationNode) nodes[0];
         Map<String,Expression> members = annotationInformation.getMembers();
         Expression extensions = members.get("extensions");
-        AnnotatedNode node = (AnnotatedNode) nodes[1];
-        StaticTypeCheckingVisitor visitor = null;
-        if (node instanceof ClassNode) {
-            ClassNode classNode = (ClassNode) node;
+        ASTNode node = nodes[1];
+        StaticTypeCheckingVisitor visitor;
+        if (node instanceof ClassNode classNode) {
             visitor = newVisitor(source, classNode);
             visitor.setCompilationUnit(compilationUnit);
             addTypeCheckingExtensions(visitor, extensions);
             visitor.initialize();
             visitor.visitClass(classNode);
-        } else if (node instanceof MethodNode) {
-            MethodNode methodNode = (MethodNode) node;
+        } else if (node instanceof MethodNode methodNode) {
             visitor = newVisitor(source, methodNode.getDeclaringClass());
             visitor.setCompilationUnit(compilationUnit);
             addTypeCheckingExtensions(visitor, extensions);
             visitor.setMethodsToBeVisited(Collections.singleton(methodNode));
             visitor.initialize();
             visitor.visitMethod(methodNode);
-        } else if (!(node instanceof PropertyNode)) {
-            source.addError(new SyntaxException(STATIC_ERROR_PREFIX + "Unimplemented node type",
-                    node.getLineNumber(), node.getColumnNumber(), node.getLastLineNumber(), node.getLastColumnNumber()));
+        } else {
+            // GROOVY-12693: the annotation targets types, methods and constructors; any other
+            // placement (local variable, field, parameter, loop statement) is reported by
+            // ExtendedVerifier at class generation, so there is nothing to check here
+            return;
         }
-        if (visitor != null) {
-            visitor.performSecondPass();
+        visitor.performSecondPass();
+        resolveEnumConstantsInSwitchCases(node, source);
+    }
+
+    /**
+     * GROOVY-8444, GROOVY-11614, GROOVY-12190: replaces "CONST" expressions resolved by the
+     * type checker in enum switch case labels with "EnumType.CONST" expressions;
+     * without static compilation they would otherwise be dynamic property lookups
+     * on the enclosing class, failing at runtime.
+     */
+    private static void resolveEnumConstantsInSwitchCases(final ASTNode node, final SourceUnit source) {
+        ClassCodeExpressionTransformer transformer = new ClassCodeExpressionTransformer() {
+            @Override
+            protected SourceUnit getSourceUnit() {
+                return source;
+            }
+
+            @Override
+            public Expression transform(final Expression expression) {
+                if (expression instanceof SwitchExpression se) {
+                    se.visit(this);
+                    return se;
+                }
+                if (expression instanceof ClosureExpression) {
+                    expression.visit(this);
+                    return expression;
+                }
+                if (expression instanceof VariableExpression) {
+                    ClassNode enumType = expression.getNodeMetaData(StaticTypesMarker.SWITCH_CONDITION_EXPRESSION_TYPE);
+                    if (enumType != null) {
+                        PropertyExpression pe = propX(classX(enumType), expression.getText());
+                        setSourcePosition(pe, expression);
+                        return pe;
+                    }
+                    return expression;
+                }
+                return super.transform(expression);
+            }
+        };
+        if (node instanceof ClassNode classNode) {
+            transformer.visitClass(classNode);
+        } else if (node instanceof MethodNode methodNode) {
+            transformer.visitMethod(methodNode);
         }
     }
 
+    /**
+     * Adds the type-checking extensions named by {@code extensions}. A constant's
+     * text is one extension specification. A list is walked recursively. Any other
+     * expression, including {@code null}, adds nothing.
+     *
+     * @param visitor the visitor that receives the extensions
+     * @param extensions the {@code extensions} member of {@link TypeChecked}, or {@code null}
+     */
     protected void addTypeCheckingExtensions(StaticTypeCheckingVisitor visitor, Expression extensions) {
         if (extensions instanceof ConstantExpression) {
             visitor.addTypeCheckingExtension(new GroovyTypeCheckingExtensionSupport(
@@ -86,8 +149,7 @@ public class StaticTypesTransformation implements ASTTransformation, Compilation
                     extensions.getText(),
                     compilationUnit
             ));
-        } else if (extensions instanceof ListExpression) {
-            ListExpression list = (ListExpression) extensions;
+        } else if (extensions instanceof ListExpression list) {
             for (Expression ext : list.getExpressions()) {
                 addTypeCheckingExtensions(visitor, ext);
             }

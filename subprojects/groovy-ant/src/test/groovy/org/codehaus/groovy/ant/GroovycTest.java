@@ -18,12 +18,16 @@
  */
 package org.codehaus.groovy.ant;
 
-import groovy.test.GroovyTestCase;
 import org.apache.tools.ant.BuildException;
 import org.apache.tools.ant.Project;
 import org.apache.tools.ant.ProjectHelper;
+import org.apache.tools.ant.types.Environment;
+import org.apache.tools.ant.types.Path;
+import org.apache.tools.ant.types.PropertySet;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
@@ -32,7 +36,19 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.net.URISyntaxException;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 import java.util.regex.Pattern;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Unit tests for the {@link Groovyc} ant task.
@@ -41,15 +57,26 @@ import java.util.regex.Pattern;
  * since that would ruin the whole point of testing compilation by the Ant tasks.  In fact it doesn't
  * matter as the tests remove all class files that should not pre-exist from this directory at each step.
  */
-public class GroovycTest extends GroovyTestCase {
+final class GroovycTest {
+
     private final File antFile = new File("src/test-resources/org/codehaus/groovy/ant/GroovycTest.xml");
     private Project project;
     private static boolean warned = false;
 
-    protected void setUp() {
+    @BeforeEach
+    void setUp() {
         project = new Project();
         project.init();
         ProjectHelper.getProjectHelper().parse(project, antFile);
+
+        // The external jar used by the GROOVY-9197 joint-compilation test is resolved
+        // by the build (see groovy-ant build.gradle) rather than checked into the source
+        // tree, so its location is supplied via a system property.
+        String externalJar = System.getProperty("groovy.ant.test.externalJar");
+        if (externalJar != null) {
+            project.setProperty("externalJar", externalJar);
+        }
+
         project.executeTarget("clean");
 
         String altJavaHome = System.getProperty("java.home");
@@ -71,7 +98,7 @@ public class GroovycTest extends GroovyTestCase {
 
     private String getTargetDirectory() {
         try {
-            return Paths.get(getClass().getResource(".").toURI()).toString() + File.separator;
+            return Paths.get(getClass().getResource(getClass().getSimpleName() + ".class").toURI()).getParent() + File.separator;
         } catch (URISyntaxException e) {
             throw new RuntimeException(e);
         }
@@ -118,154 +145,13 @@ public class GroovycTest extends GroovyTestCase {
         }
     }
 
-    public void testGroovycTest1_NoFork_NoClasspath() {
-        ensureExecutes("GroovycTest1_NoFork_NoClasspath");
-    }
-
-    public void testGroovycTest1_NoFork_WithGroovyClasspath() {
-        ensureExecutes("GroovycTest1_NoFork_WithGroovyClasspath");
-    }
-
-    public void testGroovycTest1_NoFork_WithJavaClasspath() {
-        ensureExecutes("GroovycTest1_NoFork_WithJavaClasspath");
-    }
-
-    public void testGroovycTest1_NoFork_WithBothClasspath() {
-        ensureExecutes("GroovycTest1_NoFork_WithBothClasspath");
-    }
-
-    public void testGroovycTest1_ForkGroovy_NoClasspath() {
-        ensureExecutes("GroovycTest1_ForkGroovy_NoClasspath");
-    }
-
-    public void testGroovycTest1_ForkGroovy_WithGroovyClasspath() {
-        ensureExecutes("GroovycTest1_ForkGroovy_WithGroovyClasspath");
-
-    }
-
-    public void testGroovycTest1_ForkGroovy_WithJavaClasspath() {
-        ensureExecutes("GroovycTest1_ForkGroovy_WithJavaClasspath");
-    }
-
-    public void testGroovycTest1_ForkGroovy_WithBothClasspath() {
-        ensureExecutes("GroovycTest1_ForkGroovy_WithBothClasspath");
-    }
-
-    public void testGroovycTest1_Joint_NoFork_NoClasspath() {
-        ensureExecutes("GroovycTest1_Joint_NoFork_NoClasspath");
-    }
-
-    public void testGroovycTest1_Joint_NoFork_WithGroovyClasspath() {
-        ensureExecutes("GroovycTest1_Joint_NoFork_WithGroovyClasspath");
-    }
-
-    public void testGroovyc_Joint_NoFork_NestedCompilerArg_WithGroovyClasspath() {
-        // capture ant's output so we can verify the effect of passing compilerarg to javac
-        ByteArrayOutputStream allOutput = new ByteArrayOutputStream();
-
-        PrintStream out = System.out;
-        System.setOut(new PrintStream(allOutput));
-        try {
-            ensureNotPresent("IncorrectGenericsUsage");
-            project.executeTarget("Groovyc_Joint_NoFork_NestedCompilerArg_WithGroovyClasspath");
-            ensurePresent("IncorrectGenericsUsage");
-
-            String antOutput = adjustOutputToHandleOpenJDKJavacOutputDifference(allOutput.toString());
-            // verify if passing -Xlint in compilerarg had its effect
-            Pattern p = Pattern.compile(".*?found[ ]*:[ ]*java.util.ArrayList.*", Pattern.DOTALL);
-            assertTrue("Expected line 1 not found in ant output", p.matcher(antOutput).matches());
-            p = Pattern.compile(".*?required[ ]*:[ ]*java.util.ArrayList<java.lang.String>.*", Pattern.DOTALL);
-            assertTrue("Expected line 2 not found in ant output", p.matcher(antOutput).matches());
-        } finally {
-            System.setOut(out);
-        }
-    }
-
-    /**
-     * For the code:
-     * private ArrayList<String> x = new ArrayList<String>();
-     * x = (ArrayList)z ;
-     * Upto JDK6, 'javac -Xlint' produces the following output:
-     * found   : java.util.ArrayList
-     * required: java.util.ArrayList<java.lang.String>
-     * But, OpenJDK seems to be producing the following output:
-     * required: ArrayList<String>
-     * found:    ArrayList
-     * So, we first adjust the output a bit, so that difference in the output brought in by OpenJDK javac
-     * does not impact the test adversely
-     */
-    private String adjustOutputToHandleOpenJDKJavacOutputDifference(String antOutput) {
-        if (!antOutput.contains("java.util.ArrayList") && antOutput.contains("ArrayList")) {
-            antOutput = antOutput.replace("ArrayList", "java.util.ArrayList");
-        }
-        if (!antOutput.contains("java.lang.String") && antOutput.contains("String")) {
-            antOutput = antOutput.replace("String", "java.lang.String");
-        }
-        return antOutput;
-    }
-
-    public void testGroovycTest1_Joint_NoFork_WithJavaClasspath() {
-        ensureExecutes("GroovycTest1_Joint_NoFork_WithJavaClasspath");
-    }
-
-    public void testGroovycTest1_Joint_NoFork_WithBothClasspath() {
-        ensureExecutes("GroovycTest1_Joint_NoFork_WithBothClasspath");
-    }
-
-    public void testGroovycTest1_Joint_ForkGroovy_NoClasspath() {
-        ensureExecutes("GroovycTest1_Joint_ForkGroovy_NoClasspath");
-    }
-
-    public void testGroovycTest1_Joint_ForkGroovy_WithGroovyClasspath() {
-        ensureExecutes("GroovycTest1_Joint_ForkGroovy_WithGroovyClasspath");
-    }
-
-    public void testGroovycTest1_Joint_ForkGroovy_WithJavaClasspath() {
-        ensureExecutes("GroovycTest1_Joint_ForkGroovy_WithJavaClasspath");
-    }
-
-    public void testGroovycTest1_Joint_ForkGroovy_WithBothClasspath() {
-        ensureExecutes("GroovycTest1_Joint_ForkGroovy_WithBothClasspath");
-    }
-
-    public void testGroovycTest1_ForkGroovy_NoClasspath_WithJavaHome() {
-        ensureExecutesWithJavaHome("GroovycTest1_ForkGroovy_NoClasspath_WithJavaHome");
-    }
-
-    public void testGroovycTest1_ForkGroovy_WithGroovyClasspath_WithJavaHome() {
-        ensureExecutesWithJavaHome("GroovycTest1_ForkGroovy_WithGroovyClasspath_WithJavaHome");
-    }
-
-    public void testGroovycTest1_ForkGroovy_WithJavaClasspath_WithJavaHome() {
-        ensureExecutesWithJavaHome("GroovycTest1_ForkGroovy_WithJavaClasspath_WithJavaHome");
-    }
-
-    public void testGroovycTest1_ForkGroovy_WithBothClasspath_WithJavaHome() {
-        ensureExecutesWithJavaHome("GroovycTest1_ForkGroovy_WithBothClasspath_WithJavaHome");
-    }
-
-    public void testGroovycTest1_ForkGroovy_NoClasspath_Fail() {
-        ensureFails("GroovycTest1_ForkGroovy_NoClasspath_Fail");
-    }
-
-    public void testNoForkWithNoIncludeAntRuntime() {
-        ensureFails("noForkNoAntRuntime");
-    }
-
-    // GROOVY-9197
-    public void testJointCompilationPropagatesClasspath() {
-        ensureNotPresent("MakesExternalReference");
-        project.executeTarget("jointForkedCompilation_ExternalJarOnClasspath");
-        ensureResultOK("MakesExternalReference");
-    }
-
-    private void ensureExecutes(String target) {
+    private void ensureExecutes(final String target) {
         ensureNotPresent("GroovycTest1");
         project.executeTarget(target);
         ensureResultOK("GroovycTest1");
     }
 
-    private void ensureExecutesWithJavaHome(String target) {
+    private void ensureExecutesWithJavaHome(final String target) {
         if (project.getProperty("alt.java.home") != null) {
             ensureExecutes(target);
         } else {
@@ -276,7 +162,7 @@ public class GroovycTest extends GroovyTestCase {
         }
     }
 
-    private void ensureFails(String target) {
+    private void ensureFails(final String target) {
         File badGroovy = new File(antFile.getParentFile(), "GroovyTestBad1.groovy");
         PrintStream ps = null;
         try {
@@ -295,6 +181,307 @@ public class GroovycTest extends GroovyTestCase {
             ensureNotPresent("GroovycTestBad1");
         } finally {
             badGroovy.delete();
+        }
+    }
+
+    /**
+     * For the code:
+     * private ArrayList<String> x = new ArrayList<String>();
+     * x = (ArrayList)z ;
+     * Upto JDK6, 'javac -Xlint' produces the following output:
+     * found   : ArrayList
+     * required: ArrayList<java.lang.String>
+     * But, OpenJDK seems to be producing the following output:
+     * required: ArrayList<String>
+     * found:    ArrayList
+     * So, we first adjust the output a bit, so that difference in the output brought in by OpenJDK javac
+     * does not impact the test adversely
+     */
+    private String adjustOutputToHandleOpenJDKJavacOutputDifference(String antOutput) {
+        if (!antOutput.contains("java.util.ArrayList") && antOutput.contains("ArrayList")) {
+            antOutput = antOutput.replace("ArrayList", "java.util.ArrayList");
+        }
+        if (!antOutput.contains("java.lang.String") && antOutput.contains("String")) {
+            antOutput = antOutput.replace("String", "java.lang.String");
+        }
+        return antOutput;
+    }
+
+    //--------------------------------------------------------------------------
+
+    @Test
+    void testGroovycTest1_NoFork_NoClasspath() {
+        ensureExecutes("GroovycTest1_NoFork_NoClasspath");
+    }
+
+    @Test
+    void testGroovycTest1_NoFork_WithGroovyClasspath() {
+        ensureExecutes("GroovycTest1_NoFork_WithGroovyClasspath");
+    }
+
+    @Test
+    void testGroovycTest1_NoFork_WithJavaClasspath() {
+        ensureExecutes("GroovycTest1_NoFork_WithJavaClasspath");
+    }
+
+    @Test
+    void testGroovycTest1_NoFork_WithBothClasspath() {
+        ensureExecutes("GroovycTest1_NoFork_WithBothClasspath");
+    }
+
+    @Test
+    void testGroovycTest1_ForkGroovy_NoClasspath() {
+        ensureExecutes("GroovycTest1_ForkGroovy_NoClasspath");
+    }
+
+    @Test
+    void testGroovycTest1_ForkGroovy_WithGroovyClasspath() {
+        ensureExecutes("GroovycTest1_ForkGroovy_WithGroovyClasspath");
+    }
+
+    @Test
+    void testGroovycTest1_ForkGroovy_WithJavaClasspath() {
+        ensureExecutes("GroovycTest1_ForkGroovy_WithJavaClasspath");
+    }
+
+    @Test
+    void testGroovycTest1_ForkGroovy_WithBothClasspath() {
+        ensureExecutes("GroovycTest1_ForkGroovy_WithBothClasspath");
+    }
+
+    @Test
+    void testGroovycTest1_Joint_NoFork_NoClasspath() {
+        ensureExecutes("GroovycTest1_Joint_NoFork_NoClasspath");
+    }
+
+    @Test
+    void testGroovycTest1_Joint_NoFork_WithGroovyClasspath() {
+        ensureExecutes("GroovycTest1_Joint_NoFork_WithGroovyClasspath");
+    }
+
+    @Test
+    void testGroovyc_Joint_NoFork_NestedCompilerArg_WithGroovyClasspath() {
+        // Capture javac warnings via JUL handler — JavacJavaCompiler logs via System.Logger
+        // which defaults to JUL backend
+        StringBuilder logOutput = new StringBuilder();
+        String loggerName = "org.codehaus.groovy.tools.javac.JavacJavaCompiler";
+        Logger julLogger = Logger.getLogger(loggerName);
+        Level originalLevel = julLogger.getLevel();
+        julLogger.setLevel(Level.ALL);
+        Handler handler = new Handler() {
+            @Override public void publish(LogRecord record) { logOutput.append(record.getMessage()); }
+            @Override public void flush() {}
+            @Override public void close() {}
+        };
+        handler.setLevel(Level.ALL);
+        julLogger.addHandler(handler);
+
+        try {
+            ensureNotPresent("IncorrectGenericsUsage");
+            project.executeTarget("Groovyc_Joint_NoFork_NestedCompilerArg_WithGroovyClasspath");
+            ensurePresent("IncorrectGenericsUsage");
+
+            String antOutput = adjustOutputToHandleOpenJDKJavacOutputDifference(logOutput.toString());
+            // verify if passing -Xlint in compilerarg had its effect
+            Pattern p = Pattern.compile(".*?found[ ]*:[ ]*java.util.ArrayList.*", Pattern.DOTALL);
+            assertTrue(p.matcher(antOutput).matches(), "Expected line 1 not found in ant output");
+            p = Pattern.compile(".*?required[ ]*:[ ]*java.util.ArrayList<java.lang.String>.*", Pattern.DOTALL);
+            assertTrue(p.matcher(antOutput).matches(), "Expected line 2 not found in ant output");
+        } finally {
+            julLogger.removeHandler(handler);
+            julLogger.setLevel(originalLevel);
+        }
+    }
+
+    @Test
+    void testGroovycTest1_Joint_NoFork_WithJavaClasspath() {
+        ensureExecutes("GroovycTest1_Joint_NoFork_WithJavaClasspath");
+    }
+
+    @Test
+    void testGroovycTest1_Joint_NoFork_WithBothClasspath() {
+        ensureExecutes("GroovycTest1_Joint_NoFork_WithBothClasspath");
+    }
+
+    @Test
+    void testGroovycTest1_Joint_ForkGroovy_NoClasspath() {
+        ensureExecutes("GroovycTest1_Joint_ForkGroovy_NoClasspath");
+    }
+
+    @Test
+    void testGroovycTest1_Joint_ForkGroovy_WithGroovyClasspath() {
+        ensureExecutes("GroovycTest1_Joint_ForkGroovy_WithGroovyClasspath");
+    }
+
+    @Test
+    void testGroovycTest1_Joint_ForkGroovy_WithJavaClasspath() {
+        ensureExecutes("GroovycTest1_Joint_ForkGroovy_WithJavaClasspath");
+    }
+
+    @Test
+    void testGroovycTest1_Joint_ForkGroovy_WithBothClasspath() {
+        ensureExecutes("GroovycTest1_Joint_ForkGroovy_WithBothClasspath");
+    }
+
+    @Test
+    void testGroovycTest1_ForkGroovy_NoClasspath_WithJavaHome() {
+        ensureExecutesWithJavaHome("GroovycTest1_ForkGroovy_NoClasspath_WithJavaHome");
+    }
+
+    @Test
+    void testGroovycTest1_ForkGroovy_WithGroovyClasspath_WithJavaHome() {
+        ensureExecutesWithJavaHome("GroovycTest1_ForkGroovy_WithGroovyClasspath_WithJavaHome");
+    }
+
+    @Test
+    void testGroovycTest1_ForkGroovy_WithJavaClasspath_WithJavaHome() {
+        ensureExecutesWithJavaHome("GroovycTest1_ForkGroovy_WithJavaClasspath_WithJavaHome");
+    }
+
+    @Test
+    void testGroovycTest1_ForkGroovy_WithBothClasspath_WithJavaHome() {
+        ensureExecutesWithJavaHome("GroovycTest1_ForkGroovy_WithBothClasspath_WithJavaHome");
+    }
+
+    @Test
+    void testGroovycTest1_ForkGroovy_NoClasspath_Fail() {
+        ensureFails("GroovycTest1_ForkGroovy_NoClasspath_Fail");
+    }
+
+    @Test
+    void testNoForkWithNoIncludeAntRuntime() {
+        ensureFails("noForkNoAntRuntime");
+    }
+
+    // GROOVY-9197
+    @Test
+    void testJointCompilationPropagatesClasspath() {
+        assumeTrue(project.getProperty("externalJar") != null,
+            "External jar not supplied by the build (run via Gradle); "
+            + "skipping joint-compilation classpath-propagation test");
+        ensureNotPresent("MakesExternalReference");
+        project.executeTarget("jointForkedCompilation_ExternalJarOnClasspath");
+        ensureResultOK("MakesExternalReference");
+    }
+
+    // GROOVY-11573
+    @Test
+    void testJointCompilationPropagatesParameters() throws Exception {
+        ensureNotPresent("ParameterMetadataCheck");
+        project.executeTarget("jointForkedCompilation_ParameterMetadataCheck");
+        ensureResultOK("ParameterMetadataCheck");
+
+        var c = Class.forName("org.codehaus.groovy.ant.ParameterMetadataCheck");
+        var m = c.getDeclaredMethod("main", String[].class);
+        assertEquals("args",m.getParameters()[0].getName());
+    }
+
+    // GROOVY-11607
+    @Test
+    void testPlainCompilationWithNestedSrcElement() {
+        ensureExecutes("plainForkedCompilation_NestingSrcElementCheck");
+        ensureNotPresent("GroovycTest2");
+    }
+
+    // GROOVY-11666
+    @Disabled @Test
+    void testRestrictionForIncrementalCompilation() {
+        ensureNotPresent("GroovycTest3");
+        ensureNotPresent("GroovycTest3Peer");
+        project.executeTarget("incrementalCompilation");
+        ensureResultOK("GroovycTest3");
+    }
+
+    // GROOVY-11789
+    @Test
+    void testBadJavacArgument() {
+        var e = assertThrows(BuildException.class, () -> project.executeTarget("badJavacArgument"));
+        assertTrue(e.getCause().getMessage().contains("invalid flag: -Xlint:xxx"));
+    }
+
+    // GROOVY-11995
+
+    private static Groovyc newForkedGroovyc(Project project) {
+        Groovyc gc = new Groovyc();
+        gc.setProject(project);
+        gc.setFork(true);
+        return gc;
+    }
+
+    private static List<String> buildForkCommandLine(Groovyc gc) {
+        List<String> cmd = new ArrayList<>();
+        gc.doForkCommandLineList(cmd, new Path(gc.getProject()), File.separator);
+        return cmd;
+    }
+
+    @Test
+    void testJvmargAddedToForkedCommandLine() {
+        Groovyc gc = newForkedGroovyc(project);
+        gc.createJvmarg().setValue("--add-opens=java.base/java.lang=ALL-UNNAMED");
+        assertTrue(buildForkCommandLine(gc).contains("--add-opens=java.base/java.lang=ALL-UNNAMED"));
+    }
+
+    @Test
+    void testSyspropertyAddedToForkedCommandLine() {
+        Groovyc gc = newForkedGroovyc(project);
+        Environment.Variable v = new Environment.Variable();
+        v.setKey("my.compile.flag");
+        v.setValue("true");
+        gc.addSysproperty(v);
+        assertTrue(buildForkCommandLine(gc).contains("-Dmy.compile.flag=true"));
+    }
+
+    @Test
+    void testSyspropertysetAddedToForkedCommandLine() {
+        project.setProperty("myapp.url", "https://example.com");
+        project.setProperty("myapp.timeout", "30");
+        project.setProperty("other.value", "ignored");
+        Groovyc gc = newForkedGroovyc(project);
+        PropertySet ps = new PropertySet();
+        ps.setProject(project);
+        PropertySet.PropertyRef ref = new PropertySet.PropertyRef();
+        ref.setPrefix("myapp.");
+        ps.addPropertyref(ref);
+        gc.addSyspropertyset(ps);
+        List<String> cmd = buildForkCommandLine(gc);
+        assertTrue(cmd.contains("-Dmyapp.url=https://example.com"));
+        assertTrue(cmd.contains("-Dmyapp.timeout=30"));
+        assertTrue(cmd.stream().noneMatch(s -> s.startsWith("-Dother.value=")));
+    }
+
+    @Test
+    void testInheritAllPassesProjectProperties() {
+        project.setProperty("alpha", "1");
+        project.setProperty("beta", "two");
+        Groovyc gc = newForkedGroovyc(project);
+        gc.setInheritAll(true);
+        List<String> cmd = buildForkCommandLine(gc);
+        assertTrue(cmd.contains("-Dalpha=1"));
+        assertTrue(cmd.contains("-Dbeta=two"));
+    }
+
+    @Test
+    void testExplicitSyspropertyTakesPrecedenceOverInheritAll() {
+        project.setProperty("shared", "fromProject");
+        Groovyc gc = newForkedGroovyc(project);
+        Environment.Variable explicit = new Environment.Variable();
+        explicit.setKey("shared");
+        explicit.setValue("fromSysproperty");
+        gc.addSysproperty(explicit);
+        gc.setInheritAll(true);
+        List<String> cmd = buildForkCommandLine(gc);
+        long count = cmd.stream().filter(s -> s.startsWith("-Dshared=")).count();
+        assertEquals(1, count);
+        assertTrue(cmd.contains("-Dshared=fromSysproperty"));
+    }
+
+    @Test
+    void testJvmargClasspathRejected() {
+        for (String forbidden : new String[]{"-classpath", "-cp", "--class-path", "--class-path=foo"}) {
+            Groovyc gc = newForkedGroovyc(project);
+            gc.createJvmarg().setValue(forbidden);
+            BuildException e = assertThrows(BuildException.class, () -> buildForkCommandLine(gc));
+            assertTrue(e.getMessage().contains("classpath"), "expected classpath error for " + forbidden + ", got: " + e.getMessage());
         }
     }
 }

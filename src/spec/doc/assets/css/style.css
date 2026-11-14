@@ -1,4 +1,4 @@
-@import url(https://fonts.googleapis.com/css?family=Source+Code+Pro:500,700|Open+Sans:400,600);
+@import url(webfonts.css);
 
 /* Asciidoctor default stylesheet | MIT License | http://asciidoctor.org */
 article, aside, details, figcaption, figure, footer, header, hgroup, main, nav, section, summary {
@@ -419,6 +419,8 @@ code {
     font-weight: normal;
     color: #db4800;
 }
+
+code.rotate { width: 20px; height: 100px; white-space: nowrap; transform: rotate(-90deg); background: transparent; border: 0px; display: inline-block; position:relative; left: 40px; bottom: -50px; }
 
 ul, ol, dl {
     font-size: 1em;
@@ -1535,6 +1537,20 @@ td.hdlist1, td.hdlist2 {
     vertical-align: top;
 }
 
+/* Keep generated Swing widget metadata blocks visually tight. */
+.hdlist.compact td.hdlist2 > p,
+.hdlist.compact td.hdlist1 > p {
+    margin-top: 0.1em;
+    margin-bottom: 0;
+}
+
+.hdlist.compact td.hdlist1,
+.hdlist.compact td.hdlist2 {
+    padding-top: 0.1em;
+    padding-bottom: 0.1em;
+    line-height: 1.1;
+}
+
 .literalblock + .colist, .listingblock + .colist {
     margin-top: -0.5em;
 }
@@ -1812,9 +1828,13 @@ span.icon > [class^="icon-"], span.icon > [class*=" icon-"] {
     cursor: default;
 }
 
-.admonitionblock td.icon [class^="icon-"]:before {
+.admonitionblock td.icon [class^="icon-"]:before,
+.admonitionblock td.icon [class*=" icon-"]:before {
+    font-family: "Font Awesome 7 Free", serif;
+    font-weight: 900;
+    font-style: normal;
     font-size: 2.5em;
-    /* text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);*/
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
     cursor: default;
 }
 

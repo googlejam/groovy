@@ -24,30 +24,128 @@ import org.codehaus.groovy.runtime.DefaultGroovyMethods;
 
 import java.io.File;
 import java.io.FileWriter;
+import java.io.IOException;
+import java.io.StringWriter;
+import java.io.Writer;
 import java.net.URI;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.EnumSet;
+import java.util.Set;
 
+import static java.lang.System.Logger.Level.DEBUG;
+import static java.lang.System.Logger.Level.WARNING;
+
+/**
+ * Serializes AST structures to XML for debugging.
+ */
 public abstract class XStreamUtils {
 
-    public static void serialize(final String name, final Object ast) {
-        if (name == null || name.length() == 0) return;
+    private static final System.Logger LOGGER = System.getLogger(XStreamUtils.class.getName());
 
-        XStream xstream = new XStream(new StaxDriver());
+    /**
+     * Serializes {@code ast} to XML. This is the in-memory form of
+     * {@code groovy.ast=xml}; {@link #serialize(String, Object)} writes the same
+     * document next to the source.
+     *
+     * @param ast the AST object to serialize
+     * @return the XStream XML document
+     */
+    public static String toXML(final Object ast) {
+        StringWriter writer = new StringWriter();
+        toXML(ast, writer);
+        return writer.toString();
+    }
+
+    /**
+     * Serializes {@code ast} to XML on {@code writer}.
+     *
+     * @param ast the AST object to serialize
+     * @param writer the destination
+     */
+    public static void toXML(final Object ast, final Writer writer) {
+        new XStream(new StaxDriver()).toXML(ast, writer);
+    }
+
+    /**
+     * Serializes the supplied AST object to an XML file next to the named source. The file is
+     * given the source file's permissions, so it exposes no more than the source already does;
+     * where there is no source file to match, or the filesystem has no POSIX permissions, the
+     * file is owner-only or left to the default respectively.
+     *
+     * @param name the source name or URI used to derive the XML file name
+     * @param ast the AST object to serialize
+     */
+    public static void serialize(final String name, final Object ast) {
+        if (name == null || name.isEmpty()) return;
+
         FileWriter astFileWriter = null;
         try {
             File astFile = astFile(name);
             if (astFile == null) {
-                System.out.println("File-name for writing " + name + " AST could not be determined!");
+                LOGGER.log(WARNING, "File-name for writing {0} AST could not be determined!", name);
                 return;
             }
+            // the dump is a serialization of the source's AST, so it is no less sensitive than the
+            // source; give it the source file's permissions rather than the process umask, so it
+            // does not expose to others what the source kept to its owner
+            createWithPermissions(astFile.toPath(), astDumpPermissions(name));
             astFileWriter = new FileWriter(astFile, false);
-            xstream.toXML(ast, astFileWriter);
-            System.out.println("Written AST to " + name + ".xml");
+            toXML(ast, astFileWriter);
+            LOGGER.log(DEBUG, "Written AST to {0}.xml", name);
 
         } catch (Exception e) {
-            System.out.println("Couldn't write to " + name + ".xml");
-            e.printStackTrace();
+            LOGGER.log(WARNING, "Couldn''t write to " + name + ".xml", e);
         } finally {
             DefaultGroovyMethods.closeQuietly(astFileWriter);
+        }
+    }
+
+    /**
+     * The permissions to give the AST dump: the source file's own, so the dump exposes no more
+     * than the source already does. When there is no source file to match — a source compiled
+     * from a string, say — a debug dump defaults to owner-only rather than the process umask.
+     *
+     * @param name the source name or URI the dump sits beside
+     * @return the permissions, or {@code null} where POSIX permissions do not apply
+     */
+    private static Set<PosixFilePermission> astDumpPermissions(final String name) {
+        try {
+            File sourceFile = name.startsWith("file:") ? new File(URI.create(name)) : new File(name);
+            if (sourceFile.exists()) {
+                return Files.getPosixFilePermissions(sourceFile.toPath());
+            }
+            return EnumSet.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE);
+        } catch (IOException | UnsupportedOperationException | IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Creates the dump file carrying the given permissions, so its contents are never briefly
+     * readable by anyone those permissions exclude. Where they do not apply, creation is left to
+     * the writer as before.
+     *
+     * @param path the file to create
+     * @param permissions the permissions to give it, or {@code null} to leave creation to the writer
+     */
+    private static void createWithPermissions(final Path path, final Set<PosixFilePermission> permissions) {
+        if (permissions == null) {
+            return;
+        }
+        try {
+            Files.createFile(path, PosixFilePermissions.asFileAttribute(permissions));
+        } catch (FileAlreadyExistsException e) {
+            try {
+                Files.setPosixFilePermissions(path, permissions);
+            } catch (IOException | UnsupportedOperationException ignored) {
+                // best effort; the writer overwrites the existing file
+            }
+        } catch (IOException | UnsupportedOperationException e) {
+            // no POSIX support, or the file cannot be pre-created; the writer creates it
         }
     }
 
@@ -55,7 +153,7 @@ public abstract class XStreamUtils {
      * Takes the incoming file-name and checks whether this is a URI using the <tt>file:</tt> protocol or a non-URI and treats
      * it accordingly.
      *
-     * @return a file-name {@link java.io.File} representation or <tt>null</tt> if the file-name was in an invalid URI format
+     * @return a file-name {@link File} representation or <tt>null</tt> if the file-name was in an invalid URI format
      */
     private static File astFile(final String uriOrFileName) {
         try {

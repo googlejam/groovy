@@ -23,7 +23,7 @@ import org.codehaus.groovy.ast.expr.Expression;
 import java.util.Objects;
 
 /**
- * An utility class used to wrap an expression with additional metadata used by the type checker.
+ * A utility class used to wrap an expression with additional metadata used by the type checker.
  * In particular, this is used to detect closure shared variables misuses. We need in some circumstances
  * to store the method call expression and its argument types.
  */
@@ -41,14 +41,23 @@ class SecondPassExpression<T> {
         this.expression = expression;
     }
 
+    /**
+     * Returns the auxiliary data captured for the second pass.
+     */
     public T getData() {
         return data;
     }
 
+    /**
+     * Returns the expression revisited during the second pass.
+     */
     public Expression getExpression() {
         return expression;
     }
 
+    /**
+     * Compares the wrapped expression and auxiliary data.
+     */
     @Override
     public boolean equals(final Object o) {
         if (this == o) return true;
@@ -62,6 +71,9 @@ class SecondPassExpression<T> {
         return true;
     }
 
+    /**
+     * Returns the hash code of the wrapped expression and auxiliary data.
+     */
     @Override
     public int hashCode() {
         int result = expression.hashCode();

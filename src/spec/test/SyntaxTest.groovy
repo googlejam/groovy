@@ -17,9 +17,14 @@
  *  under the License.
  */
 import gls.CompilableTestSupport
+import org.codehaus.groovy.control.CompilationFailedException
+import org.junit.jupiter.api.Test
 
-class SyntaxTest extends CompilableTestSupport {
+import static groovy.test.GroovyAssert.shouldFail
 
+final class SyntaxTest extends CompilableTestSupport {
+
+    @Test
     void testOctalLiteral() {
         // tag::octal_literal_example[]
         int xInt = 077
@@ -27,21 +32,22 @@ class SyntaxTest extends CompilableTestSupport {
 
         short xShort = 011
         assert xShort == 9 as short
-        
+
         byte xByte = 032
         assert xByte == 26 as byte
 
         long xLong = 0246
         assert xLong == 166l
-        
+
         BigInteger xBigInteger = 01111
         assert xBigInteger == 585g
-        
+
         int xNegativeInt = -077
         assert xNegativeInt == -63
         // end::octal_literal_example[]
     }
 
+    @Test
     void testHexadecimalLiteral() {
         // tag::hexadecimal_literal_example[]
         int xInt = 0x77
@@ -49,16 +55,16 @@ class SyntaxTest extends CompilableTestSupport {
 
         short xShort = 0xaa
         assert xShort == 170 as short
-        
+
         byte xByte = 0x3a
         assert xByte == 58 as byte
 
         long xLong = 0xffff
         assert xLong == 65535l
-        
+
         BigInteger xBigInteger = 0xaaaa
         assert xBigInteger == 43690g
-        
+
         Double xDouble = new Double('0x1.0p0')
         assert xDouble == 1.0d
 
@@ -67,6 +73,7 @@ class SyntaxTest extends CompilableTestSupport {
         // end::hexadecimal_literal_example[]
     }
 
+    @Test
     void testBinaryLiteral() {
         // tag::binary_literal_example[]
         int xInt = 0b10101111
@@ -74,13 +81,13 @@ class SyntaxTest extends CompilableTestSupport {
 
         short xShort = 0b11001001
         assert xShort == 201 as short
-        
+
         byte xByte = 0b11
         assert xByte == 3 as byte
 
         long xLong = 0b101101101101
         assert xLong == 2925l
-        
+
         BigInteger xBigInteger = 0b111100100001
         assert xBigInteger == 3873g
 
@@ -89,6 +96,7 @@ class SyntaxTest extends CompilableTestSupport {
         // end::binary_literal_example[]
     }
 
+    @Test
     void testUnderscoreInNumber() {
         // tag::underscore_in_number_example[]
         long creditCardNumber = 1234_5678_9012_3456L
@@ -102,24 +110,27 @@ class SyntaxTest extends CompilableTestSupport {
         // end::underscore_in_number_example[]
     }
 
+    @Test
     void testNumberTypeSuffixes() {
         // tag::number_type_suffixes_example[]
-        assert 42I == new Integer('42')
-        assert 42i == new Integer('42') // lowercase i more readable
-        assert 123L == new Long("123") // uppercase L more readable
-        assert 2147483648 == new Long('2147483648') // Long type used, value too large for an Integer
+        assert 42I == Integer.valueOf('42')
+        assert 42i == Integer.valueOf('42') // lowercase i more readable
+        assert 123L == Long.valueOf("123") // uppercase L more readable
+        assert 2147483648 == Long.valueOf('2147483648') // Long type used, value too large for an Integer
         assert 456G == new BigInteger('456')
         assert 456g == new BigInteger('456')
         assert 123.45 == new BigDecimal('123.45') // default BigDecimal type used
-        assert 1.200065D == new Double('1.200065')
-        assert 1.234F == new Float('1.234')
-        assert 1.23E23D == new Double('1.23E23')
+        assert .321 == new BigDecimal('.321')
+        assert 1.200065D == Double.valueOf('1.200065')
+        assert 1.234F == Float.valueOf('1.234')
+        assert 1.23E23D == Double.valueOf('1.23E23')
         assert 0b1111L.class == Long // binary
         assert 0xFFi.class == Integer // hexadecimal
         assert 034G.class == BigInteger // octal
         // end::number_type_suffixes_example[]
     }
 
+    @Test
     void testVariableStoreBooleanValue() {
         shouldCompile '''
             @groovy.transform.Field boolean booleanField
@@ -134,6 +145,7 @@ class SyntaxTest extends CompilableTestSupport {
         '''
     }
 
+    @Test
     void testValidIdentifiers() {
         // tag::valid_identifiers[]
         def name
@@ -143,6 +155,7 @@ class SyntaxTest extends CompilableTestSupport {
         // end::valid_identifiers[]
     }
 
+    @Test
     void testInvalidIdentifiers() {
         shouldNotCompile '''
             // tag::invalid_identifiers[]
@@ -153,6 +166,7 @@ class SyntaxTest extends CompilableTestSupport {
         '''
     }
 
+    @Test
     void testAllKeywordsAreValidIdentifiersFollowingADot() {
         shouldCompile '''
         def foo = [:]
@@ -198,6 +212,7 @@ class SyntaxTest extends CompilableTestSupport {
         '''
     }
 
+    @Test
     void testShebangCommentLine() {
         def script = '''\
             // tag::shebang_comment_line[]
@@ -209,6 +224,7 @@ class SyntaxTest extends CompilableTestSupport {
         shouldCompile script.stripIndent().split('\n')[1..2].join('\n')
     }
 
+    @Test
     void testSingleLineComment() {
         // tag::single_line_comment[]
         // a standalone single line comment
@@ -216,6 +232,7 @@ class SyntaxTest extends CompilableTestSupport {
         // end::single_line_comment[]
     }
 
+    @Test
     void testMultilineComment() {
         // tag::multiline_comment[]
         /* a standalone multiline comment
@@ -226,6 +243,7 @@ class SyntaxTest extends CompilableTestSupport {
         // end::multiline_comment[]
     }
 
+    @Test
     void testGroovyDocComment() {
         shouldCompile '''
             // tag::groovydoc_comment[]
@@ -250,6 +268,7 @@ class SyntaxTest extends CompilableTestSupport {
         '''
     }
 
+    @Test
     void testQuotedIdentifier() {
         // tag::quoted_id[]
         def map = [:]
@@ -278,6 +297,7 @@ class SyntaxTest extends CompilableTestSupport {
         // end::quoted_id_with_all_strings[]
     }
 
+    @Test
     void testStrings() {
         // tag::string_0[]
         // end::string_0[]
@@ -303,12 +323,14 @@ class SyntaxTest extends CompilableTestSupport {
         // end::string_5[]
     }
 
+    @Test
     void testStringConcatenationWithPlus() {
         // tag::string_plus[]
         assert 'ab' == 'a' + 'b'
         // end::string_plus[]
     }
 
+    @Test
     void testGString() {
         // tag::gstring_1[]
         def name = 'Guillaume' // a plain string
@@ -355,6 +377,7 @@ class SyntaxTest extends CompilableTestSupport {
         // end::gstring_6[]
     }
 
+    @Test
     void testCharacters() {
         // tag::char[]
         char c1 = 'A' // <1>
@@ -368,6 +391,7 @@ class SyntaxTest extends CompilableTestSupport {
         // end::char[]
     }
 
+    @Test
     void testInterpolatingClosuresInGstrings() {
         // tag::closure_in_gstring_1[]
         def sParameterLessClosure = "1 + 2 == ${-> 3}" // <1>
@@ -391,6 +415,7 @@ class SyntaxTest extends CompilableTestSupport {
         // end::closure_in_gstring_2[]
     }
 
+    @Test
     void testGStringCoercerdToStringInMethodCallExpectingString() {
         assertScript '''
         // tag::java_gstring_interop_1[]
@@ -409,6 +434,35 @@ class SyntaxTest extends CompilableTestSupport {
         '''
     }
 
+    @Test
+    void testGStringInListOfStrings() {
+        assertScript '''
+        // tag::gstring_in_string_list[]
+        import groovy.transform.CompileStatic
+
+        @CompileStatic
+        CharSequence check(List<String> languages) {
+            String name = languages[0]                      // <2>
+            assert name instanceof String
+            assert languages[0].toUpperCase() == 'GROOVY'   // <3>
+
+            CharSequence text = languages[0]                // <4>
+            assert text.length() == 6
+            assert text.toUpperCase() == 'GROOVY'
+            assert text == 'Groovy'                         // <5>
+            assert !text.equals('Groovy')
+            text
+        }
+
+        def lang = 'Groovy'
+        List<String> languages = ["$lang"]                  // <1>
+        assert languages[0] instanceof GString
+        assert check(languages) instanceof GString
+        // end::gstring_in_string_list[]
+        '''
+    }
+
+    @Test
     void testStringGStringHashCode() {
         // tag::gstring_hashcode_1[]
         assert "one: ${1}".hashCode() != "one: 1".hashCode()
@@ -422,6 +476,7 @@ class SyntaxTest extends CompilableTestSupport {
         // end::gstring_hashcode_2[]
     }
 
+    @Test
     void testTripleSingleQuotedString() {
         // tag::triple_single_0[]
         '''a triple-single-quoted string'''
@@ -452,6 +507,7 @@ class SyntaxTest extends CompilableTestSupport {
         // end::triple_single_3[]
     }
 
+    @Test
     void testTripleDoubleQuotedString() {
         // tag::triple_double_1[]
         def name = 'Groovy'
@@ -469,6 +525,7 @@ class SyntaxTest extends CompilableTestSupport {
         // end::triple_double_1[]
     }
 
+    @Test
     void testSlashyString() {
         // tag::slashy_1[]
         def fooPattern = /.*foo.*/
@@ -502,6 +559,7 @@ class SyntaxTest extends CompilableTestSupport {
         '''
     }
 
+    @Test
     void testDollarSlashyString() {
         // tag::dollar_slashy_1[]
         def name = "Guillaume"
@@ -534,6 +592,7 @@ class SyntaxTest extends CompilableTestSupport {
         // end::dollar_slashy_1[]
     }
 
+    @Test
     void testIntegralNumberDeclarations() {
         // tag::int_decl[]
         // primitive types
@@ -555,6 +614,7 @@ class SyntaxTest extends CompilableTestSupport {
         assert bi instanceof BigInteger
     }
 
+    @Test
     void testDecimalNumberDeclarations() {
         // tag::float_decl[]
         // primitive types
@@ -578,6 +638,7 @@ class SyntaxTest extends CompilableTestSupport {
         // end::float_exp[]
     }
 
+    @Test
     void testWideningIntegralValueTypes() {
         // positive values
         // tag::wide_int_positive[]
@@ -624,6 +685,7 @@ class SyntaxTest extends CompilableTestSupport {
         // end::wide_int_negative[]
     }
 
+    @Test
     void testNumberPower() {
         // tag::number_power[]
         // base and exponent are ints and the result can be represented by an Integer
@@ -666,6 +728,7 @@ class SyntaxTest extends CompilableTestSupport {
         // end::number_power[]
     }
 
+    @Test
     void testLists() {
         // tag::list_1[]
         def numbers = [1, 2, 3]         // <1>
@@ -718,6 +781,7 @@ class SyntaxTest extends CompilableTestSupport {
         // end::multi_dim_list[]
     }
 
+    @Test
     void testArrays() {
         // tag::array_1[]
         String[] arrStr = ['Ananas', 'Banana', 'Kiwi']  // <1>
@@ -749,6 +813,7 @@ class SyntaxTest extends CompilableTestSupport {
         // end::array_3[]
     }
 
+    @Test
     void testMaps() {
         // tag::map_def_access[]
         def colors = [red: '#FF0000', green: '#00FF00', blue: '#0000FF']   // <1>
@@ -792,7 +857,181 @@ class SyntaxTest extends CompilableTestSupport {
         assert person.containsKey('name')    // <2>
         assert !person.containsKey('key')    // <3>
         // end::variable_key_2[]
+    }
 
+    @Test
+    void testReservedKeywords() {
+        def rk = '''
+        // tag::reserved_keywords[]
+        |abstract
+        |assert
+        |break
+        |case
 
+        |catch
+        |class
+        |const
+        |continue
+
+        |def
+        |default
+        |do
+        |else
+
+        |enum
+        |extends
+        |final
+        |finally
+
+        |for
+        |goto
+        |if
+        |implements
+
+        |import
+        |instanceof
+        |interface
+        |native
+
+        |new
+        |null
+        |non-sealed
+        |package
+
+        |public
+        |protected
+        |private
+        |return
+
+        |static
+        |strictfp
+        |super
+        |switch
+
+        |synchronized
+        |this
+        |threadsafe
+        |throw
+
+        |throws
+        |transient
+        |try
+        |while
+        // end::reserved_keywords[]
+        '''.readLines()[2..-3].join()
+        def reservedKeywords = rk.split(/(?m)[|]/)*.trim().grep()
+        def shell = new GroovyShell()
+        reservedKeywords.each {
+            /*
+            // tag::reserved_keywords_example[]
+            // reserved keywords can be used for method names if quoted
+            def "abstract"() { true }
+            // when calling such methods, the name must be qualified using "this."
+            this.abstract()
+            // end::reserved_keywords_example[]
+            */
+            assertScript """
+            def "$it"() { true }
+            assert this.$it()
+            """
+            shouldFail(CompilationFailedException) {
+                shell.parse """
+                    def $it() { true }
+                """
+            }
+            shouldFail(CompilationFailedException) {
+                shell.parse """
+                    def $it = true
+                """
+            }
+        }
+    }
+
+    @Test
+    void testContextualKeywords() {
+        def ck = '''
+        // tag::contextual_keywords[]
+        | as
+        | in
+        | permits
+        | record
+        | sealed
+        | trait
+        | var
+        | yields
+        // end::contextual_keywords[]
+        '''.readLines()[2..-3].join()
+        def contextualKeywords = ck.split(/(?m)[|]/)*.trim().grep()
+        def shell = new GroovyShell()
+        /*
+        // tag::contextual_keywords_examples[]
+        // contextual keywords can be used for field and variable names
+        def as = true
+        assert as
+
+        // contextual keywords can be used for method names
+        def in() { true }
+        // when calling such methods, the name only needs to be qualified using "this." in scenarios which would be ambiguous
+        this.in()
+        // end::contextual_keywords_examples[]
+        */
+        contextualKeywords.each {
+            assertScript """
+            def $it = true
+            assert $it
+            def $it() { true }
+            this.$it()
+            """
+            shouldFail(CompilationFailedException) {
+                shell.parse """
+                    def $it() { true }
+                    $it()
+                """
+            }
+        }
+    }
+
+    @Test
+    void testOtherReservedWords() {
+        def rw = '''
+        // tag::reserved_words[]
+        | null
+        | true
+        | false
+        | boolean
+        | char
+        | byte
+        | short
+        | int
+        | long
+        | float
+        | double
+        |
+        // end::reserved_words[]
+        '''.readLines()[2..-3].join()
+        def reservedWords = rw.split(/(?m)[|]/)*.trim().grep()
+        def shell = new GroovyShell()
+        /*
+        // tag::reserved_words_example[]
+        def "null"() { true }  // not recommended; potentially confusing
+        assert this.null()     // must be qualified
+        // end::reserved_words_example[]
+        */
+        reservedWords.each {
+            assertScript """
+            def "$it"() { true }
+            assert this.$it()
+            """
+            shouldFail(CompilationFailedException) {
+                shell.parse """
+                    def $it() { true }
+                """
+            }
+            shouldFail(CompilationFailedException) {
+                shell.parse """
+                    def $it = true
+                """
+            }
+        }
     }
 }

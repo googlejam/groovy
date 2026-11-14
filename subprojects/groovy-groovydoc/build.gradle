@@ -21,21 +21,41 @@ plugins {
 }
 
 dependencies {
-    api rootProject // GroovydocVisitor extends ClassCodeVisitorSupport...
+    api project(':') // GroovydocVisitor extends ClassCodeVisitorSupport...
     api "com.github.javaparser:javaparser-core:${versions.javaParser}" // GroovydocJavaVisitor extends VoidVisitorAdapter...
 
-    implementation project(':groovy-templates')
-    implementation project(':groovy-docgenerator')
+    implementation projects.groovyTemplates
+    // groovy-docgenerator ships groovy.ico which GroovyDocTemplateInfo references
+    // via classpath resource lookup. Only needed at runtime.
+    runtimeOnly projects.groovyDocgenerator
+    // GROOVY-11542: JEP 467 Markdown doc comment rendering (/// runs).
+    implementation "org.commonmark:commonmark:${versions.commonmark}"
 
-    testImplementation project(':groovy-ant')
-    testImplementation project(':groovy-test')
+    testImplementation projects.groovyAnt
+    testImplementation projects.groovyTest
     testImplementation "org.apache.ant:ant-testutil:${versions.ant}"
 }
 
 compileJava {
     doLast {
-        mkdir "$sourceSets.main.java.outputDir/META-INF"
+        mkdir "${sourceSets.main.java.classesDirectory.get().asFile}/META-INF"
     }
+}
+
+// Shadow-based repackageJar OSGi manifest step resolves the full runtimeClasspath at
+// action time but doesn't declare it as a tracked input, so under --rerun-tasks
+// the runtimeOnly groovy-docgenerator jar can be read mid-write. Force ordering.
+// Qualify project.configurations — RepackageJarTask/ShadowJar also has a `configurations` property.
+tasks.named('repackageJar') {
+    dependsOn project.configurations.runtimeClasspath
+}
+
+// Forward the MockOutputTool debug dump flag to the test JVM so
+//   ./gradlew :groovy-groovydoc:test -Dgroovydoc.mockOutputTool.dumpDir=build/mock-dump
+// mirrors in-memory test output to disk for inspection. Property is opt-in.
+tasks.named('test') {
+    def dumpDir = System.getProperty('groovydoc.mockOutputTool.dumpDir')
+    if (dumpDir) systemProperty('groovydoc.mockOutputTool.dumpDir', dumpDir)
 }
 
 plugins.withId('eclipse') {
@@ -46,4 +66,5 @@ plugins.withId('eclipse') {
 
 tasks.named('rat') {
     excludes << '**/stylesheet.css' // MIT license as per NOTICE/LICENSE files
+    excludes << '**/prism*.js' << '**/prism*.css' // Prism, MIT license as per NOTICE/LICENSE files
 }

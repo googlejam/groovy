@@ -16,26 +16,25 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.transform.CompileStatic
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 import static groovy.test.GroovyAssert.assertScript
 
-@CompileStatic
 final class Groovy9329 {
+
     @Test
     void test() {
         assertScript '''
             def gcl = new GroovyClassLoader()
             def scriptText = 'def x = 1'
             gcl.parseClass(scriptText)
-            
+
             def begin = gcl.@classCache.size()
             3.times { gcl.parseClass(scriptText) }
             def end = gcl.@classCache.size()
-            
+
             assert end == begin
         '''
     }

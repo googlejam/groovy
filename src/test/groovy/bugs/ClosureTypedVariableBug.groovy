@@ -16,22 +16,20 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-/**
- */
-class ClosureTypedVariableBug extends GroovyTestCase {
-    
+final class ClosureTypedVariableBug {
+
+    @Test
     void testBug2() {
         def count = makeClosure(0)
         assert count == 1
-        
+
         count = makeClosure2(0)
         assert count == 1
     }
-
 
     def makeClosure(Number count) {
         def closure = { count = it }
@@ -46,20 +44,22 @@ class ClosureTypedVariableBug extends GroovyTestCase {
         return count
     }
 
+    @Test
     void testBug() {
         Integer count = 0
         def closure = { count = it }
         closure(1)
         assert count == 1
     }
-    
+
+    @Test
     void testBug3() {
         def closure = getElementClosure("p")
         def answer = closure("b")
         def value = answer("c")
         println "returned : ${value}"
     }
-    
+
     Closure getElementClosure(tag) {
         return { body ->
             if (true) {
@@ -70,17 +70,18 @@ class ClosureTypedVariableBug extends GroovyTestCase {
             }
         }
     }
-    
+
+    @Test
     void testDoubleSlotReference() {
         // there was a bug that the local variable index
-        // was wrong set for a closure shared variable. 
+        // was wrong set for a closure shared variable.
         // One slot should have be used and one was used sometimes
-        // Thus resulting in sometimes assuming a wrong index 
+        // Thus resulting in sometimes assuming a wrong index
         double d1 = 1.0d
         double d2 = 10.0d
         1.times { d1=d1*d2 }
         assert d1==10d
-        
+
         long l1 = 1l
         long l2 = 10l
         1.times { l1=l1*l2 }

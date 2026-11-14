@@ -16,15 +16,17 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class Groovy4038Bug extends GroovyTestCase {
+
+class Groovy4038Bug {
+    @Test
     void testResondsToOnClosures() {
         def c = {String x -> }
-        assert c.metaClass.respondsTo(c, "doCall", "Hello")        
-        assert c.metaClass.respondsTo(c, "doCall")        
+        assert c.metaClass.respondsTo(c, "doCall", "Hello")
+        assert c.metaClass.respondsTo(c, "doCall")
         assert c.metaClass.respondsTo(c, "setResolveStrategy")
     }
 }

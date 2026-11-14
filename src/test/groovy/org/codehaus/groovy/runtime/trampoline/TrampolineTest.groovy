@@ -1,0 +1,173 @@
+/*
+ *  Licensed to the Apache Software Foundation (ASF) under one
+ *  or more contributor license agreements.  See the NOTICE file
+ *  distributed with this work for additional information
+ *  regarding copyright ownership.  The ASF licenses this file
+ *  to you under the Apache License, Version 2.0 (the
+ *  "License"); you may not use this file except in compliance
+ *  with the License.  You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing,
+ *  software distributed under the License is distributed on an
+ *  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *  KIND, either express or implied.  See the License for the
+ *  specific language governing permissions and limitations
+ *  under the License.
+ */
+package org.codehaus.groovy.runtime.trampoline
+
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.assertScript
+
+/**
+ * Test for the trampoline capabilities of closures.
+ */
+class TrampolineTest {
+    @Test
+    public void testFactorial() {
+        def fact
+        fact = { int n, BigInteger accumulator ->
+            n > 1 ? fact.trampoline(n - 1, n * accumulator) : accumulator
+        }.trampoline()
+        def factorial = {int n -> fact(n, 1 as BigInteger)}
+        assert factorial(1)    == 1
+        assert factorial(2)    == 2
+        assert factorial(3)    == 6
+        assert factorial(1000) == 402387260077093773543702433923003985719374864210714632543799910429938512398629020592044208486969404800479988610197196058631666872994808558901323829669944590997424504087073759918823627727188732519779505950995276120874975462497043601418278094646496291056393887437886487337119181045825783647849977012476632889835955735432513185323958463075557409114262417474349347553428646576611667797396668820291207379143853719588249808126867838374559731746136085379534524221586593201928090878297308431392844403281231558611036976801357304216168747609675871348312025478589320767169132448426236131412508780208000261683151027341827977704784635868170164365024153691398281264810213092761244896359928705114964975419909342221566832572080821333186116811553615836546984046708975602900950537616475847728421889679646244945160765353408198901385442487984959953319101723355556602139450399736280750137837615307127761926849034352625200015888535147331611702103968175921510907788019393178114194545257223865541461062892187960223838971476088506276862967146674697562911234082439208160153780889893964518263243671616762179168909779911903754031274622289988005195444414282012187361745992642956581746628302955570299024324153181617210465832036786906117260158783520751516284225540265170483304226143974286933061690897968482590125458327168226458066526769958652682272807075781391858178889652208164348344825993266043367660176999612831860788386150279465955131156552036093988180612138558600301435694527224206344631797460594682573103790084024432438465657245014402821885252470935190620929023136493273497565513958720559654228749774011413346962715422845862377387538230483865688976461927383814900140767310446640259899490222221765904339901886018566526485061799702356193897017860040811889729918311021171229845901641921068884387121855646124960798722908519296819372388642614839657382291123125024186649353143970137428531926649875337218940694281434118520158014123344828015051399694290153483077644569099073152433278288269864602789864321139083506217095002597389863554277196742822248757586765752344220207573630569498825087968928162753848863396909959826280956121450994871701244516461260379029309120889086942028510640182154399457156805941872748998094254742173582401063677404595741785160829230135358081840096996372524230560855903700624271243416909004153690105933983835777939410970027753472000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+    }
+
+    @Test
+    public void testMutualRecursion() {
+        def funB
+        def funA = { int num -> num == 0 ? 0 : funB.trampoline(num - 1)}.trampoline()
+        funB = { int num -> num == 0 ? 0 : funA.trampoline(num - 1)}.trampoline()
+        assert 0 == funA(1000)
+        assert 0 == funA(2000)
+    }
+
+    // GROOVY-12673
+    @Test
+    void testDelegateAndThisObject() {
+        def d = [name: 'd']
+        def c = { x -> name + x }
+        c.delegate = d
+        c.resolveStrategy = Closure.DELEGATE_FIRST
+        def t = c.trampoline()
+
+        assert t.owner === this
+        assert t.thisObject === this
+        assert t.delegate === d
+        assert t.resolveStrategy == Closure.DELEGATE_FIRST
+        assert t(1) == 'd1'
+        assert c.trampoline(1).thisObject === this
+        assert c.trampoline(1).delegate === d
+    }
+
+    // GROOVY-12673
+    @Test
+    void testSetDelegateAndResolveStrategy() {
+        def d = [name: 'd']
+        def t = { x -> name + x }.trampoline()
+        t.delegate = d
+        t.resolveStrategy = Closure.DELEGATE_ONLY
+
+        assert t.delegate === d
+        assert t.resolveStrategy == Closure.DELEGATE_ONLY
+        assert t(1) == 'd1'
+
+        def r
+        r = { int n -> n == 0 ? name : r.trampoline(n - 1) }.trampoline()
+        r.delegate = d
+        assert r(1000) == 'd'
+    }
+
+    // GROOVY-12673
+    @Test
+    void testWith() {
+        def t = { m -> name }.trampoline()
+
+        assert [name: 'd'].with(t) == 'd'
+        assert t.delegate === this
+        assert t.resolveStrategy == Closure.OWNER_FIRST
+    }
+
+    // GROOVY-12673
+    @Test
+    void testParametersOfWrappedClosure() {
+        def c = { String s, Integer i -> s + i }
+
+        [c.asWritable(), c >> { it }, c.memoize(), c.curry('s')].each { w ->
+            def t = w.trampoline()
+            assert t.maximumNumberOfParameters == w.maximumNumberOfParameters
+            assert t.parameterTypes == w.parameterTypes
+        }
+        assert c.asWritable().trampoline().parameterTypes == [String, Integer] as Class[]
+        assert c.asWritable().curry('s').trampoline().parameterTypes == [Integer] as Class[]
+        assert c.asWritable().trampoline('s', 1)() == 's1'
+    }
+
+    @Test
+    public void testMutualRecursionWithTrampolineOnFunAOnly() {
+        def funB
+        def funA = { int num -> num == 0 ? 0 : funB.trampoline(num - 1)}.trampoline()
+        funB = { int num -> num == 0 ? 0 : funA.trampoline(num - 1)}
+        assert 0 == funA(1000)
+        assert 0 == funA(2000)
+    }
+
+    @Test
+    public void testMutualRecursionWithUserCallingTrampoline() {
+        def funB
+        def funA = { int num -> num == 0 ? 0 : funB.trampoline(num - 1)}
+        funB = { int num -> num == 0 ? 0 : funA.trampoline(num - 1)}
+        assert 0 == funA.trampoline(1000)()
+        assert 0 == funA.trampoline()(2000)
+    }
+
+    // GROOVY-12665
+    @Test
+    void testRehydrateTrampolinedClosure() {
+        assertScript '''
+            class O { def foo() { 'o' } }
+            class D { def foo() { 'd' } }
+            def o = new O(), d = new D()
+            def t = { x -> foo() + x }.trampoline()
+
+            def r = t.rehydrate(d, o, o)
+            assert r !== t
+            assert r.owner === o
+            assert r(1) == 'o1'
+            assert t.owner === this
+
+            def c = { x -> foo() + x }
+            c.resolveStrategy = Closure.DELEGATE_FIRST
+            assert c.trampoline().rehydrate(d, o, o)(1) == 'd1'
+        '''
+    }
+
+    // GROOVY-12665
+    @Test
+    void testDehydrateTrampolinedClosure() {
+        assertScript '''
+            class O { def foo() { 'o' } }
+            def k = { x -> x + 1 }.trampoline().dehydrate()
+            assert k.delegate === null
+            assert k.owner === null
+            assert k(1) == 2
+
+            def baos = new ByteArrayOutputStream()
+            baos.withObjectOutputStream {
+                it << { x -> foo() + x }.trampoline().dehydrate()
+            }
+            def read
+            new ByteArrayInputStream(baos.toByteArray()).withObjectInputStream(this.class.classLoader) {
+                it.eachObject { read = it }
+            }
+            def o = new O()
+            assert read.rehydrate(o, o, o)(1) == 'o1'
+        '''
+    }
+}

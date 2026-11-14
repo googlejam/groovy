@@ -18,6 +18,10 @@
  */
 package groovy.lang;
 
+import groovy.lang.annotation.ExtendedElementType;
+import groovy.lang.annotation.ExtendedTarget;
+
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -68,8 +72,9 @@ import java.lang.annotation.Target;
  * </pre>
  * <p>
  * Further information about customising grape behavior can be found on the Grape documentation page:
- * <a href="http://groovy-lang.org/grape.html">http://groovy-lang.org/grape.html</a>.
+ * <a href="https://groovy-lang.org/grape.html">https://groovy-lang.org/grape.html</a>.
  */
+@Documented
 @Retention(RetentionPolicy.SOURCE)
 @Target({
         ElementType.CONSTRUCTOR,
@@ -78,6 +83,7 @@ import java.lang.annotation.Target;
         ElementType.METHOD,
         ElementType.PARAMETER,
         ElementType.TYPE})
+@ExtendedTarget(ExtendedElementType.IMPORT)
 public @interface GrabConfig {
     /**
      * Set to true if you want to use the system classloader when loading the grape.
@@ -90,6 +96,8 @@ public @interface GrabConfig {
      * Define any system properties which must be set before invoking the grab - useful for
      * declaring SSL certificates or proxy settings. Currently, this only affects the generated
      * class or script. You may need to also set those same properties for the Groovy compiler.
+     * The properties are only set when grapes are enabled, and are set before the grab runs,
+     * so they also apply to a grape engine created by that grab.
      * For convenience, a String with comma separated name=value pairs
      * can be used in addition to an array (using Groovy's literal list notation) of String name=value items.
      * The single String shorthand form can't be used if value part of a property contains a comma.

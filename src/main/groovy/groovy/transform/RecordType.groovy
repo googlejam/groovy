@@ -18,10 +18,10 @@
  */
 package groovy.transform
 
-import groovy.transform.options.ImmutablePropertyHandler
 import groovy.transform.stc.POJO
 import org.apache.groovy.lang.annotation.Incubating
 
+import java.lang.annotation.Documented
 import java.lang.annotation.ElementType
 import java.lang.annotation.Retention
 import java.lang.annotation.RetentionPolicy
@@ -32,7 +32,7 @@ import java.lang.annotation.Target
  * <p>
  * It allows you to write classes in this shortened form:
  *
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * {@code @groovy.transform.RecordType}
  * class Cyclist {
  *     String firstName
@@ -44,13 +44,12 @@ import java.lang.annotation.Target
  * </pre>
  *
  * The {@code @RecordType} meta-annotation corresponds to adding the following annotations:
- * {@link RecordBase},
- * {@link ToString},
- * {@link EqualsAndHashCode},
- * {@link ImmutableOptions},
+ * {@link RecordBase} (which internally piggybacks on {@code @ToString} and {@code @EqualsAndHashCode}),
+ * {@link RecordOptions},
  * {@link PropertyOptions},
- * {@link TupleConstructor},
- * {@link MapConstructor} and
+ * {@link CompileStatic},
+ * {@link POJO},
+ * {@link TupleConstructor} and
  * {@link KnownImmutable}.
  *
  * Together these annotations instruct the compiler to execute the necessary transformations to add
@@ -68,28 +67,25 @@ import java.lang.annotation.Target
  * </ul>
  * Record-like classes are particularly useful for data structures.
  *
- * @see ToString
- * @see EqualsAndHashCode
  * @see RecordBase
- * @see ImmutableOptions
+ * @see RecordOptions
  * @see PropertyOptions
  * @see TupleConstructor
- * @see MapConstructor
- * @see KnownImmutable*
+ * @see KnownImmutable
+ * @see CompileStatic
+ * @see POJO
  * @since 4.0.0
  */
 @RecordBase
-@ToString(cache = true, includeNames = true)
-@EqualsAndHashCode(cache = true, useCanEqual = false)
-@ImmutableOptions
-@PropertyOptions(propertyHandler = ImmutablePropertyHandler)
-@TupleConstructor(defaults = false)
-@MapConstructor
+@RecordOptions
+@TupleConstructor(namedVariant = true, force = true, defaultsMode = DefaultsMode.AUTO)
+@PropertyOptions
 @KnownImmutable
 @POJO
+@CompileStatic
 @AnnotationCollector(mode = AnnotationCollectorMode.PREFER_EXPLICIT_MERGED)
-@Retention(RetentionPolicy.RUNTIME)
-@Target([ElementType.TYPE])
-@Incubating
+@Retention(RetentionPolicy.SOURCE)
+@Target(ElementType.TYPE)
+@Documented @Incubating
 @interface RecordType {
 }

@@ -16,12 +16,14 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs;
+package bugs;
 
 import gls.CompilableTestSupport;
+import org.junit.jupiter.api.Test
 
-public class Groovy7922Bug extends CompilableTestSupport {
+final class Groovy7922Bug extends CompilableTestSupport {
 
+    @Test
     void testMethodSelection() {
         def message = shouldNotCompile '''
             import groovy.transform.CompileStatic

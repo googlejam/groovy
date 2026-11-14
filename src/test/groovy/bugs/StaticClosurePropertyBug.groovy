@@ -16,18 +16,20 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
 
-class StaticClosurePropertyBug extends GroovyTestCase {
+
+class StaticClosurePropertyBug {
 
     static def out = {System.out.println(it)}
-    
+
+    @Test
     void testCallStaticClosure() {
         callStaticClosure()
     }
-    
+
     static def callStaticClosure() {
         out("TEST")
     }

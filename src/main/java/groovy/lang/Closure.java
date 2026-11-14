@@ -20,28 +20,61 @@ package groovy.lang;
 
 import org.apache.groovy.internal.util.UncheckedThrow;
 import org.apache.groovy.io.StringBuilderWriter;
+import org.apache.groovy.util.Maps;
 import org.codehaus.groovy.reflection.ReflectionCache;
 import org.codehaus.groovy.reflection.stdclasses.CachedClosureClass;
 import org.codehaus.groovy.runtime.ComposedClosure;
 import org.codehaus.groovy.runtime.CurriedClosure;
+import org.codehaus.groovy.runtime.GeneratedClosure;
 import org.codehaus.groovy.runtime.InvokerHelper;
 import org.codehaus.groovy.runtime.InvokerInvocationException;
-import org.codehaus.groovy.runtime.callsite.BooleanClosureWrapper;
+import org.codehaus.groovy.runtime.MethodClosure;
+import org.codehaus.groovy.runtime.BooleanClosureWrapper;
+import org.codehaus.groovy.runtime.GroovyCategorySupport;
 import org.codehaus.groovy.runtime.memoize.ConcurrentCommonCache;
 import org.codehaus.groovy.runtime.memoize.ConcurrentSoftCache;
 import org.codehaus.groovy.runtime.memoize.LRUCache;
 import org.codehaus.groovy.runtime.memoize.Memoize;
+import org.codehaus.groovy.runtime.memoize.MemoizeCache;
+import org.codehaus.groovy.runtime.metaclass.ClosureMetaClass;
+import org.codehaus.groovy.runtime.metaclass.PackedClosureMetaClass;
 
 import java.io.IOException;
+import java.io.InvalidObjectException;
+import java.io.ObjectInputStream;
+import java.io.ObjectStreamException;
+import java.io.Serial;
 import java.io.Serializable;
 import java.io.Writer;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
+import java.lang.ref.SoftReference;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.util.Arrays;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Deque;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.function.BiConsumer;
+import java.util.function.Function;
+import java.util.function.Supplier;
 
 /**
  * Represents any closure object in Groovy.
  * <p>
  * Groovy allows instances of Closures to be called in a
  * short form. For example:
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * def a = 1
  * def c = { a }
  * assert c() == 1
@@ -53,7 +86,7 @@ import java.io.Writer;
  * {@link #getParameterTypes()} will work too without any
  * additional code. If no doCall method is provided a
  * closure must be used in its long form like
- * <pre class="groovyTestCase">
+ * <pre class="language-groovy groovyTestCase">
  * def a = 1
  * def c = {a}
  * assert c.call() == 1
@@ -66,7 +99,7 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
      * owner first, then the delegate (<b>this is the default strategy</b>).
      *
      * For example the following code:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * class Test {
      *     def x = 30
      *     def y = 40
@@ -94,7 +127,7 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
      * delegate first then the owner.
      *
      * For example the following code:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * class Test {
      *     def x = 30
      *     def y = 40
@@ -122,7 +155,7 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
      * With this resolveStrategy set the closure will resolve property references and methods to the owner only
      * and not call the delegate at all. For example the following code :
      *
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * class Test {
      *     def x = 30
      *     def y = 40
@@ -154,7 +187,7 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
      * With this resolveStrategy set the closure will resolve property references and methods to the delegate
      * only and entirely bypass the owner. For example the following code :
      *
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * class Test {
      *     def x = 30
      *     def y = 40
@@ -192,26 +225,85 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
      */
     public static final int TO_SELF = 4;
 
+    /**
+     * Directive constants indicating that processing should stop or skip the current item.
+     */
     public static final int DONE = 1, SKIP = 2;
     private static final Object[] EMPTY_OBJECT_ARRAY = {};
+    /**
+     * Identity closure returning its single argument.
+     */
     public static final Closure IDENTITY = new Closure<Object>(null) {
-        private static final long serialVersionUID = 730973623329943963L;
+        @Serial private static final long serialVersionUID = 730973623329943963L;
 
+        /**
+         * Returns the supplied argument unchanged.
+         *
+         * @param args the argument to return
+         * @return the supplied argument
+         */
         public Object doCall(Object args) {
             return args;
         }
     };
+
+    private static final Map<String, Function<Closure, Object>> PROPERTY_GETTERS = Maps.of(
+            "owner", Closure::getOwner,
+            "delegate", Closure::getDelegate,
+            "thisObject", Closure::getThisObject,
+            "class", Closure::getClass,
+            "metaClass", Closure::getMetaClass,
+            "directive", Closure::getDirective,
+            "parameterTypes", Closure::getParameterTypes,
+            "resolveStrategy", Closure::getResolveStrategy,
+            "maximumNumberOfParameters", Closure::getMaximumNumberOfParameters
+    );
+    private static final Map<String, BiConsumer<Closure, Object>> PROPERTY_SETTERS = Maps.of(
+            "delegate", Closure::setDelegate,
+            "metaClass", (closure, value) -> closure.setMetaClass((MetaClass) value),
+            "directive", (closure, value) -> closure.setDirective((Integer) value),
+            "resolveStrategy", (closure, value) -> closure.setResolveStrategy((Integer) value)
+    );
+
+    /**
+     * Lazily cached call overrides for closure subclasses.
+     */
+    private static final ClassValue<CallOverride> CALL_OVERRIDES = new ClassValue<CallOverride>() {
+        /**
+         * Resolves cached call overrides for the supplied closure type.
+         *
+         * @param type the closure type
+         * @return the resolved call override metadata
+         */
+        @Override
+        protected CallOverride computeValue(Class<?> type) {
+            return CallOverride.lookup(type);
+        }
+    };
+    private static final ThreadLocal<Boolean> IN_CALL_FALLBACK = ThreadLocal.withInitial(() -> Boolean.FALSE);
 
     private Object delegate;
     private Object owner;
     private Object thisObject;
     private int resolveStrategy = OWNER_FIRST;
     private int directive;
-    protected Class[] parameterTypes;
+    /**
+     * Parameter types for the longest {@code doCall} method.
+     */
+    protected Class<?>[] parameterTypes;
+    /**
+     * Maximum number of parameters accepted by this closure.
+     */
     protected int maximumNumberOfParameters;
-    private static final long serialVersionUID = 4368710879820278874L;
+    @Serial private static final long serialVersionUID = 4368710879820278874L;
     private BooleanClosureWrapper bcw;
 
+    /**
+     * Creates a closure with the supplied owner and lexical {@code this} object.
+     *
+     * @param owner the closure owner
+     * @param thisObject the lexical {@code this} object
+     */
     public Closure(Object owner, Object thisObject) {
         this.owner = owner;
         this.delegate = owner;
@@ -263,178 +355,351 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
         return resolveStrategy;
     }
 
-    public Object getThisObject(){
+    /**
+     * Returns the lexical {@code this} object for this closure.
+     *
+     * @return the lexical {@code this} object
+     */
+    public Object getThisObject() {
         return thisObject;
     }
 
+    private transient Class<?> thisType;
+    private Class<?> getThisType() {
+        Class<?> thisType = this.thisType;
+        if (thisType == null) {
+            thisType = getClass();
+            while (GeneratedClosure.class.isAssignableFrom(thisType)) {
+                thisType = thisType.getEnclosingClass();
+            }
+            this.thisType = thisType;
+        }
+        return thisType;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public Object getProperty(final String property) {
-        if ("delegate".equals(property)) {
-            return getDelegate();
+        Function<Closure, Object> getter = PROPERTY_GETTERS.get(property);
+        if (getter != null) {
+            return getter.apply(this);
         }
-        if ("owner".equals(property)) {
-            return getOwner();
+
+        return resolveGetProperty(property);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void setProperty(final String property, final Object newValue) {
+        BiConsumer<Closure, Object> setter = PROPERTY_SETTERS.get(property);
+        if (setter != null) {
+            setter.accept(this, newValue);
+            return;
         }
-        if ("maximumNumberOfParameters".equals(property)) {
-            return getMaximumNumberOfParameters();
-        }
-        if ("parameterTypes".equals(property)) {
-            return getParameterTypes();
-        }
-        if ("metaClass".equals(property)) {
-            return getMetaClass();
-        }
-        if ("class".equals(property)) {
-            return getClass();
-        }
-        if ("directive".equals(property)) {
-            return getDirective();
-        }
-        if ("resolveStrategy".equals(property)) {
-            return getResolveStrategy();
-        }
-        if ("thisObject".equals(property)) {
-            return getThisObject();
-        }
-        switch(resolveStrategy) {
+
+        resolveSetProperty(property, newValue);
+    }
+
+    private Object resolveGetProperty(final String property) {
+        switch (resolveStrategy) {
             case DELEGATE_FIRST:
-                return getPropertyDelegateFirst(property);
+                return getPropertyTryThese(getDelegate(), getOwner(), property);
             case DELEGATE_ONLY:
-                return InvokerHelper.getProperty(this.delegate, property);
+                return getProperty(getDelegate(), property);
             case OWNER_ONLY:
-                return InvokerHelper.getProperty(this.owner, property);
+                return getProperty(getOwner(), property);
             case TO_SELF:
                 return super.getProperty(property);
             default:
-                return getPropertyOwnerFirst(property);
+                return getPropertyTryThese(getOwner(), getDelegate(), property);
         }
     }
 
-    private Object getPropertyDelegateFirst(String property) {
-        if (delegate == null) return getPropertyOwnerFirst(property);
-        return getPropertyTryThese(property, this.delegate, this.owner);
+    private void resolveSetProperty(final String property, final Object newValue) {
+        switch (resolveStrategy) {
+            case DELEGATE_FIRST:
+                setPropertyTryThese(getDelegate(), getOwner(), property, newValue);
+                break;
+            case DELEGATE_ONLY:
+                setProperty(getDelegate(), property, newValue);
+                break;
+            case OWNER_ONLY:
+                setProperty(getOwner(), property, newValue);
+                break;
+            case TO_SELF:
+                super.setProperty(property, newValue);
+                break;
+            default:
+                setPropertyTryThese(getOwner(), getDelegate(), property, newValue);
+        }
     }
 
-    private Object getPropertyOwnerFirst(String property) {
-        return getPropertyTryThese(property, this.owner, this.delegate);
-    }
 
-    private Object getPropertyTryThese(String property, Object firstTry, Object secondTry) {
+    private Object getProperty(final Object receiver, final String property) {
+        if (receiver == null) throw new MissingPropertyException(property, getClass());
         try {
-            // let's try getting the property on the first object
-            return InvokerHelper.getProperty(firstTry, property);
-
-        } catch (MissingPropertyException | MissingFieldException e1) {
-            if (secondTry != null && firstTry != this && firstTry != secondTry) {
-                try {
-                    // let's try getting the property on the second object
-                    return InvokerHelper.getProperty(secondTry, property);
-                } catch (GroovyRuntimeException e2) {
-                    // ignore, we'll throw e1
+            return InvokerHelper.getProperty(receiver, property);
+        } catch (GroovyRuntimeException e1) {
+            if (null != receiver && this != receiver && this instanceof GeneratedClosure) { // GROOVY-11128
+                final Class<?> thisType = getThisType();
+                if (thisType != receiver.getClass() && thisType.isInstance(receiver)) {
+                    try {
+                        return ((GroovyObject) receiver).getMetaClass().getProperty(thisType, receiver, property, false, true);
+                    } catch (GroovyRuntimeException e2) {
+                        e1.addSuppressed(e2);
+                    }
                 }
             }
             throw e1;
-
         }
     }
 
-    @Override
-    public void setProperty(String property, Object newValue) {
-        if ("delegate".equals(property)) {
-            setDelegate(newValue);
-        } else if ("metaClass".equals(property)) {
-            setMetaClass((MetaClass) newValue);
-        } else if ("resolveStrategy".equals(property)) {
-            setResolveStrategy(((Number) newValue).intValue());
-        } else if ("directive".equals(property)) {
-            setDirective(((Number) newValue).intValue());
-        } else {
-            switch(resolveStrategy) {
-                case DELEGATE_FIRST:
-                    setPropertyDelegateFirst(property, newValue);
-                break;
-                case DELEGATE_ONLY:
-                    InvokerHelper.setProperty(this.delegate, property, newValue);
-                break;
-                case OWNER_ONLY:
-                    InvokerHelper.setProperty(this.owner, property, newValue);
-                break;
-                case TO_SELF:
-                    super.setProperty(property, newValue);
-                break;
-                default:
-                    setPropertyOwnerFirst(property, newValue);
-            }
-        }
-    }
-
-    private void setPropertyDelegateFirst(String property, Object newValue) {
-        if (delegate == null) setPropertyOwnerFirst(property, newValue);
-        else setPropertyTryThese(property, newValue, this.delegate, this.owner);
-    }
-
-    private void setPropertyOwnerFirst(String property, Object newValue) {
-        setPropertyTryThese(property, newValue, this.owner, this.delegate);
-    }
-
-    private void setPropertyTryThese(String property, Object newValue, Object firstTry, Object secondTry) {
+    private Object getPropertyTryThese(final Object o1, final Object o2, final String property) {
+        if (o1 == null) return getProperty(o2, property);
         try {
-            // let's try setting the property on the first object
-            InvokerHelper.setProperty(firstTry, property, newValue);
-        } catch (GroovyRuntimeException e1) {
-            if (firstTry != null && firstTry != this && firstTry != secondTry) {
+            return getProperty(o1, property);
+        } catch (MissingPropertyException | MissingFieldException e1) {
+            if (o2 != null && o1 != this && o1 != o2) {
                 try {
-                    // let's try setting the property on the second object
-                    InvokerHelper.setProperty(secondTry, property, newValue);
+                    return getProperty(o2, property);
+                } catch (GroovyRuntimeException e2) {
+                    e1.addSuppressed(e2);
+                }
+            }
+            throw e1;
+        }
+    }
+
+    private void setProperty(final Object receiver, final String property, final Object newValue) {
+        if (receiver == null) throw new MissingPropertyException(property, getClass());
+        try {
+            InvokerHelper.setProperty(receiver, property, newValue);
+        } catch (GroovyRuntimeException e1) {
+            if (null != receiver && this != receiver && this instanceof GeneratedClosure) { // GROOVY-11128
+                final Class<?> thisType = getThisType();
+                if (thisType != receiver.getClass() && thisType.isInstance(receiver)) {
+                    try {
+                        ((GroovyObject) receiver).getMetaClass().setProperty(thisType, receiver, property, newValue, false, true);
+                        return;
+                    } catch (GroovyRuntimeException e2) {
+                        e1.addSuppressed(e2);
+                    }
+                }
+            }
+            throw e1;
+        }
+    }
+
+    private void setPropertyTryThese(final Object o1, final Object o2, final String property, final Object newValue) {
+        if (o1 == null) {
+            setProperty(o2, property, newValue);
+            return;
+        }
+        try {
+            setProperty(o1, property, newValue);
+        } catch (GroovyRuntimeException e1) {
+            if (o2 != null && o1 != this && o1 != o2) {
+                try {
+                    setProperty(o2, property, newValue);
                     return;
                 } catch (GroovyRuntimeException e2) {
-                    // ignore, we'll throw e1
+                    e1.addSuppressed(e2);
                 }
             }
             throw e1;
         }
-    }
-
-    public boolean isCase(Object candidate){
-        if (bcw==null) {
-            bcw = new BooleanClosureWrapper(this);
-        }
-        return bcw.call(candidate);
     }
 
     /**
-     * Invokes the closure without any parameters, returning any value if applicable.
+     * Evaluates this closure for Groovy switch/case matching.
      *
-     * @return the value if applicable or null if there is no return statement in the closure
+     * @param switchValue the switch value to test
+     * @return {@code true} if the case matches
+     */
+    public boolean isCase(final Object switchValue) {
+        if (bcw == null) {
+            bcw = new BooleanClosureWrapper(this);
+        }
+        return bcw.call(switchValue);
+    }
+
+    /**
+     * Invokes the closure with no arguments, returning any value if applicable.
+     *
+     * @return The value if applicable or null if there is no return statement in the closure.
      */
     @Override
     public V call() {
-        final Object[] NOARGS = EMPTY_OBJECT_ARRAY;
-        return call(NOARGS);
-    }
-
-    @SuppressWarnings("unchecked")
-    public V call(Object... args) {
-        try {
-            return (V) getMetaClass().invokeMethod(this,"doCall",args);
-        } catch (InvokerInvocationException e) {
-            UncheckedThrow.rethrow(e.getCause());
-            return null; // unreachable statement
-        }  catch (Exception e) {
-            return (V) throwRuntimeException(e);
-        }
+        return call(EMPTY_OBJECT_ARRAY);
     }
 
     /**
-     * Invokes the closure, returning any value if applicable.
+     * Invokes the closure with given argument(s), returning any value if applicable.
      *
      * @param arguments could be a single value or a List of values
-     * @return the value if applicable or null if there is no return statement in the closure
+     * @return The value if applicable or null if there is no return statement in the closure.
      */
     public V call(final Object arguments) {
         return call(new Object[]{arguments});
     }
 
+    /**
+     * Invokes the closure with given argument(s), returning any value if applicable.
+     *
+     * @return The value if applicable or null if there is no return statement in the closure.
+     */
+    @SuppressWarnings("unchecked")
+    public V call(final Object... arguments) {
+        Class<?> myClass = getClass();
+        if (myClass != Closure.class && arguments != null && mopUnperturbed()) {
+            CallOverride override = CALL_OVERRIDES.get(myClass);
+            // call selects a doCall: the cache is keyed on the subclass's doCall declarations,
+            // arity-indexed (GROOVY-12165) so the shapes the GDK drives hard (Map#each,
+            // eachWithIndex, inject) dispatch directly via a cached MethodHandle. An argument
+            // that is already an instance of each declared parameter type dispatches directly;
+            // anything that needs Groovy coercion (GString -> String, number conversions, null)
+            // falls through to the metaclass below, which coerces exactly as before (GROOVY-12164).
+            // A subclass with no doCall keeps the GROOVY-11911 call()/call(Object) compatibility
+            // carve-out, whose targets alone need the re-entry latch (a custom call override may
+            // delegate back to call(...), which must not re-dispatch to the same target).
+            Method target = null;
+            int arity = arguments.length;
+            if (arity < CallOverride.ARITY_LIMIT) {
+                Method m = override.byArity[arity];
+                if (m != null && CallOverride.guardsPass(override.guards[arity], arguments)) {
+                    target = m;
+                }
+            } else {
+                // High-arity doCall: cached asSpreader of type (Object, Object[])Object.
+                // The 0..ARITY_LIMIT-1 invokeExact switch is unchanged.
+                CallOverride.SpreadSlot slot = override.spreadFor(arity);
+                if (slot != null && CallOverride.guardsPass(slot.guards, arguments)) {
+                    return invokeCached(slot.handle, slot.method, this, arguments);
+                }
+            }
+            if (target != null) {
+                MethodHandle handle = override.handles[arity];
+                if (!override.callForm[arity]) {
+                    // a doCall body: re-entry is ordinary recursion, no latch required
+                    return invokeCached(handle, target, this, arguments);
+                } else if (!IN_CALL_FALLBACK.get()) {
+                    IN_CALL_FALLBACK.set(Boolean.TRUE);
+                    try {
+                        return invokeCached(handle, target, this, arguments);
+                    } finally {
+                        IN_CALL_FALLBACK.set(Boolean.FALSE);
+                    }
+                }
+            }
+        }
+        try {
+            return (V) getMetaClass().invokeMethod(this, "doCall", arguments);
+        } catch (InvokerInvocationException e) {
+            UncheckedThrow.rethrow(e.getCause());
+            return null; // unreachable statement
+        } catch (Exception e) {
+            return (V) throwRuntimeException(e);
+        }
+    }
+
+    /**
+     * Invokes a cached {@code doCall}/{@code call} target. Prefers the adapted
+     * {@link MethodHandle} so {@code Method.invoke} is not on the GDK
+     * {@code each}/{@code collect} hot path. Exceptions thrown by the body —
+     * including a body that itself throws {@link InvocationTargetException} or
+     * {@link IllegalAccessException} — are rethrown as-is on the handle path;
+     * the {@link Method#invoke} fallback unwraps only the wrapper
+     * {@link InvocationTargetException} that reflection introduces.
+     */
+    @SuppressWarnings("unchecked")
+    private static <V> V invokeCached(final MethodHandle handle, final Method target, final Closure<?> self, final Object[] arguments) {
+        if (handle != null) {
+            try {
+                return (V) invokeHandle(handle, self, arguments);
+            } catch (Throwable t) {
+                UncheckedThrow.rethrow(t);
+                return null;
+            }
+        }
+        try {
+            return (V) target.invoke(self, arguments);
+        } catch (InvocationTargetException ite) {
+            UncheckedThrow.rethrow(ite.getCause());
+            return null; // unreachable statement
+        } catch (IllegalAccessException iae) {
+            throw new GroovyRuntimeException(iae);
+        }
+    }
+
+    /**
+     * {@code invokeExact} against a cached handle. Cases {@code 0..ARITY_LIMIT-1}
+     * match {@link MethodType#genericMethodType(int) genericMethodType(arity+1)}.
+     * The default is a handle already adapted to
+     * {@link MethodType#genericMethodType(int, boolean) genericMethodType(1, true)}
+     * ({@code (Object, Object[])Object}) at lookup — {@code asSpreader} is not
+     * applied per call.
+     */
+    private static Object invokeHandle(final MethodHandle handle, final Closure<?> self, final Object[] arguments) throws Throwable {
+        switch (arguments.length) {
+            case 0:
+                return handle.invokeExact((Object) self);
+            case 1:
+                return handle.invokeExact((Object) self, arguments[0]);
+            case 2:
+                return handle.invokeExact((Object) self, arguments[0], arguments[1]);
+            case 3:
+                return handle.invokeExact((Object) self, arguments[0], arguments[1], arguments[2]);
+            case 4:
+                return handle.invokeExact((Object) self, arguments[0], arguments[1], arguments[2], arguments[3]);
+            default:
+                return handle.invokeExact((Object) self, arguments);
+        }
+    }
+
+    /**
+     * Whether something MOP-relevant is in play for this instance: a non-stock metaclass
+     * (replaced, wrapped or Expando — it must see {@code invokeMethod}). Checked once at
+     * construction and latched by {@link #setMetaClass}, which is the only way the instance's
+     * metaclass field can change — so reading one boolean here is equivalent to re-checking
+     * the metaclass class on every call, at a fraction of the cost on the hot dispatch lanes.
+     */
+    private transient boolean mopPerturbed = nonStockMetaClass();
+
+    private boolean nonStockMetaClass() {
+        MetaClass mc = super.getMetaClass();
+        Class<?> mcClass = (mc == null) ? null : mc.getClass();
+        return mcClass != ClosureMetaClass.class && mcClass != MetaClassImpl.class
+                && mcClass != PackedClosureMetaClass.class;
+    }
+
+    @Override
+    public void setMetaClass(final MetaClass metaClass) {
+        super.setMetaClass(metaClass);
+        // conservative: any explicitly assigned metaclass (even a stock one) routes via the MOP
+        mopPerturbed = true;
+    }
+
+    /**
+     * Whether nothing MOP-relevant is in play for this instance, so a cached direct
+     * dispatch path is semantically invisible: the metaclass is a stock one and no
+     * category is active on the current thread — the same conditions the classic
+     * call-site caches check (see {@code AbstractCallSite}). One boolean load and one
+     * quick-exit counter read, cheap enough for per-element dispatch lanes.
+     */
+    protected final boolean mopUnperturbed() {
+        return !mopPerturbed && !GroovyCategorySupport.hasCategoryInCurrentThread();
+    }
+
+    /**
+     * Throws the supplied throwable as a runtime exception, wrapping checked throwables.
+     *
+     * @param throwable the throwable to rethrow
+     * @return never returns normally
+     */
     protected static Object throwRuntimeException(Throwable throwable) {
         if (throwable instanceof RuntimeException) {
             throw (RuntimeException) throwable;
@@ -472,7 +737,7 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
      * @return the parameter types of the longest doCall method
      * of this closure
      */
-    public Class[] getParameterTypes() {
+    public Class<?>[] getParameterTypes() {
         return parameterTypes;
     }
 
@@ -493,8 +758,8 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
         return new WritableClosure();
     }
 
-    /* (non-Javadoc)
-     * @see java.lang.Runnable#run()
+    /**
+     * {@inheritDoc}
      */
     @Override
     public void run() {
@@ -505,7 +770,7 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
      * Support for Closure currying.
      * <p>
      * Typical usage:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * def multiply = { a, b {@code ->} a * b }
      * def doubler = multiply.curry(2)
      * assert doubler(4) == 8
@@ -513,7 +778,7 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
      * Note: special treatment is given to Closure vararg-style capability.
      * If you curry a vararg parameter, you don't consume the entire vararg array
      * but instead the first parameter of the vararg array as the following example shows:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * def a = { one, two, Object[] others {@code ->} one + two + others.sum() }
      * assert a.parameterTypes.name == ['java.lang.Object', 'java.lang.Object', '[Ljava.lang.Object;']
      * assert a(1,2,3,4) == 10
@@ -555,7 +820,7 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
      * Support for Closure "right" currying.
      * Parameters are supplied on the right rather than left as per the normal curry() method.
      * Typical usage:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * def divide = { a, b {@code ->} a / b }
      * def halver = divide.rcurry(2)
      * assert halver(8) == 4
@@ -637,7 +902,7 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
      * Support for Closure forward composition.
      * <p>
      * Typical usage:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * def times2 = { a {@code ->} a * 2 }
      * def add3 = { a {@code ->} a + 3 }
      * def timesThenAdd = times2 {@code >>} add3
@@ -656,7 +921,7 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
      * Support for Closure reverse composition.
      * <p>
      * Typical usage:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * def times2 = { a {@code ->} a * 2 }
      * def add3 = { a {@code ->} a + 3 }
      * def addThenTimes = times2 {@code <<} add3
@@ -735,7 +1000,7 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
      * Alias for calling a Closure for non-closure arguments.
      * <p>
      * Typical usage:
-     * <pre class="groovyTestCase">
+     * <pre class="language-groovy groovyTestCase">
      * def times2 = { a {@code ->} a * 2 }
      * def add3 = { a {@code ->} a + 3 }
      * assert add3 {@code <<} times2 {@code <<} 3 == 9
@@ -759,11 +1024,16 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
      * the performance trade-off still makes concurrent use of memoized functions safe and highly recommended.
      *
      * The cache gets garbage-collected together with the memoized closure.
+     * A copy made by {@link #dehydrate()} or {@link #rehydrate(Object, Object, Object)} calls the dehydrated or
+     * rehydrated closure and starts with an empty cache with the same limits.
+     * The memoizing closure calls this closure and reports and takes its delegate and resolve strategy, so
+     * setting them on either affects both; {@link #clone()} of the memoizing closure makes an independent copy
+     * sharing the cache.
      *
      * @return A new closure forwarding to the original one while caching the results
      */
     public Closure<V> memoize() {
-        return Memoize.buildMemoizeFunction(new ConcurrentCommonCache(), this);
+        return Memoize.buildMemoizeFunction(new CommonCacheFactory(), this);
     }
 
     /**
@@ -778,6 +1048,11 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
      * the performance trade-off still makes concurrent use of memoized functions safe and highly recommended.
      *
      * The cache gets garbage-collected together with the memoized closure.
+     * A copy made by {@link #dehydrate()} or {@link #rehydrate(Object, Object, Object)} calls the dehydrated or
+     * rehydrated closure and starts with an empty cache with the same limits.
+     * The memoizing closure calls this closure and reports and takes its delegate and resolve strategy, so
+     * setting them on either affects both; {@link #clone()} of the memoizing closure makes an independent copy
+     * sharing the cache.
      *
      * @param maxCacheSize The maximum size the cache can grow to
      * @return A new function forwarding to the original one while caching the results
@@ -785,7 +1060,7 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
     public Closure<V> memoizeAtMost(final int maxCacheSize) {
         if (maxCacheSize < 0) throw new IllegalArgumentException("A non-negative number is required as the maxCacheSize parameter for memoizeAtMost.");
 
-        return Memoize.buildMemoizeFunction(new LRUCache(maxCacheSize), this);
+        return Memoize.buildMemoizeFunction(new LRUCacheFactory(maxCacheSize), this);
     }
 
     /**
@@ -806,13 +1081,20 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
      * the performance trade-off still makes concurrent use of memoized functions safe and highly recommended.
      *
      * The cache gets garbage-collected together with the memoized closure.
+     * A copy made by {@link #dehydrate()} or {@link #rehydrate(Object, Object, Object)} calls the dehydrated or
+     * rehydrated closure and starts with an empty cache with the same limits.
+     * The memoizing closure calls this closure and reports and takes its delegate and resolve strategy, so
+     * setting them on either affects both; {@link #clone()} of the memoizing closure makes an independent copy
+     * sharing the cache.
+     * A serialized memoized closure does not carry its softly referenced cached values: it is deserialized with an
+     * empty cache with the same limits.
      * @param protectedCacheSize Number of cached return values to protect from garbage collection
      * @return A new function forwarding to the original one while caching the results
      */
     public Closure<V> memoizeAtLeast(final int protectedCacheSize) {
         if (protectedCacheSize < 0) throw new IllegalArgumentException("A non-negative number is required as the protectedCacheSize parameter for memoizeAtLeast.");
 
-        return Memoize.buildSoftReferenceMemoizeFunction(protectedCacheSize, new ConcurrentSoftCache<Object, Object>(), this);
+        return Memoize.buildSoftReferenceMemoizeFunction(protectedCacheSize, new SoftCacheFactory(), this);
     }
 
     /**
@@ -835,6 +1117,13 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
      * the performance trade-off still makes concurrent use of memoized functions safe and highly recommended.
      *
      * The cache gets garbage-collected together with the memoized closure.
+     * A copy made by {@link #dehydrate()} or {@link #rehydrate(Object, Object, Object)} calls the dehydrated or
+     * rehydrated closure and starts with an empty cache with the same limits.
+     * The memoizing closure calls this closure and reports and takes its delegate and resolve strategy, so
+     * setting them on either affects both; {@link #clone()} of the memoizing closure makes an independent copy
+     * sharing the cache.
+     * A serialized memoized closure does not carry its softly referenced cached values: it is deserialized with an
+     * empty cache with the same limits.
      * @param protectedCacheSize Number of cached return values to protect from garbage collection
      * @param maxCacheSize The maximum size the cache can grow to
      * @return A new function forwarding to the original one while caching the results
@@ -844,14 +1133,78 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
         if (maxCacheSize < 0) throw new IllegalArgumentException("A non-negative number is required as the maxCacheSize parameter for memoizeBetween.");
         if (protectedCacheSize > maxCacheSize) throw new IllegalArgumentException("The maxCacheSize parameter to memoizeBetween is required to be greater or equal to the protectedCacheSize parameter.");
 
-        return Memoize.buildSoftReferenceMemoizeFunction(protectedCacheSize, new ConcurrentSoftCache<Object, Object>(maxCacheSize), this);
+        return Memoize.buildSoftReferenceMemoizeFunction(protectedCacheSize, new LRUSoftCacheFactory(maxCacheSize), this);
+    }
+
+    /*
+     * The cache factories of the memoize variants are named classes rather than serializable lambdas: a lambda
+     * serializes as a SerializedLambda naming a compiler-generated method of this class, which a reader on
+     * another version or build of Groovy cannot resolve, whereas a class has a fixed serialVersionUID.
+     */
+
+    /**
+     * Creates the unlimited cache of {@link #memoize()}.
+     */
+    private static final class CommonCacheFactory implements Supplier<MemoizeCache<Object, Object>>, Serializable {
+        @Serial private static final long serialVersionUID = 6116480301574367289L;
+
+        @Override
+        public MemoizeCache<Object, Object> get() {
+            return new ConcurrentCommonCache<>();
+        }
+    }
+
+    /**
+     * Creates the size-limited cache of {@link #memoizeAtMost(int)}.
+     */
+    private static final class LRUCacheFactory implements Supplier<MemoizeCache<Object, Object>>, Serializable {
+        @Serial private static final long serialVersionUID = -8012874337951012233L;
+        private final int maxCacheSize;
+
+        LRUCacheFactory(final int maxCacheSize) {
+            this.maxCacheSize = maxCacheSize;
+        }
+
+        @Override
+        public MemoizeCache<Object, Object> get() {
+            return new LRUCache<>(maxCacheSize);
+        }
+    }
+
+    /**
+     * Creates the softly referencing cache of {@link #memoizeAtLeast(int)}.
+     */
+    private static final class SoftCacheFactory implements Supplier<MemoizeCache<Object, SoftReference<Object>>>, Serializable {
+        @Serial private static final long serialVersionUID = 3317720119265043152L;
+
+        @Override
+        public MemoizeCache<Object, SoftReference<Object>> get() {
+            return new ConcurrentSoftCache<>();
+        }
+    }
+
+    /**
+     * Creates the size-limited, softly referencing cache of {@link #memoizeBetween(int, int)}.
+     */
+    private static final class LRUSoftCacheFactory implements Supplier<MemoizeCache<Object, SoftReference<Object>>>, Serializable {
+        @Serial private static final long serialVersionUID = -1963503275018435307L;
+        private final int maxCacheSize;
+
+        LRUSoftCacheFactory(final int maxCacheSize) {
+            this.maxCacheSize = maxCacheSize;
+        }
+
+        @Override
+        public MemoizeCache<Object, SoftReference<Object>> get() {
+            return new ConcurrentSoftCache<>(maxCacheSize);
+        }
     }
 
     /**
      * Builds a trampolined variant of the current closure.
      * To prevent stack overflow due to deep recursion, functions can instead leverage the trampoline mechanism
      * and avoid recursive calls altogether. Under trampoline, the function is supposed to perform one step of
-     * the calculation and, instead of a recursive call to itself or another function, it return back a new closure,
+     * the calculation and, instead of a recursive call to itself or another function, it returns a new closure,
      * which will be executed by the trampoline as the next step.
      * Once a non-closure value is returned, the trampoline stops and returns the value as the final result.
      * Here is an example:
@@ -863,6 +1216,8 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
      * def factorial = { n {@code ->} fact(n, 1G)}
      * println factorial(20) // {@code =>} 2432902008176640000
      * </pre>
+     * The trampolined closure calls a copy of this closure curried with the parameters, and reports and takes
+     * the copy's delegate and resolve strategy; {@link #clone()} of the trampolined closure makes an independent copy.
      *
      * @param args Parameters to the closure, so as the trampoline mechanism can call it
      * @return A closure, which will execute the original closure on a trampoline.
@@ -875,9 +1230,11 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
      * Builds a trampolined variant of the current closure.
      * To prevent stack overflow due to deep recursion, functions can instead leverage the trampoline mechanism
      * and avoid recursive calls altogether. Under trampoline, the function is supposed to perform one step of
-     * the calculation and, instead of a recursive call to itself or another function, it return back a new closure,
+     * the calculation and, instead of a recursive call to itself or another function, it returns a new closure,
      * which will be executed by the trampoline as the next step.
      * Once a non-closure value is returned, the trampoline stops and returns the value as the final result.
+     * The trampolined closure calls this closure and reports and takes its delegate and resolve strategy, so
+     * setting them on either affects both; {@link #clone()} of the trampolined closure makes an independent copy.
      * @return A closure, which will execute the original closure on a trampoline.
      * @see #trampoline(Object...)
      */
@@ -885,8 +1242,8 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
         return new TrampolineClosure<V>(this);
     }
 
-    /* (non-Javadoc)
-     * @see java.lang.Object#clone()
+    /**
+     * {@inheritDoc}
      */
     @Override
     public Object clone() {
@@ -908,14 +1265,14 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
      * inner class instead of the outer!
      */
     private class WritableClosure extends Closure implements Writable {
-        private static final long serialVersionUID = -5749205698681690370L;
+        @Serial private static final long serialVersionUID = -5749205698681690370L;
 
-        public WritableClosure() {
+        private WritableClosure() {
             super(Closure.this);
         }
 
-        /* (non-Javadoc)
-         * @see groovy.lang.Writable#writeTo(java.io.Writer)
+        /**
+         * {@inheritDoc}
          */
         @Override
         public Writer writeTo(Writer out) throws IOException {
@@ -924,8 +1281,8 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
             return out;
         }
 
-        /* (non-Javadoc)
-         * @see groovy.lang.GroovyObject#invokeMethod(java.lang.String, java.lang.Object)
+        /**
+         * {@inheritDoc}
          */
         @Override
         public Object invokeMethod(String method, Object arguments) {
@@ -941,121 +1298,156 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
             return Closure.this.invokeMethod(method, arguments);
         }
 
-        /* (non-Javadoc)
-         * @see groovy.lang.GroovyObject#getProperty(java.lang.String)
+        /**
+         * {@inheritDoc}
          */
         @Override
         public Object getProperty(String property) {
             return Closure.this.getProperty(property);
         }
 
-        /* (non-Javadoc)
-         * @see groovy.lang.GroovyObject#setProperty(java.lang.String, java.lang.Object)
+        /**
+         * {@inheritDoc}
          */
         @Override
         public void setProperty(String property, Object newValue) {
             Closure.this.setProperty(property, newValue);
         }
 
-        /* (non-Javadoc)
-         * @see groovy.lang.Closure#call()
+        /**
+         * {@inheritDoc}
          */
         @Override
         public Object call() {
             return ((Closure) getOwner()).call();
         }
 
-        /* (non-Javadoc)
-         * @see groovy.lang.Closure#call(java.lang.Object)
+        /**
+         * {@inheritDoc}
          */
         @Override
         public Object call(Object arguments) {
             return ((Closure) getOwner()).call(arguments);
         }
 
+        /**
+         * {@inheritDoc}
+         */
         @Override
         public Object call(Object... args) {
             return ((Closure) getOwner()).call(args);
         }
 
+        /**
+         * Delegates to {@link #call(Object...)}.
+         *
+         * @param args the call arguments
+         * @return the call result
+         */
         public Object doCall(Object... args) {
             return call(args);
         }
 
-        /* (non-Javadoc)
-         * @see groovy.lang.Closure#getDelegate()
+        /**
+         * {@inheritDoc}
          */
         @Override
         public Object getDelegate() {
             return Closure.this.getDelegate();
         }
 
-        /* (non-Javadoc)
-         * @see groovy.lang.Closure#setDelegate(java.lang.Object)
+        /**
+         * {@inheritDoc}
          */
         @Override
         public void setDelegate(Object delegate) {
             Closure.this.setDelegate(delegate);
         }
 
-        /* (non-Javadoc)
-         * @see groovy.lang.Closure#getParameterTypes()
+        /**
+         * {@inheritDoc}
+         */
+        @Override
+        public Object getThisObject() {
+            return Closure.this.getThisObject();
+        }
+
+        /**
+         * {@inheritDoc}
          */
         @Override
         public Class[] getParameterTypes() {
             return Closure.this.getParameterTypes();
         }
 
-        /* (non-Javadoc)
-         * @see groovy.lang.Closure#getParameterTypes()
+        /**
+         * {@inheritDoc}
          */
         @Override
         public int getMaximumNumberOfParameters() {
             return Closure.this.getMaximumNumberOfParameters();
         }
 
-        /* (non-Javadoc)
-         * @see groovy.lang.Closure#asWritable()
+        /**
+         * {@inheritDoc}
          */
         @Override
         public Closure asWritable() {
             return this;
         }
 
-        /* (non-Javadoc)
-         * @see java.lang.Runnable#run()
+        /**
+         * {@inheritDoc}
          */
         @Override
         public void run() {
             Closure.this.run();
         }
 
-        /* (non-Javadoc)
-         * @see java.lang.Object#clone()
+        /**
+         * {@inheritDoc}
          */
         @Override
         public Object clone() {
             return ((Closure) Closure.this.clone()).asWritable();
         }
 
-        /* (non-Javadoc)
-         * @see java.lang.Object#hashCode()
+        /**
+         * Dehydrates the enclosing closure and wraps the copy: the owner of a writable closure is
+         * the closure it wraps, so clearing it would leave nothing to call.
+         */
+        @Override
+        public Closure dehydrate() {
+            return Closure.this.dehydrate().asWritable();
+        }
+
+        /**
+         * Rehydrates the enclosing closure and wraps the copy: the owner of a writable closure is
+         * the closure it wraps, so replacing it would leave nothing to call.
+         */
+        @Override
+        public Closure rehydrate(Object delegate, Object owner, Object thisObject) {
+            return Closure.this.rehydrate(delegate, owner, thisObject).asWritable();
+        }
+
+        /**
+         * {@inheritDoc}
          */
         @Override
         public int hashCode() {
             return Closure.this.hashCode();
         }
 
-        /* (non-Javadoc)
-         * @see java.lang.Object#equals(java.lang.Object)
+        /**
+         * {@inheritDoc}
          */
         @Override
         public boolean equals(Object arg0) {
             return Closure.this.equals(arg0);
         }
 
-        /* (non-Javadoc)
-         * @see java.lang.Object#toString()
+        /**
+         * {@inheritDoc}
          */
         @Override
         public String toString() {
@@ -1070,19 +1462,55 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
             return writer.toString();
         }
 
+        /**
+         * Returns a writable curried variant of this closure.
+         *
+         * @param arguments the arguments to bind
+         * @return the curried writable closure
+         */
         @Override
         public Closure curry(final Object... arguments) {
             return (new CurriedClosure(this, arguments)).asWritable();
         }
 
+        /**
+         * {@inheritDoc}
+         */
         @Override
         public void setResolveStrategy(int resolveStrategy) {
             Closure.this.setResolveStrategy(resolveStrategy);
         }
 
+        /**
+         * {@inheritDoc}
+         */
         @Override
         public int getResolveStrategy() {
             return Closure.this.getResolveStrategy();
+        }
+
+        /**
+         * Reports the enclosing closure so the cycle check reaches it.
+         * <p>
+         * The constructor passes it as {@code owner} as well, so for an instance this class built
+         * the two are the same object and the walk merely meets it twice, which it tolerates. They
+         * are separate fields on the wire though, and every forwarding method above reads this one
+         * rather than {@code owner}, so a forged stream that made only this one self-referential
+         * would recurse on the first forwarded call while leaving an owner walk none the wiser.
+         */
+        @Override
+        protected Object[] additionalReferences() {
+            return new Object[]{Closure.this};
+        }
+
+        /**
+         * Rejects a deserialized closure whose references form a cycle, which would otherwise
+         * recurse indefinitely on invocation. See {@link Closure#checkForReferenceCycle}.
+         */
+        @Serial
+        private Object readResolve() throws ObjectStreamException {
+            Closure.checkForReferenceCycle(this);
+            return this;
         }
     }
 
@@ -1108,8 +1536,8 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
      *
      * @since 1.8.5
      */
-    @SuppressWarnings("unchecked")
     public Closure<V> dehydrate() {
+        @SuppressWarnings("unchecked")
         Closure<V> result = (Closure<V>) this.clone();
         result.delegate = null;
         result.owner = null;
@@ -1129,12 +1557,451 @@ public abstract class Closure<V> extends GroovyObjectSupport implements Cloneabl
      *
      * @since 1.8.5
      */
-    @SuppressWarnings("unchecked")
     public Closure<V> rehydrate(Object delegate, Object owner, Object thisObject) {
+        @SuppressWarnings("unchecked")
         Closure<V> result = (Closure<V>) this.clone();
         result.delegate = delegate;
         result.owner = owner;
         result.thisObject = thisObject;
         return result;
+    }
+
+    /**
+     * Verifies, during deserialization, that the {@code owner}/{@code delegate}/{@code thisObject}
+     * references reachable from {@code root} do not form a cycle through other closures. Such a cycle
+     * cannot arise from normal Groovy code or from the {@link #dehydrate()}/{@link #rehydrate} round-trip,
+     * but it can be forged in a hand-crafted serialized stream; invoking the resulting closure would then
+     * recurse indefinitely and exhaust the stack (a denial-of-service "gadget").
+     * <p>
+     * This is exposed as a {@code static} helper, rather than a {@code readResolve}/{@code readObject} hook
+     * on {@code Closure} itself, on purpose:
+     * <ul>
+     *   <li>a hook on {@code Closure} would have to be inheritable (i.e. {@code protected}) to reach
+     *       generated subclasses, which would force every existing subclass that declares the idiomatic
+     *       {@code private readResolve()} to widen its visibility and fail to compile;</li>
+     *   <li>a {@code readObject} hook would additionally interpose this (core-loaded) class on the stack
+     *       while a closure's fields are read, shifting {@link ObjectInputStream}'s
+     *       latest-user-defined loader away from the loader that defined the closure's captured types.</li>
+     * </ul>
+     * Groovy's own serializable gadget closures ({@link CurriedClosure},
+     * {@link ComposedClosure}) call this from their {@code private readResolve()}.
+     * Any other {@code Closure} subclass that participates in serialization can opt in the same way (the
+     * method is {@code protected static}, so it is reachable from subclasses but not from arbitrary code).
+     *
+     * @param root the freshly-deserialized closure to validate
+     * @throws InvalidObjectException if a closure reference cycle is detected
+     * @since 6.0.0
+     */
+    protected static void checkForReferenceCycle(final Closure<?> root) throws InvalidObjectException {
+        // Iterative depth-first search over the raw owner/delegate/thisObject fields, following only
+        // Closure-valued links. "grey" = on the current DFS path, "black" = fully explored. An edge back
+        // to a grey node is a genuine cycle; an edge to a black node is a harmless shared reference (e.g.
+        // a curried closure whose owner and delegate point at the same wrapped closure). The raw fields
+        // are read directly (not via the overridable getters, which would themselves recurse on a cyclic
+        // graph); access is permitted as this is the declaring class.
+        final Set<Closure<?>> grey = Collections.newSetFromMap(new IdentityHashMap<>());
+        final Set<Closure<?>> black = Collections.newSetFromMap(new IdentityHashMap<>());
+        final Deque<Object> stack = new ArrayDeque<>();
+        stack.push(root);
+        while (!stack.isEmpty()) {
+            final Object top = stack.peek();
+            if (top instanceof Marker) {
+                stack.pop();
+                final Closure<?> done = ((Marker) top).closure;
+                grey.remove(done);
+                black.add(done);
+                continue;
+            }
+            final Closure<?> node = (Closure<?>) stack.pop();
+            if (black.contains(node) || grey.contains(node)) {
+                continue; // already handled via a shared reference
+            }
+            grey.add(node);
+            stack.push(new Marker(node));
+            final Object[] extra = Objects.requireNonNull(node.additionalReferences(),
+                    () -> node.getClass().getName() + ".additionalReferences() must not return null");
+            final Object[] links = concat(new Object[]{node.owner, node.delegate, node.thisObject}, extra);
+            for (final Object link : links) {
+                if (link instanceof Closure<?> child) {
+                    if (grey.contains(child)) {
+                        throw new InvalidObjectException(
+                                "Closure references form a cycle; refusing to deserialize");
+                    }
+                    if (!black.contains(child)) {
+                        stack.push(child);
+                    }
+                }
+            }
+        }
+    }
+
+    private static Object[] concat(final Object[] first, final Object[] second) {
+        if (second.length == 0) return first;
+        final Object[] joined = new Object[first.length + second.length];
+        System.arraycopy(first, 0, joined, 0, first.length);
+        System.arraycopy(second, 0, joined, first.length, second.length);
+        return joined;
+    }
+
+    /**
+     * The closures this one calls through, beyond {@code owner}, {@code delegate} and
+     * {@code thisObject}, for the purposes of {@link #checkForReferenceCycle}.
+     * <p>
+     * A closure which wraps another and invokes it, as
+     * {@link ComposedClosure} and {@code TrampolineClosure} do,
+     * recurses through its own fields rather than through the three the cycle check walks by
+     * default, so a forged graph would escape the check unless it declares them here.
+     * <p>
+     * Only fields the closure <em>calls</em> belong here. A merely captured closure is not a
+     * recursion edge, and declaring one would reject graphs which invoke perfectly well.
+     *
+     * @return the additional closures reached when this one is invoked; never {@code null}
+     * @since 6.0.0
+     */
+    protected Object[] additionalReferences() {
+        return EMPTY_OBJECT_ARRAY;
+    }
+
+    /** Sentinel pushed below a node's children during the {@link #checkForReferenceCycle} cycle check. */
+    private static final class Marker {
+        final Closure<?> closure;
+
+        Marker(final Closure<?> closure) {
+            this.closure = closure;
+        }
+    }
+
+    /**
+     * NOTE: this cache is a bridge, not a destination. For compiler-generated closure
+     * classes the long-term plan (GEP-27) is for the compiler to emit a {@code call(Object...)}
+     * override that arity-dispatches directly to the right {@code doCall} — plain virtual
+     * dispatch, no {@code MethodHandle} adaptation, module-system-clean — at which point this
+     * cache serves only legacy jars and hand-written subclasses. Until then cached targets
+     * are invoked via {@code MethodHandle} ({@code Method.invoke} only when the target cannot
+     * be adapted). Extend it with that destination in mind.
+     */
+    private static final class CallOverride {
+        private static final MethodHandles.Lookup LOOKUP = MethodHandles.lookup();
+        /**
+         * Specialised {@code invokeExact} cutoff: cases {@code 0..ARITY_LIMIT-1} use a
+         * fixed-arity handle. Sized to cover every callback shape the GDK drives
+         * (iteration and inject/withIndex variants peak at three parameters, plus slack).
+         * Higher arities are cached separately as {@link #SPREADER_TYPE} handles.
+         */
+        static final int ARITY_LIMIT = 5;
+        /**
+         * Cached high-arity shape: {@code (Object, Object[])Object}. Built once at
+         * lookup with {@code asSpreader}; {@code invokeHandle} then {@code invokeExact}s it.
+         */
+        static final MethodType SPREADER_TYPE = MethodType.genericMethodType(1, true);
+        static final SpreadSlot[] NO_SPREAD = new SpreadSlot[0];
+        /**
+         * Marker instance indicating that no dispatch targets exist.
+         */
+        static final CallOverride NONE = new CallOverride(new Method[ARITY_LIMIT], new Class[ARITY_LIMIT][], new boolean[ARITY_LIMIT], new MethodHandle[ARITY_LIMIT], NO_SPREAD);
+        /**
+         * Cached {@code doCall} targets indexed by parameter count, or null where absent,
+         * ambiguous, or inaccessible — {@code call} selects a {@code doCall}, so the cache is
+         * keyed on the {@code doCall} declarations themselves. At each arity an all-{@code Object}
+         * doCall wins outright; otherwise the single unambiguous doCall with declared parameter
+         * types is cached with guards (GROOVY-12164/12165). For a subclass declaring NO doCall at
+         * all, the GROOVY-11911 compatibility carve-out caches its {@code call()}/{@code call(Object)}
+         * overrides instead (the historical Java-written adapter shape).
+         */
+        final Method[] byArity;
+        /**
+         * Per-arity instance-of guards for {@link #byArity}: the declared parameter types
+         * (boxed for primitives), with null entries for {@code Object} parameters; a wholly
+         * null guard array means no checks at all. An argument that is not already an instance
+         * of its declared type needs Groovy coercion, which only the metaclass fallback provides.
+         */
+        final Class<?>[][] guards;
+        /**
+         * Which cached targets are {@code call} forms (the 11911 shapes) rather than doCall
+         * bodies. Only those need the re-entry latch: a custom {@code call} override may
+         * delegate back to {@code call(...)}, which must not re-dispatch to the same target.
+         * doCall targets are user bodies — re-entry through them is ordinary recursion — so
+         * their dispatch skips the ThreadLocal entirely (and nested closure calls inside a
+         * dispatched body keep their own fast path).
+         */
+        final boolean[] callForm;
+        /**
+         * {@link MethodHandles#unreflect(Method)} of {@link #byArity}, adapted to
+         * {@link MethodType#genericMethodType(int) genericMethodType(arity+1)}
+         * for {@code invokeExact}, or null when the method cannot be adapted.
+         * The call path prefers the handle so {@code Method.invoke} is not on
+         * the GDK {@code each}/{@code collect} hot path.
+         * Slots {@code 0..ARITY_LIMIT-1} are {@code genericMethodType(arity+1)};
+         * higher arities live in {@link #spread}.
+         */
+        final MethodHandle[] handles;
+        /**
+         * Exact-arity {@code doCall} targets with {@code arity >= ARITY_LIMIT},
+         * each adapted to {@link #SPREADER_TYPE}. Empty when the class has none.
+         */
+        final SpreadSlot[] spread;
+
+        private CallOverride(Method[] byArity, Class<?>[][] guards, boolean[] callForm, MethodHandle[] handles, SpreadSlot[] spread) {
+            this.byArity = byArity;
+            this.guards = guards;
+            this.callForm = callForm;
+            this.handles = handles;
+            this.spread = spread;
+        }
+
+        /**
+         * One high-arity {@code doCall}: exact parameter count, optional 12164
+         * guards, and a lookup-time spreader handle.
+         */
+        static final class SpreadSlot {
+            final int arity;
+            final Method method;
+            final Class<?>[] guards;
+            final MethodHandle handle;
+
+            SpreadSlot(final int arity, final Method method, final Class<?>[] guards, final MethodHandle handle) {
+                this.arity = arity;
+                this.method = method;
+                this.guards = guards;
+                this.handle = handle;
+            }
+        }
+
+        SpreadSlot spreadFor(final int arity) {
+            for (SpreadSlot slot : spread) {
+                if (slot.arity == arity) {
+                    return slot;
+                }
+            }
+            return null;
+        }
+
+        static boolean guardsPass(Class<?>[] guards, Object[] args) {
+            if (guards == null) return true; // all parameters are Object
+            for (int i = 0, n = args.length; i < n; i += 1) {
+                Class<?> g = guards[i];
+                if (g != null && !g.isInstance(args[i])) return false;
+            }
+            return true;
+        }
+
+        /**
+         * Finds the subclass's {@code doCall} declarations, one target per arity — {@code call}
+         * selects a {@code doCall}, so the cache is keyed on the doCall declarations themselves.
+         * Arities {@code 0..ARITY_LIMIT-1} use specialised {@code invokeExact}; higher arities
+         * are stored as {@link #SPREADER_TYPE} handles. Any visibility the MOP would dispatch
+         * is accepted (the hierarchy is walked with
+         * {@code getDeclaredMethods}; an overridden signature keeps its most-derived form).
+         * Bridge methods are skipped (their erased twin is the real declaration), as are static
+         * declarations and methods with array-typed parameters (that shape belongs to vararg
+         * collection, which is metaclass work). Same-arity overloads beyond an all-Object one
+         * are ambiguous: the metaclass performs the selection.
+         * <p>
+         * Declared {@code call()}/{@code call(Object)} overrides (the GROOVY-11911 shapes) take
+         * precedence at their arities: DGM's {@code closure.call(item)} reaches such an override
+         * through plain virtual dispatch anyway, so the varargs entry must agree, and a
+         * decorating override must not be bypassed. Typed or multi-argument {@code call}
+         * overloads are NOT honoured — per the {@code Closure} contract, only doCall carries
+         * the body.
+         *
+         * @param type the closure subclass
+         * @return the resolved dispatch metadata
+         */
+        static CallOverride lookup(Class<?> type) {
+            if (type == Closure.class) return NONE;
+            // The cache is only valid where it mirrors the MOP's selection. MetaClassImpl's
+            // invokeMethod has dedicated dispatch for these adapter types (a method pointer
+            // invokes its target method; a curried closure uncurries and re-enters), so their
+            // doCall declarations, where present, are NOT what the MOP would select — e.g.
+            // MethodClosure's vestigial doCall would mis-dispatch a class-owner method pointer.
+            if (MethodClosure.class.isAssignableFrom(type)
+                    || CurriedClosure.class.isAssignableFrom(type)) {
+                return NONE;
+            }
+            Method[] exact = new Method[ARITY_LIMIT];
+            Method[] typed = new Method[ARITY_LIMIT];
+            boolean[] typedAmbiguous = new boolean[ARITY_LIMIT];
+            Map<Integer, Method> highExact = null;
+            Map<Integer, Method> highTyped = null;
+            Set<Integer> highAmbiguous = null;
+            Set<String> seen = new HashSet<>();
+            for (Class<?> c = type; c != null && c != Closure.class; c = c.getSuperclass()) {
+                for (Method m : c.getDeclaredMethods()) {
+                    if (!"doCall".equals(m.getName()) || m.isBridge() || Modifier.isStatic(m.getModifiers())) {
+                        continue;
+                    }
+                    Class<?>[] params = m.getParameterTypes();
+                    if (!seen.add(Arrays.toString(params))) continue; // overridden below: most-derived wins
+                    int arity = m.getParameterCount();
+                    boolean allObject = true, hasArray = false;
+                    for (Class<?> p : params) {
+                        if (p != Object.class) allObject = false;
+                        if (p.isArray()) hasArray = true;
+                    }
+                    if (hasArray) continue;
+                    if (arity >= ARITY_LIMIT) {
+                        if (highExact == null) {
+                            highExact = new HashMap<>();
+                            highTyped = new HashMap<>();
+                            highAmbiguous = new HashSet<>();
+                        }
+                        if (allObject) {
+                            highExact.putIfAbsent(arity, m);
+                        } else if (highExact.containsKey(arity)) {
+                            // all-Object at this arity already won, as for 0..ARITY_LIMIT-1
+                        } else if (highTyped.containsKey(arity)) {
+                            highAmbiguous.add(arity);
+                        } else {
+                            highTyped.put(arity, m);
+                        }
+                        continue;
+                    }
+                    if (allObject) {
+                        if (exact[arity] == null) exact[arity] = m;
+                    } else if (typed[arity] != null) {
+                        typedAmbiguous[arity] = true;
+                    } else {
+                        typed[arity] = m;
+                    }
+                }
+            }
+            Method[] byArity = new Method[ARITY_LIMIT];
+            Class<?>[][] guards = new Class[ARITY_LIMIT][];
+            boolean[] callForm = new boolean[ARITY_LIMIT];
+            boolean any = false;
+            // GROOVY-11911: a declared call()/call(Object) override takes precedence at its
+            // arity even when doCall methods exist — DGM's closure.call(item) reaches such an
+            // override through plain virtual dispatch anyway, so the varargs entry must agree
+            // (a decorating override would otherwise be silently bypassed on one form only).
+            Method zero = findOverride(type);
+            if (zero != null) {
+                byArity[0] = zero;
+                callForm[0] = true;
+                any = true;
+            }
+            Method one = findOverride(type, Object.class);
+            if (one != null) {
+                byArity[1] = one;
+                callForm[1] = true;
+                any = true;
+            }
+            for (int arity = 0; arity < ARITY_LIMIT; arity += 1) {
+                if (byArity[arity] != null) continue; // a call-form override claimed this arity
+                Method m = (exact[arity] != null) ? exact[arity]
+                        : (typedAmbiguous[arity] ? null : typed[arity]);
+                if (m == null) continue;
+                try {
+                    m.setAccessible(true);
+                } catch (RuntimeException ignored) {
+                    // module/package access denied; fall through to MOP doCall
+                    continue;
+                }
+                byArity[arity] = m;
+                if (m != exact[arity]) {
+                    Class<?>[] params = m.getParameterTypes();
+                    Class<?>[] g = new Class[arity];
+                    for (int i = 0; i < arity; i += 1) {
+                        g[i] = (params[i] == Object.class) ? null : wrapperOf(params[i]);
+                    }
+                    guards[arity] = g;
+                }
+                any = true;
+            }
+            MethodHandle[] handles = new MethodHandle[ARITY_LIMIT];
+            for (int arity = 0; arity < ARITY_LIMIT; arity += 1) {
+                if (byArity[arity] != null) {
+                    handles[arity] = unreflect(byArity[arity]);
+                }
+            }
+            SpreadSlot[] spread = buildSpread(highExact, highTyped, highAmbiguous);
+            if (spread.length > 0) {
+                any = true;
+            }
+            if (!any) {
+                return NONE;
+            }
+            return new CallOverride(byArity, guards, callForm, handles, spread);
+        }
+
+        private static SpreadSlot[] buildSpread(final Map<Integer, Method> highExact, final Map<Integer, Method> highTyped, final Set<Integer> highAmbiguous) {
+            if (highExact == null) {
+                return NO_SPREAD;
+            }
+            Set<Integer> arities = new HashSet<>(highExact.keySet());
+            arities.addAll(highTyped.keySet());
+            List<SpreadSlot> built = new ArrayList<>(arities.size());
+            for (Integer boxed : arities) {
+                int arity = boxed;
+                Method exact = highExact.get(boxed);
+                Method m = (exact != null) ? exact
+                        : (highAmbiguous.contains(boxed) ? null : highTyped.get(boxed));
+                if (m == null) {
+                    continue;
+                }
+                try {
+                    m.setAccessible(true);
+                } catch (RuntimeException ignored) {
+                    continue;
+                }
+                Class<?>[] g = null;
+                if (m != exact) {
+                    Class<?>[] params = m.getParameterTypes();
+                    g = new Class[arity];
+                    for (int i = 0; i < arity; i += 1) {
+                        g[i] = (params[i] == Object.class) ? null : wrapperOf(params[i]);
+                    }
+                }
+                built.add(new SpreadSlot(arity, m, g, unreflect(m)));
+            }
+            return built.isEmpty() ? NO_SPREAD : built.toArray(NO_SPREAD);
+        }
+
+        private static MethodHandle unreflect(final Method method) {
+            try {
+                int arity = method.getParameterCount();
+                MethodHandle handle = LOOKUP.unreflect(method)
+                        .asType(MethodType.genericMethodType(arity + 1));
+                if (arity >= ARITY_LIMIT) {
+                    // box first, then spread: asSpreader on a still-primitive handle
+                    // would demand a primitive array
+                    handle = handle.asSpreader(Object[].class, arity).asType(SPREADER_TYPE);
+                }
+                return handle;
+            } catch (Exception ignored) {
+                // inaccessible or not adaptable: call() falls back to Method.invoke
+                return null;
+            }
+        }
+
+        private static Method findOverride(Class<?> type, Class<?>... params) {
+            try {
+                Method m = type.getMethod("call", params);
+                // a static call(...) is not an instance override: reflective invocation would
+                // silently ignore the receiver, where the MOP fallback dispatches instance doCall
+                if (m.getDeclaringClass() == Closure.class || Modifier.isStatic(m.getModifiers())) return null;
+                try {
+                    m.setAccessible(true);
+                } catch (RuntimeException ignored) {
+                    // module/package access denied; fall through to MOP doCall
+                    return null;
+                }
+                return m;
+            } catch (NoSuchMethodException ignored) {
+                return null;
+            }
+        }
+
+        private static Class<?> wrapperOf(Class<?> type) {
+            if (!type.isPrimitive()) return type;
+            if (type == int.class) return Integer.class;
+            if (type == long.class) return Long.class;
+            if (type == boolean.class) return Boolean.class;
+            if (type == double.class) return Double.class;
+            if (type == char.class) return Character.class;
+            if (type == byte.class) return Byte.class;
+            if (type == short.class) return Short.class;
+            if (type == float.class) return Float.class;
+            return type; // void: unreachable for a parameter type
+        }
     }
 }

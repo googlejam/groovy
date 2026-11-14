@@ -21,7 +21,6 @@ package groovy.transform.options;
 import groovy.transform.stc.POJO;
 import org.codehaus.groovy.ast.AnnotationNode;
 import org.codehaus.groovy.ast.ClassNode;
-import org.codehaus.groovy.ast.FieldNode;
 import org.codehaus.groovy.ast.Parameter;
 import org.codehaus.groovy.ast.PropertyNode;
 import org.codehaus.groovy.ast.expr.ArgumentListExpression;
@@ -50,16 +49,25 @@ import static org.codehaus.groovy.ast.tools.GeneralUtils.propX;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.stmt;
 import static org.codehaus.groovy.ast.tools.GeneralUtils.varX;
 
+/**
+ * Default implementation for validating and initializing transformed properties.
+ *
+ * @since 2.5.0
+ */
 public class DefaultPropertyHandler extends PropertyHandler {
     private static final ClassNode POJO_TYPE = make(POJO.class);
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public boolean validateAttributes(final AbstractASTTransformation xform, final AnnotationNode anno) {
-        boolean success = true;
-      //success |= isValidAttribute(xform, anno, "");
-        return success;
+        return true;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public boolean validateProperties(final AbstractASTTransformation xform, final BlockStatement body, final ClassNode cNode, final List<PropertyNode> props) {
         if (xform instanceof MapConstructorASTTransformation) {
@@ -71,12 +79,14 @@ public class DefaultPropertyHandler extends PropertyHandler {
         return super.validateProperties(xform, body, cNode, props);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public Statement createPropInit(final AbstractASTTransformation xform, final AnnotationNode anno, final ClassNode cNode, final PropertyNode pNode, final Parameter namedArgsMap) {
         String name = pNode.getName();
-        FieldNode fNode = pNode.getField();
+        boolean hasSetter = cNode.getProperty(name) != null && !pNode.isFinal();
         boolean useSetters = xform.memberHasValue(anno, "useSetters", Boolean.TRUE);
-        boolean hasSetter = cNode.getProperty(name) != null && !fNode.isFinal();
         if (namedArgsMap != null) {
             return assignFieldS(useSetters, namedArgsMap, name);
         } else {

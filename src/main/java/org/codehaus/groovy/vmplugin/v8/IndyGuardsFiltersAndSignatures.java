@@ -27,6 +27,7 @@ import groovy.lang.MetaObjectProtocol;
 import groovy.lang.MetaProperty;
 import groovy.lang.MissingMethodException;
 import org.codehaus.groovy.GroovyBugError;
+import org.codehaus.groovy.reflection.CachedMethod;
 import org.codehaus.groovy.reflection.stdclasses.CachedSAMClass;
 import org.codehaus.groovy.runtime.GroovyCategorySupport;
 import org.codehaus.groovy.runtime.InvokerHelper;
@@ -35,6 +36,7 @@ import org.codehaus.groovy.runtime.metaclass.MissingMethodExecutionFailed;
 import org.codehaus.groovy.runtime.typehandling.DefaultTypeTransformation;
 import org.codehaus.groovy.runtime.typehandling.GroovyCastException;
 import org.codehaus.groovy.runtime.wrappers.Wrapper;
+import org.codehaus.groovy.vmplugin.JavaFeatureVersion;
 
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
@@ -44,6 +46,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.Objects;
 
 import static org.codehaus.groovy.vmplugin.v8.IndyInterface.LOOKUP;
 
@@ -54,74 +57,141 @@ import static org.codehaus.groovy.vmplugin.v8.IndyInterface.LOOKUP;
 public class IndyGuardsFiltersAndSignatures {
 
     private static final MethodType
-            ZERO_GUARD = MethodType.methodType(boolean.class),
-            OBJECT_GUARD = MethodType.methodType(boolean.class, Object.class),
-            CLASS1_GUARD = MethodType.methodType(boolean.class, Class.class, Object.class),
-            METACLASS1_GUARD = MethodType.methodType(boolean.class, MetaClass.class, Object.class),
+            OBJECT_FILTER = MethodType.methodType(Object.class, Object.class),
+            OBJECT_GUARD = MethodType.methodType(boolean.class, Object.class);
 
-    GRE_GUARD = MethodType.methodType(Object.class, GroovyRuntimeException.class),
-
-    OBJECT_FILTER = MethodType.methodType(Object.class, Object.class),
-
-    BOUND_INVOKER = MethodType.methodType(Object.class, Object[].class),
-            ANO_INVOKER = MethodType.methodType(Object.class, Object.class, Object[].class),
-            INVOKER = MethodType.methodType(Object.class, Object.class, String.class, Object[].class),
-            GET_INVOKER = MethodType.methodType(Object.class, String.class);
-
+    /**
+     * Shared guards, filters, constructors, and invokers used when assembling indy call paths.
+     */
     protected static final MethodHandle
-            SAME_CLASS, UNWRAP_METHOD,
-            SAME_MC, IS_NULL,
-            UNWRAP_EXCEPTION, META_METHOD_INVOKER,
-            GROOVY_OBJECT_INVOKER, GROOVY_OBJECT_GET_PROPERTY,
+            SAME_CLASS, SAME_CLASSES, SAME_CLASSES_2, SAME_CLASSES_3, SAME_CLASSES_4,
+            SAME_MC, IS_NULL, NON_NULL,
+            UNWRAP_METHOD, UNWRAP_EXCEPTION,
             HAS_CATEGORY_IN_CURRENT_THREAD_GUARD,
+            GROOVY_OBJECT_INVOKER, GROOVY_OBJECT_GET_PROPERTY, GROOVY_OBJECT_SET_PROPERTY, META_METHOD_INVOKER,
+            META_CLASS_INVOKE_METHOD, META_CLASS_INVOKE_STATIC_METHOD,
             BEAN_CONSTRUCTOR_PROPERTY_SETTER,
             META_PROPERTY_GETTER,
-            SLOW_META_CLASS_FIND, META_CLASS_INVOKE_STATIC_METHOD,
-            MOP_GET, MOP_INVOKE_CONSTRUCTOR, MOP_INVOKE_METHOD,
+            SLOW_META_CLASS_FIND,
+            MOP_GET, MOP_SET, SET_PROPERTY, MOP_INVOKE_CONSTRUCTOR, MOP_INVOKE_METHOD,
             INTERCEPTABLE_INVOKER,
-            CLASS_FOR_NAME, BOOLEAN_IDENTITY,
+            BOOLEAN_IDENTITY, CLASS_FOR_NAME, INVOKE_REFLECTIVELY,
             DTT_CAST_TO_TYPE, SAM_CONVERSION,
-            HASHSET_CONSTRUCTOR, ARRAYLIST_CONSTRUCTOR, GROOVY_CAST_EXCEPTION,
+            GROOVY_CAST_EXCEPTION,
             EQUALS;
+
+    /**
+     * Constructors of {@link HashSet} and {@link ArrayList} that copy a {@link Collection}.
+     *
+     * @deprecated unused: a cast to a collection type goes through
+     * {@link DefaultTypeTransformation#castToType(Object, Class)}
+     */
+    @Deprecated(since = "6.0.1", forRemoval = true)
+    protected static final MethodHandle HASHSET_CONSTRUCTOR, ARRAYLIST_CONSTRUCTOR;
 
     static {
         try {
-            SAME_CLASS = LOOKUP.findStatic(IndyGuardsFiltersAndSignatures.class, "sameClass", CLASS1_GUARD);
-            UNWRAP_METHOD = LOOKUP.findStatic(IndyGuardsFiltersAndSignatures.class, "unwrap", OBJECT_FILTER);
-            SAME_MC = LOOKUP.findStatic(IndyGuardsFiltersAndSignatures.class, "isSameMetaClass", METACLASS1_GUARD);
-            IS_NULL = LOOKUP.findStatic(IndyGuardsFiltersAndSignatures.class, "isNull", OBJECT_GUARD);
-            UNWRAP_EXCEPTION = LOOKUP.findStatic(IndyGuardsFiltersAndSignatures.class, "unwrap", GRE_GUARD);
-            GROOVY_OBJECT_INVOKER = LOOKUP.findStatic(IndyGuardsFiltersAndSignatures.class, "invokeGroovyObjectInvoker", INVOKER.insertParameterTypes(0, MissingMethodException.class));
+            SAME_CLASS                           = LOOKUP.findStatic (IndyGuardsFiltersAndSignatures.class, "sameClass", MethodType.methodType(boolean.class, Class.class, Object.class));
+            SAME_CLASSES                         = LOOKUP.findStatic (IndyGuardsFiltersAndSignatures.class, "sameClasses", MethodType.methodType(boolean.class, Class[].class, Object[].class));
+            SAME_CLASSES_2                       = LOOKUP.findStatic (IndyGuardsFiltersAndSignatures.class, "sameClasses", MethodType.methodType(boolean.class, Class.class, Class.class, Object.class, Object.class));
+            SAME_CLASSES_3                       = LOOKUP.findStatic (IndyGuardsFiltersAndSignatures.class, "sameClasses", MethodType.methodType(boolean.class, Class.class, Class.class, Class.class, Object.class, Object.class, Object.class));
+            SAME_CLASSES_4                       = LOOKUP.findStatic (IndyGuardsFiltersAndSignatures.class, "sameClasses", MethodType.methodType(boolean.class, Class.class, Class.class, Class.class, Class.class, Object.class, Object.class, Object.class, Object.class));
+            SAME_MC                              = LOOKUP.findStatic (IndyGuardsFiltersAndSignatures.class, "isSameMetaClass", MethodType.methodType(boolean.class, MetaClass.class, Object.class));
+            IS_NULL                              = LOOKUP.findStatic (IndyGuardsFiltersAndSignatures.class, "isNull", OBJECT_GUARD);
+            NON_NULL                             = LOOKUP.findStatic (Objects.class, "nonNull", MethodType.methodType(boolean.class, Object.class));
+            UNWRAP_METHOD                        = LOOKUP.findStatic (IndyGuardsFiltersAndSignatures.class, "unwrap", OBJECT_FILTER);
+            UNWRAP_EXCEPTION                     = LOOKUP.findStatic (IndyGuardsFiltersAndSignatures.class, "unwrap", MethodType.methodType(Object.class, GroovyRuntimeException.class));
+            HAS_CATEGORY_IN_CURRENT_THREAD_GUARD = LOOKUP.findStatic (GroovyCategorySupport.class, "hasCategoryInCurrentThread", MethodType.methodType(boolean.class));
+            GROOVY_OBJECT_INVOKER                = LOOKUP.findStatic (IndyGuardsFiltersAndSignatures.class, "invokeGroovyObjectInvoker", MethodType.methodType(Object.class, MissingMethodException.class, Object.class, String.class, Object[].class));
+            GROOVY_OBJECT_GET_PROPERTY           = LOOKUP.findVirtual(GroovyObject.class, "getProperty", MethodType.methodType(Object.class, String.class));
+            GROOVY_OBJECT_SET_PROPERTY           = LOOKUP.findVirtual(GroovyObject.class, "setProperty", MethodType.methodType(void.class, String.class, Object.class));
+            META_METHOD_INVOKER                  = LOOKUP.findVirtual(MetaMethod.class, "doMethodInvoke", MethodType.methodType(Object.class, Object.class, Object[].class));
+            META_CLASS_INVOKE_METHOD             = LOOKUP.findVirtual(MetaClass.class, "invokeMethod", MethodType.methodType(Object.class, Class.class, Object.class, String.class, Object[].class, boolean.class, boolean.class));
+            META_CLASS_INVOKE_STATIC_METHOD      = LOOKUP.findVirtual(MetaObjectProtocol.class, "invokeStaticMethod", MethodType.methodType(Object.class, Object.class, String.class, Object[].class));
+            BEAN_CONSTRUCTOR_PROPERTY_SETTER     = LOOKUP.findStatic (IndyGuardsFiltersAndSignatures.class, "setBeanProperties", MethodType.methodType(Object.class, MetaClass.class, Object.class, Map.class));
+            META_PROPERTY_GETTER                 = LOOKUP.findVirtual(MetaProperty.class, "getProperty", OBJECT_FILTER);
+            SLOW_META_CLASS_FIND                 = LOOKUP.findStatic (InvokerHelper.class, "getMetaClass", MethodType.methodType(MetaClass.class, Object.class));
+            MOP_GET                              = LOOKUP.findVirtual(MetaObjectProtocol.class, "getProperty", MethodType.methodType(Object.class, Object.class, String.class));
+            MOP_SET                              = LOOKUP.findVirtual(MetaObjectProtocol.class, "setProperty", MethodType.methodType(void.class, Object.class, String.class, Object.class));
+            SET_PROPERTY                         = LOOKUP.findStatic (IndyGuardsFiltersAndSignatures.class, "setProperty", MethodType.methodType(void.class, String.class, Class.class, Object.class, Object.class));
+            MOP_INVOKE_CONSTRUCTOR               = LOOKUP.findVirtual(MetaObjectProtocol.class, "invokeConstructor", MethodType.methodType(Object.class, Object[].class));
+            MOP_INVOKE_METHOD                    = LOOKUP.findVirtual(MetaObjectProtocol.class, "invokeMethod", MethodType.methodType(Object.class, Object.class, String.class, Object[].class));
+            INTERCEPTABLE_INVOKER                = LOOKUP.findVirtual(GroovyObject.class, "invokeMethod", MethodType.methodType(Object.class, String.class, Object.class));
 
-            META_METHOD_INVOKER = LOOKUP.findVirtual(MetaMethod.class, "doMethodInvoke", ANO_INVOKER);
-            HAS_CATEGORY_IN_CURRENT_THREAD_GUARD = LOOKUP.findStatic(GroovyCategorySupport.class, "hasCategoryInCurrentThread", ZERO_GUARD);
-            GROOVY_OBJECT_GET_PROPERTY = LOOKUP.findVirtual(GroovyObject.class, "getProperty", GET_INVOKER);
-            META_CLASS_INVOKE_STATIC_METHOD = LOOKUP.findVirtual(MetaObjectProtocol.class, "invokeStaticMethod", INVOKER);
+            BOOLEAN_IDENTITY                     = MethodHandles.identity(Boolean.class);
+            CLASS_FOR_NAME                       = LOOKUP.findStatic(Class.class, "forName", MethodType.methodType(Class.class, String.class, boolean.class, ClassLoader.class));
+            INVOKE_REFLECTIVELY                  = LOOKUP.findStatic(IndyGuardsFiltersAndSignatures.class, "invokeReflectively", MethodType.methodType(Object.class, CachedMethod.class, Object.class, Object[].class));
+            DTT_CAST_TO_TYPE                     = LOOKUP.findStatic(DefaultTypeTransformation.class, "castToType", MethodType.methodType(Object.class, Object.class, Class.class));
+            SAM_CONVERSION                       = LOOKUP.findStatic(CachedSAMClass.class, "coerceToSAM", MethodType.methodType(Object.class, Closure.class, Method.class, Class.class));
+            HASHSET_CONSTRUCTOR                  = LOOKUP.findConstructor(HashSet.class, MethodType.methodType(void.class, Collection.class));
+            ARRAYLIST_CONSTRUCTOR                = LOOKUP.findConstructor(ArrayList.class, MethodType.methodType(void.class, Collection.class));
+            GROOVY_CAST_EXCEPTION                = LOOKUP.findConstructor(GroovyCastException.class, MethodType.methodType(void.class, Object.class, Class.class));
 
-            BEAN_CONSTRUCTOR_PROPERTY_SETTER = LOOKUP.findStatic(IndyGuardsFiltersAndSignatures.class, "setBeanProperties", MethodType.methodType(Object.class, MetaClass.class, Object.class, Map.class));
-            META_PROPERTY_GETTER = LOOKUP.findVirtual(MetaProperty.class, "getProperty", OBJECT_FILTER);
-            MOP_GET = LOOKUP.findVirtual(MetaObjectProtocol.class, "getProperty", MethodType.methodType(Object.class, Object.class, String.class));
-            MOP_INVOKE_CONSTRUCTOR = LOOKUP.findVirtual(MetaObjectProtocol.class, "invokeConstructor", BOUND_INVOKER);
-            MOP_INVOKE_METHOD = LOOKUP.findVirtual(MetaObjectProtocol.class, "invokeMethod", INVOKER);
-            SLOW_META_CLASS_FIND = LOOKUP.findStatic(InvokerHelper.class, "getMetaClass", MethodType.methodType(MetaClass.class, Object.class));
-            INTERCEPTABLE_INVOKER = LOOKUP.findVirtual(GroovyObject.class, "invokeMethod", MethodType.methodType(Object.class, String.class, Object.class));
-
-            CLASS_FOR_NAME = LOOKUP.findStatic(Class.class, "forName", MethodType.methodType(Class.class, String.class, boolean.class, ClassLoader.class));
-
-            BOOLEAN_IDENTITY = MethodHandles.identity(Boolean.class);
-            DTT_CAST_TO_TYPE = LOOKUP.findStatic(DefaultTypeTransformation.class, "castToType", MethodType.methodType(Object.class, Object.class, Class.class));
-            SAM_CONVERSION = LOOKUP.findStatic(CachedSAMClass.class, "coerceToSAM", MethodType.methodType(Object.class, Closure.class, Method.class, Class.class));
-            HASHSET_CONSTRUCTOR = LOOKUP.findConstructor(HashSet.class, MethodType.methodType(void.class, Collection.class));
-            ARRAYLIST_CONSTRUCTOR = LOOKUP.findConstructor(ArrayList.class, MethodType.methodType(void.class, Collection.class));
-            GROOVY_CAST_EXCEPTION = LOOKUP.findConstructor(GroovyCastException.class, MethodType.methodType(void.class, Object.class, Class.class));
-
-            EQUALS = LOOKUP.findVirtual(Object.class, "equals", OBJECT_GUARD);
+            EQUALS                               = LOOKUP.findVirtual(Object.class, "equals", OBJECT_GUARD);
         } catch (Exception e) {
             throw new GroovyBugError(e);
         }
     }
 
+    /**
+     * Constant handle that always returns {@code null}.
+     */
     protected static final MethodHandle NULL_REF = MethodHandles.constant(Object.class, null);
+
+    /**
+     * Whether {@link MethodHandle#asType} keeps every conversion strongly on the handle
+     * converted, as JDK 17 does. Later JDKs keep a conversion strongly only when the
+     * converted handle's own types keep the classes of the new type reachable.
+     */
+    static final boolean STRONG_AS_TYPE_CACHE = JavaFeatureVersion.current() < 18;
+
+    /**
+     * Converts {@code handle} to the type of one call site with {@link MethodHandle#asType}.
+     * The handle may live as long as the runtime or longer: a handle in a static field, or one
+     * the JDK shares. A conversion is cached on the handle converted; where that cache is
+     * strong, a conversion to a type of some class loader would keep the loader reachable after
+     * it was discarded, so there the conversion is made on a new handle that invokes this one.
+     *
+     * @param handle the handle to convert
+     * @param type   the type of the call site
+     * @return the converted handle
+     */
+    static MethodHandle asCallSiteType(final MethodHandle handle, final MethodType type) {
+        return unshared(handle, type).asType(type);
+    }
+
+    /**
+     * Converts {@code handle} to the type of one call site with
+     * {@link MethodHandles#explicitCastArguments}, without caching the conversion on
+     * {@code handle} where that cache is strong; see {@link #asCallSiteType}.
+     *
+     * @param handle the handle to convert
+     * @param type   the type of the call site
+     * @return the converted handle
+     */
+    static MethodHandle explicitCastToCallSiteType(final MethodHandle handle, final MethodType type) {
+        return MethodHandles.explicitCastArguments(unshared(handle, type), type);
+    }
+
+    private static MethodHandle unshared(final MethodHandle handle, final MethodType type) {
+        if (!STRONG_AS_TYPE_CACHE || handle.type().equals(type)) return handle;
+        return MethodHandles.exactInvoker(handle.type()).bindTo(handle);
+    }
+
+    /**
+     * Adapter shim for the non-fast-path property write of the indy
+     * {@code SetPropertySelector}. The parameter order — {@code name},
+     * {@code sender}, {@code receiver}, {@code value} — is chosen so that
+     * binding the compile-time-known {@code name} and {@code sender} as a
+     * leading prefix with a single {@link MethodHandles#insertArguments} call
+     * leaves exactly the call-site shape {@code (receiver, value)void}, with no
+     * permute required. For now it just reorders into
+     * {@link ScriptBytecodeAdapter#setProperty}; this is also the natural seam
+     * for inlining that resolution logic in the future.
+     */
+    public static void setProperty(String name, Class<?> sender, Object receiver, Object value) throws Throwable {
+        ScriptBytecodeAdapter.setProperty(value, sender, receiver, name);
+    }
 
     /**
      * This method is called by the handle to realize the bean constructor
@@ -191,6 +261,25 @@ public class IndyGuardsFiltersAndSignatures {
     }
 
     /**
+     * Reflective leaf for a caller-sensitive target on an AOT-linked site
+     * (GROOVY-12364): classic {@code doMethodInvoke} semantics with the same
+     * {@code GroovyRuntimeException} unwrapping as the reflective cold tier.
+     *
+     * @param method the selected method
+     * @param receiver the receiver, ignored (may be {@code null}) for static methods
+     * @param arguments the call arguments
+     * @return the method's result
+     * @throws Throwable the target's exception, unwrapped
+     */
+    public static Object invokeReflectively(CachedMethod method, Object receiver, Object[] arguments) throws Throwable {
+        try {
+            return method.doMethodInvoke(receiver, arguments);
+        } catch (GroovyRuntimeException gre) {
+            throw ScriptBytecodeAdapter.unwrap(gre);
+        }
+    }
+
+    /**
      * Guard to check if the argument is null.
      * This method is called by the handle to check
      * if the provided argument is null.
@@ -207,5 +296,48 @@ public class IndyGuardsFiltersAndSignatures {
     public static boolean sameClass(Class<?> c, Object o) {
         if (o == null) return false;
         return o.getClass() == c;
+    }
+
+    /**
+     * Guard to check if the provided objects have the same
+     * class as the provided classes.
+     */
+    public static boolean sameClasses(Class<?>[] cs, Object[] os) {
+        for (int i = 0; i < cs.length; i++) {
+            Class<?> c = cs[i];
+            Object o = os[i];
+            if (null == o) return false;
+
+            if (o.getClass() != c)
+                return false;
+        }
+        return true;
+    }
+
+    /**
+     * Two-argument same-class guard used by hot indy sites so
+     * {@code asCollector(Object[].class, n)} does not allocate an {@code Object[]}
+     * on every invocation. {@code Selector} binds the expected classes with a
+     * single {@link MethodHandles#insertArguments} call.
+     */
+    public static boolean sameClasses(Class<?> c0, Class<?> c1, Object o0, Object o1) {
+        return o0 != null && o1 != null && o0.getClass() == c0 && o1.getClass() == c1;
+    }
+
+    /**
+     * Three-argument same-class guard; see {@link #sameClasses(Class, Class, Object, Object)}.
+     */
+    public static boolean sameClasses(Class<?> c0, Class<?> c1, Class<?> c2, Object o0, Object o1, Object o2) {
+        return o0 != null && o1 != null && o2 != null
+                && o0.getClass() == c0 && o1.getClass() == c1 && o2.getClass() == c2;
+    }
+
+    /**
+     * Four-argument same-class guard; see {@link #sameClasses(Class, Class, Object, Object)}.
+     */
+    public static boolean sameClasses(Class<?> c0, Class<?> c1, Class<?> c2, Class<?> c3,
+                                      Object o0, Object o1, Object o2, Object o3) {
+        return o0 != null && o1 != null && o2 != null && o3 != null
+                && o0.getClass() == c0 && o1.getClass() == c1 && o2.getClass() == c2 && o3.getClass() == c3;
     }
 }

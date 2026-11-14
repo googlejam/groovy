@@ -21,17 +21,16 @@ plugins {
 }
 
 dependencies {
-    implementation rootProject
-    implementation project(':groovy-macro')
-    testImplementation project(':groovy-test')
-    testImplementation project(':groovy-json')
-    testImplementation project(':groovy-console')
+    api project(':')
+    api projects.groovyMacro
+    testImplementation projects.groovyTest
+    testImplementation projects.groovyJson
+    testImplementation projects.groovyConsole
 }
 
 groovyLibrary {
     optionalModule()
 
-    withoutBinaryCompatibilityChecks()
     moduleDescriptor {
         extensionClasses = 'org.apache.groovy.ginq.GinqGroovyMethods'
     }

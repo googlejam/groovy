@@ -20,9 +20,11 @@ import gls.CompilableTestSupport
 import groovy.text.StreamingTemplateEngine
 import groovy.text.Template
 import groovy.text.TemplateEngine
+import org.junit.jupiter.api.Test
 
-class TemplateEnginesTest extends CompilableTestSupport {
+final class TemplateEnginesTest extends CompilableTestSupport {
 
+    @Test
     void testSimpleTemplateEngine1() {
         // tag::simple_template_engine1[]
         def text = 'Dear "$firstname $lastname",\nSo nice to meet you in <% print city %>.\nSee you in ${month},\n${signed}'
@@ -38,6 +40,7 @@ class TemplateEnginesTest extends CompilableTestSupport {
         // end::simple_template_engine1[]
     }
 
+    @Test
     void testSimpleTemplateEngineOther() {
         def binding = [firstname: 'andrey']
         def engine = new groovy.text.SimpleTemplateEngine()
@@ -106,8 +109,9 @@ class TemplateEnginesTest extends CompilableTestSupport {
         result = template.toString()
         assert result.readLines()[1].trim() == '\\'
     }
-    
-        void testStreamingTemplateEngine() {
+
+    @Test
+    void testStreamingTemplateEngine() {
 // tag::streaming_template_engine[]
 def text = '''\
 Dear <% out.print firstname %> ${lastname},
@@ -138,6 +142,7 @@ The conference committee.'''
 // end::streaming_template_engine[]
     }
 
+    @Test
     void testGStringTemplateEngine() {
         def binding = [firstname: 'Sam', lastname: 'Pullara', city: 'New York', month: 'December', signed: 'Groovy-Dev']
         def engine = new groovy.text.GStringTemplateEngine()
@@ -169,6 +174,7 @@ The conference committee.'''
         '''
     }
 
+    @Test
     void testXmlTemplateEngine() {
         // tag::xml_template_engine[]
         def binding = [firstname: 'Jochen', lastname: 'Theodorou', nickname: 'blackdrag', salutation: 'Dear']
@@ -184,7 +190,7 @@ The conference committee.'''
         def template = engine.createTemplate(text).make(binding)
         println template.toString()
         // end::xml_template_engine[]
-        
+
         assert template.toString() == '''\
 <document type='letter'>
   Dearest
@@ -196,28 +202,29 @@ The conference committee.'''
 '''
     }
 
+    @Test
     void testStreamingTemplateEngine_GROOVY9507() {
         TemplateEngine engine = new StreamingTemplateEngine()
         Template template = engine.createTemplate('''
 <ul>
-    <% items.each { %>
+<% items.each { %>
     <li>${it}</li>
-    <% } %>
+<% } %>
 </ul>
 ''')
 
         def result = template.make([items : [1,2,3,4]]).toString()
         assert result == '''
 <ul>
-    
+
     <li>1</li>
-    
+
     <li>2</li>
-    
+
     <li>3</li>
-    
+
     <li>4</li>
-    
+
 </ul>
 '''
     }

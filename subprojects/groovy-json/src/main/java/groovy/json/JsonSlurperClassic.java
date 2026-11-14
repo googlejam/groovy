@@ -19,6 +19,7 @@
 package groovy.json;
 
 import groovy.io.LineColumnReader;
+import org.apache.groovy.json.internal.BaseJsonParser;
 import org.codehaus.groovy.runtime.DefaultGroovyMethodsSupport;
 import org.codehaus.groovy.runtime.ResourceGroovyMethods;
 
@@ -26,6 +27,8 @@ import java.io.File;
 import java.io.IOException;
 import java.io.Reader;
 import java.io.StringReader;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -37,6 +40,7 @@ import static groovy.json.JsonTokenType.CLOSE_CURLY;
 import static groovy.json.JsonTokenType.COLON;
 import static groovy.json.JsonTokenType.COMMA;
 import static groovy.json.JsonTokenType.NULL;
+import static groovy.json.JsonTokenType.NUMBER;
 import static groovy.json.JsonTokenType.OPEN_BRACKET;
 import static groovy.json.JsonTokenType.OPEN_CURLY;
 import static groovy.json.JsonTokenType.STRING;
@@ -47,7 +51,7 @@ import static groovy.json.JsonTokenType.STRING;
  * JSON slurper which parses text or reader content into a data structure of lists and maps.
  * <p>
  * Example usage:
- * <code><pre class="groovyTestCase">
+ * <code><pre class="language-groovy groovyTestCase">
  * def slurper = new groovy.json.JsonSlurperClassic()
  * def result = slurper.parseText('{"person":{"name":"Guillaume","age":33,"pets":["dog","cat"]}}')
  *
@@ -63,13 +67,98 @@ import static groovy.json.JsonTokenType.STRING;
 public class JsonSlurperClassic {
 
     /**
+     * Maximum nesting depth of arrays/objects accepted before a {@link JsonException} is thrown,
+     * guarding the recursive parser against a small but deeply-nested document driving a
+     * {@link StackOverflowError}. A value of {@code 0} or less disables the check. Defaults to
+     * {@link BaseJsonParser#DEFAULT_MAX_NESTING_DEPTH}, and can be
+     * overridden globally with the {@code groovy.json.maxNestingDepth} system property.
+     */
+    private int maxNestingDepth = Integer.getInteger("groovy.json.maxNestingDepth",
+            BaseJsonParser.DEFAULT_MAX_NESTING_DEPTH);
+
+    /**
+     * Returns the maximum nesting depth of arrays/objects the parser will accept.
+     *
+     * @return the maximum nesting depth, or a value {@code <= 0} when the check is disabled
+     * @since 6.0.0
+     */
+    public int getMaxNestingDepth() {
+        return maxNestingDepth;
+    }
+
+    /**
+     * Sets the maximum nesting depth of arrays/objects the parser will accept before throwing a
+     * {@link JsonException}. A value of {@code 0} or less disables the check.
+     *
+     * @param maxNestingDepth maximum number of nested arrays/objects to allow
+     * @since 6.0.0
+     */
+    public void setMaxNestingDepth(int maxNestingDepth) {
+        this.maxNestingDepth = maxNestingDepth;
+    }
+
+    /**
+     * Maximum length, in characters, of a single number token accepted before a
+     * {@link JsonException} is thrown. Converting a digit run past the {@code long} range builds a
+     * {@link BigInteger} or {@link BigDecimal}, and decimal conversion is
+     * superlinear in the digit count. A value of {@code 0} or less disables the check. Defaults to
+     * {@link BaseJsonParser#DEFAULT_MAX_NUMBER_LENGTH}, and can be
+     * overridden globally with the {@code groovy.json.maxNumberLength} system property.
+     */
+    private int maxNumberLength = Integer.getInteger("groovy.json.maxNumberLength",
+            BaseJsonParser.DEFAULT_MAX_NUMBER_LENGTH);
+
+    /**
+     * Returns the maximum length permitted for a single number token.
+     *
+     * @return the maximum number token length, or a value {@code <= 0} when the check is disabled
+     * @since 6.0.0
+     */
+    public int getMaxNumberLength() {
+        return maxNumberLength;
+    }
+
+    /**
+     * Sets the maximum length, in characters, of a single number token the parser will accept
+     * before throwing a {@link JsonException}. A value of {@code 0} or less disables the check.
+     *
+     * @param maxNumberLength maximum number of characters in a number token
+     * @since 6.0.0
+     */
+    public void setMaxNumberLength(int maxNumberLength) {
+        this.maxNumberLength = maxNumberLength;
+    }
+
+    /**
+     * Reads a token's value, enforcing {@link #maxNumberLength} before a number token is converted.
+     *
+     * @param token the token to read
+     * @param lexer the lexer, used for positional detail in the error
+     * @return the token's value
+     * @throws JsonException if a number token is longer than the configured maximum
+     */
+    private Object valueOf(JsonToken token, JsonLexer lexer) {
+        if (maxNumberLength > 0 && token.getType() == NUMBER) {
+            int length = token.getText().length();
+            if (length > maxNumberLength) {
+                throw new JsonException(
+                        "JSON number length of " + length + " exceeds the maximum of " + maxNumberLength +
+                                " on line: " + lexer.getReader().getLine() + ", " +
+                                "column: " + lexer.getReader().getColumn() + "."
+                );
+            }
+        }
+        return token.getValue();
+    }
+
+    /**
      * Parse a text representation of a JSON data structure
      *
      * @param text JSON text to parse
      * @return a data structure of lists and maps
      */
     public Object parseText(String text) {
-        if (text == null || text.length() == 0) {
+        if (text == null || text.isEmpty()) {
             throw new IllegalArgumentException("The JSON input text should neither be null nor empty.");
         }
 
@@ -89,9 +178,9 @@ public class JsonSlurperClassic {
 
         JsonToken token = lexer.nextToken();
         if (token.getType() == OPEN_CURLY) {
-            content = parseObject(lexer);
+            content = parseObject(lexer, 1);
         } else if (token.getType() == OPEN_BRACKET) {
-            content = parseArray(lexer);
+            content = parseArray(lexer, 1);
         } else {
             throw new JsonException(
                     "A JSON payload should start with " + OPEN_CURLY.getLabel() +
@@ -131,7 +220,7 @@ public class JsonSlurperClassic {
     private Object parseFile(File file, String charset) {
         Reader reader = null;
         try {
-            if (charset == null || charset.length() == 0) {
+            if (charset == null || charset.isEmpty()) {
                 reader = ResourceGroovyMethods.newReader(file);
             } else {
                 reader = ResourceGroovyMethods.newReader(file, charset);
@@ -165,6 +254,7 @@ public class JsonSlurperClassic {
      * @return a data structure of lists and maps
      * @since 2.2.0
      */
+    @SuppressWarnings({"rawtypes", "unchecked"})
     public Object parse(URL url, Map params) {
         return parseURL(url, params);
     }
@@ -177,10 +267,12 @@ public class JsonSlurperClassic {
      * @return a data structure of lists and maps
      * @since 2.2.0
      */
+    @SuppressWarnings({"rawtypes", "unchecked"})
     public Object parse(Map params, URL url) {
         return parseURL(url, params);
     }
 
+    @SuppressWarnings({"rawtypes", "unchecked"})
     private Object parseURL(URL url, Map params) {
         Reader reader = null;
         try {
@@ -220,6 +312,7 @@ public class JsonSlurperClassic {
      * @return a data structure of lists and maps
      * @since 2.2.0
      */
+    @SuppressWarnings({"rawtypes", "unchecked"})
     public Object parse(URL url, Map params, String charset) {
         return parseURL(url, params, charset);
     }
@@ -233,10 +326,12 @@ public class JsonSlurperClassic {
      * @return a data structure of lists and maps
      * @since 2.2.0
      */
+    @SuppressWarnings({"rawtypes", "unchecked"})
     public Object parse(Map params, URL url, String charset) {
         return parseURL(url, params, charset);
     }
 
+    @SuppressWarnings({"rawtypes", "unchecked"})
     private Object parseURL(URL url, Map params, String charset) {
         Reader reader = null;
         try {
@@ -256,13 +351,32 @@ public class JsonSlurperClassic {
     }
 
     /**
+     * Enforces the configured {@link #maxNestingDepth}, throwing a {@link JsonException} rather
+     * than allowing the recursion to drive a {@link StackOverflowError}.
+     *
+     * @param depth the nesting depth about to be entered
+     * @param lexer the lexer, used for positional detail in the error
+     */
+    private void checkMaxNestingDepth(int depth, JsonLexer lexer) {
+        if (maxNestingDepth > 0 && depth > maxNestingDepth) {
+            throw new JsonException(
+                    "Maximum JSON nesting depth of " + maxNestingDepth + " exceeded " +
+                            "on line: " + lexer.getReader().getLine() + ", " +
+                            "column: " + lexer.getReader().getColumn() + "."
+            );
+        }
+    }
+
+    /**
      * Parse an array from the lexer
      *
      * @param lexer the lexer
+     * @param depth the current nesting depth (top-level container is depth 1)
      * @return a list of JSON values
      */
-    private List parseArray(JsonLexer lexer) {
-        List content = new ArrayList();
+    private List<Object> parseArray(JsonLexer lexer, int depth) {
+        checkMaxNestingDepth(depth, lexer);
+        List<Object> content = new ArrayList<>();
 
         JsonToken currentToken;
 
@@ -278,11 +392,11 @@ public class JsonSlurperClassic {
             }
 
             if (currentToken.getType() == OPEN_CURLY) {
-                content.add(parseObject(lexer));
+                content.add(parseObject(lexer, depth + 1));
             } else if (currentToken.getType() == OPEN_BRACKET) {
-                content.add(parseArray(lexer));
+                content.add(parseArray(lexer, depth + 1));
             } else if (currentToken.getType().ordinal() >= NULL.ordinal()) {
-                content.add(currentToken.getValue());
+                content.add(valueOf(currentToken, lexer));
             } else if (currentToken.getType() == CLOSE_BRACKET) {
                 return content;
             } else {
@@ -327,10 +441,12 @@ public class JsonSlurperClassic {
      * Parses an object from the lexer
      *
      * @param lexer the lexer
+     * @param depth the current nesting depth (top-level container is depth 1)
      * @return a Map representing a JSON object
      */
-    private Map parseObject(JsonLexer lexer) {
-        Map content = new HashMap();
+    private Map<String, Object> parseObject(JsonLexer lexer, int depth) {
+        checkMaxNestingDepth(depth, lexer);
+        Map<String, Object> content = new HashMap<>();
 
         JsonToken previousToken = null;
         JsonToken currentToken = null;
@@ -359,7 +475,7 @@ public class JsonSlurperClassic {
                 );
             }
 
-            String mapKey = (String) currentToken.getValue();
+            String mapKey = (String) valueOf(currentToken, lexer);
 
             currentToken = lexer.nextToken();
 
@@ -397,11 +513,11 @@ public class JsonSlurperClassic {
             // value can be an object, an array, a number, string, boolean or null values
 
             if (currentToken.getType() == OPEN_CURLY) {
-                content.put(mapKey, parseObject(lexer));
+                content.put(mapKey, parseObject(lexer, depth + 1));
             } else if (currentToken.getType() == OPEN_BRACKET) {
-                content.put(mapKey, parseArray(lexer));
+                content.put(mapKey, parseArray(lexer, depth + 1));
             } else if (currentToken.getType().ordinal() >= NULL.ordinal()) {
-                content.put(mapKey, currentToken.getValue());
+                content.put(mapKey, valueOf(currentToken, lexer));
             } else {
                 throw new JsonException(
                         "Expected a value, an array, or an object " +

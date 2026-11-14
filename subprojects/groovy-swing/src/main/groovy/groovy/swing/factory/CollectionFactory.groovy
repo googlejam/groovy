@@ -22,7 +22,16 @@ package groovy.swing.factory
  * This returns a mutable java.util.Collection of some sort, to which items are added.  
  */
 public class CollectionFactory extends AbstractFactory {
-    
+
+    /**
+     * Creates the node handled by this factory.
+     *
+     * @param builder the factory builder
+     * @param name the node name
+     * @param value the node value
+     * @param attributes the node attributes
+     * @return the created or reused node
+     */
     public Object newInstance(FactoryBuilderSupport builder, Object name, Object value, Map attributes) throws InstantiationException, IllegalAccessException {
         FactoryBuilderSupport.checkValueIsNull(value, name);
         if (attributes.isEmpty()) {
@@ -35,6 +44,13 @@ public class CollectionFactory extends AbstractFactory {
         }
     }
 
+    /**
+     * Attaches a child node to its parent.
+     *
+     * @param builder the factory builder
+     * @param parent the parent node
+     * @param child the child node
+     */
     public void setChild(FactoryBuilderSupport builder, Object parent, Object child) {
         parent.add(child)
     }

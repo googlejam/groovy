@@ -16,17 +16,18 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
-import groovy.test.GroovyTestCase
+import org.junit.jupiter.api.Test
+import static groovy.test.GroovyAssert.assertScript
 
-class Groovy8138Bug extends GroovyTestCase {
+class Groovy8138Bug {
+    @Test
     void test() {
         assertScript '''
             import groovy.transform.CompileStatic
-            
             import static java.util.stream.Collectors.toList
-            
+
             @CompileStatic
             class Test {
                 static void main(String[] args) {

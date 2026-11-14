@@ -19,6 +19,7 @@
 package org.codehaus.groovy.transform.sc.transformers;
 
 import org.codehaus.groovy.ast.ClassHelper;
+import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.GroovyCodeVisitor;
 import org.codehaus.groovy.ast.expr.BinaryExpression;
 import org.codehaus.groovy.ast.expr.ConstantExpression;
@@ -36,34 +37,72 @@ import static org.objectweb.asm.Opcodes.ICONST_1;
 import static org.objectweb.asm.Opcodes.IFNONNULL;
 import static org.objectweb.asm.Opcodes.IFNULL;
 
+/**
+ * Specializes a comparison against {@code null} for static compilation.
+ */
 public class CompareToNullExpression extends BinaryExpression {
     private final boolean equalsNull;
 
+    /**
+     * Creates a comparison between an expression and {@code null}.
+     *
+     * @param expression the expression being compared
+     * @param equalsNull {@code true} for {@code == null}; {@code false} for {@code != null}
+     */
     public CompareToNullExpression(final Expression expression, final boolean equalsNull) {
         super(expression, Token.newSymbol(equalsNull ? "==" : "!=", -1, -1), ConstantExpression.NULL);
         super.setType(ClassHelper.boolean_TYPE);
         this.equalsNull = equalsNull;
     }
 
+    /**
+     * Returns the expression being compared with {@code null}.
+     *
+     * @return the compared expression
+     */
     public Expression getObjectExpression() {
         return getLeftExpression();
     }
 
+    /**
+     * Prevents replacing the compared expression after construction.
+     *
+     * @param expression ignored
+     * @throws UnsupportedOperationException always
+     */
     @Override
     public void setLeftExpression(final Expression expression) {
         throw new UnsupportedOperationException();
     }
 
+    /**
+     * Prevents changing the fixed {@code null} right-hand operand.
+     *
+     * @param expression ignored
+     * @throws UnsupportedOperationException always
+     */
     @Override
     public void setRightExpression(final Expression expression) {
         throw new UnsupportedOperationException();
     }
 
+    /**
+     * Prevents changing the fixed boolean result type of this expression.
+     *
+     * @param type ignored
+     * @throws UnsupportedOperationException always
+     */
     @Override
-    public void setType(final org.codehaus.groovy.ast.ClassNode type) {
+    public void setType(final ClassNode type) {
         throw new UnsupportedOperationException();
     }
 
+    /**
+     * Transforms the compared expression while preserving the {@code null}-comparison semantics.
+     *
+     * @param transformer the expression transformer to apply
+     * @return a transformed {@code null}-comparison expression
+     */
     @Override
     public Expression transformExpression(final ExpressionTransformer transformer) {
         Expression ret = new CompareToNullExpression(transformer.transform(getObjectExpression()), equalsNull);
@@ -72,34 +111,38 @@ public class CompareToNullExpression extends BinaryExpression {
         return ret;
     }
 
+    /**
+     * Emits direct {@code null}-comparison bytecode for this expression.
+     *
+     * @param visitor the visitor to accept
+     */
     @Override
     public void visit(final GroovyCodeVisitor visitor) {
-        if (visitor instanceof AsmClassGenerator) {
-            AsmClassGenerator acg = (AsmClassGenerator) visitor;
-            WriterController controller = acg.getController();
-            MethodVisitor mv = controller.getMethodVisitor();
-
-            getObjectExpression().visit(acg);
-
-            if (ClassHelper.isPrimitiveType(controller.getOperandStack().getTopOperand())) {
-                controller.getOperandStack().pop();
-                mv.visitInsn(equalsNull ? ICONST_0 : ICONST_1);
-
-                controller.getOperandStack().push(ClassHelper.boolean_TYPE);
-            } else {
-                Label zero = new Label();
-                mv.visitJumpInsn(equalsNull ? IFNONNULL : IFNULL, zero);
-                mv.visitInsn(ICONST_1);
-                Label end = new Label();
-                mv.visitJumpInsn(GOTO, end);
-                mv.visitLabel(zero);
-                mv.visitInsn(ICONST_0);
-                mv.visitLabel(end);
-
-                controller.getOperandStack().replace(ClassHelper.boolean_TYPE);
-            }
-        } else {
+        if (!(visitor instanceof AsmClassGenerator)) {
             super.visit(visitor);
+            return;
+        }
+
+        WriterController controller = ((AsmClassGenerator) visitor).getController();
+        MethodVisitor mv = controller.getMethodVisitor();
+
+        getObjectExpression().visit(visitor);
+
+        if (ClassHelper.isPrimitiveType(controller.getOperandStack().getTopOperand())) {
+            controller.getOperandStack().pop();
+            mv.visitInsn(equalsNull ? ICONST_0 : ICONST_1);
+            controller.getOperandStack().push(ClassHelper.boolean_TYPE);
+        } else {
+            Label no = new Label(), yes = new Label();
+
+            mv.visitJumpInsn(equalsNull ? IFNONNULL : IFNULL, no);
+            mv.visitInsn(ICONST_1);
+            mv.visitJumpInsn(GOTO, yes);
+            mv.visitLabel(no);
+            mv.visitInsn(ICONST_0);
+            mv.visitLabel(yes);
+
+            controller.getOperandStack().replace(ClassHelper.boolean_TYPE);
         }
     }
 }

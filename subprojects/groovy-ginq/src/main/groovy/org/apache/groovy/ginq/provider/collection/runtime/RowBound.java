@@ -18,13 +18,19 @@
  */
 package org.apache.groovy.ginq.provider.collection.runtime;
 
+import java.io.Serial;
+
 /**
  * Represents row bounds of window frame
  *
  * @since 4.0.0
  */
 public class RowBound extends AbstractBound<Long, Long> {
-    private static final long serialVersionUID = 5774234311203836615L;
+    @Serial private static final long serialVersionUID = 5774234311203836615L;
+    /**
+     * Bound from {@link Long#MIN_VALUE} to {@link Long#MAX_VALUE}. A window
+     * definition with no {@code ROWS} clause uses this instance.
+     */
     public static final RowBound DEFAULT = new RowBound(Long.MIN_VALUE, Long.MAX_VALUE);
 
     /**

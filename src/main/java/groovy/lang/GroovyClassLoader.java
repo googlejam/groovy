@@ -16,22 +16,14 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-/*
- * @todo multi threaded compiling of the same class but with different roots
- * for compilation... T1 compiles A, which uses B, T2 compiles B... mark A and B
- * as parsed and then synchronize compilation. Problems: How to synchronize?
- * How to get error messages?
- *
- */
 package groovy.lang;
 
 import groovy.util.CharsetToolkit;
-import org.codehaus.groovy.GroovyBugError;
 import org.codehaus.groovy.ast.ClassHelper;
 import org.codehaus.groovy.ast.ClassNode;
 import org.codehaus.groovy.ast.FieldNode;
-import org.codehaus.groovy.ast.InnerClassNode;
 import org.codehaus.groovy.ast.ModuleNode;
+import org.codehaus.groovy.ast.decompiled.AsmDecompiler;
 import org.codehaus.groovy.ast.expr.ConstantExpression;
 import org.codehaus.groovy.classgen.GeneratorContext;
 import org.codehaus.groovy.classgen.Verifier;
@@ -45,9 +37,11 @@ import org.codehaus.groovy.control.SourceUnit;
 import org.codehaus.groovy.runtime.EncodingGroovyMethods;
 import org.codehaus.groovy.runtime.IOGroovyMethods;
 import org.codehaus.groovy.runtime.InvokerHelper;
+import org.codehaus.groovy.runtime.memoize.ConcurrentCommonCache;
 import org.codehaus.groovy.runtime.memoize.EvictableCache;
-import org.codehaus.groovy.runtime.memoize.StampedCommonCache;
+import org.codehaus.groovy.runtime.memoize.FlexibleCache;
 import org.codehaus.groovy.runtime.memoize.UnlimitedConcurrentCache;
+import org.codehaus.groovy.tools.GroovyClass;
 import org.codehaus.groovy.util.URLStreams;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassWriter;
@@ -58,26 +52,32 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
-import java.io.UnsupportedEncodingException;
 import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLClassLoader;
-import java.net.URLConnection;
 import java.net.URLDecoder;
-import java.security.AccessController;
+import java.nio.charset.StandardCharsets;
 import java.security.CodeSource;
 import java.security.NoSuchAlgorithmException;
 import java.security.Permission;
 import java.security.PermissionCollection;
 import java.security.Permissions;
-import java.security.PrivilegedAction;
 import java.security.ProtectionDomain;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.Enumeration;
-import java.util.Map;
+import java.util.LinkedHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/*
+ * TODO: multi-threaded compiling of the same class but with different roots for
+ * compilation... T1 compiles A, which uses B, T2 compiles B... mark A and B
+ * as parsed and then synchronize compilation. Problems: How to synchronize?
+ * How to get error messages?
+ */
 
 /**
  * A ClassLoader which can load Groovy classes. The loaded classes are cached,
@@ -89,134 +89,163 @@ import java.util.Map;
  */
 public class GroovyClassLoader extends URLClassLoader {
     private static final URL[] EMPTY_URL_ARRAY = new URL[0];
-    private static final Class[] EMPTY_CLASS_ARRAY = new Class[0];
+
+    private static final AtomicInteger scriptNameCounter = new AtomicInteger(1_000_000); // 1,000,000 avoids conflicts with names from the GroovyShell
+    private static final String HASH_ALGORITHM = System.getProperty("groovy.cache.hashing.algorithm", "md5");
 
     /**
-     * this cache contains the loaded classes or PARSING, if the class is currently parsed
+     * This cache contains the loaded classes or PARSING, if the class is currently parsed.
      */
-    protected final EvictableCache<String, Class> classCache = new UnlimitedConcurrentCache<String, Class>();
+    protected final EvictableCache<String, Class> classCache = new UnlimitedConcurrentCache<>();
 
     /**
-     * This cache contains mappings of file name to class. It is used
-     * to bypass compilation.
+     * This cache contains mappings of file name to class. It is used to bypass compilation.
      */
-    protected final StampedCommonCache<String, Class> sourceCache = new StampedCommonCache<String, Class>();
+    protected final FlexibleCache<String, Class> sourceCache;
 
     private final CompilerConfiguration config;
-    private String sourceEncoding;
+    private boolean runtimePackageCheck;
+    private final String sourceEncoding;
     private Boolean recompile;
-    // use 1000000 as offset to avoid conflicts with names from the GroovyShell
-    private static int scriptNameCounter = 1000000;
 
-    private GroovyResourceLoader resourceLoader = new GroovyResourceLoader() {
-        @Override
-        public URL loadGroovySource(final String filename) throws MalformedURLException {
-            return AccessController.doPrivileged((PrivilegedAction<URL>) () -> {
-                for (String extension : config.getScriptExtensions()) {
-                    try {
-                        URL ret = getSourceFile(filename, extension);
-                        if (ret != null)
-                            return ret;
-                    } catch (Throwable t) {
-                    }
-                }
-                return null;
-            });
-        }
-    };
+    static {
+        registerAsParallelCapable();
+    }
 
     /**
-     * creates a GroovyClassLoader using the current Thread's context
-     * Class loader as parent.
+     * Creates a GroovyClassLoader using the current Thread's context ClassLoader as parent.
      */
     public GroovyClassLoader() {
         this(Thread.currentThread().getContextClassLoader());
     }
 
     /**
-     * creates a GroovyClassLoader using the given ClassLoader as parent
+     * Creates a GroovyClassLoader using the given ClassLoader as parent.
      */
-    public GroovyClassLoader(ClassLoader loader) {
-        this(loader, null);
+    public GroovyClassLoader(final ClassLoader parent) {
+        this(parent, null);
     }
 
     /**
-     * creates a GroovyClassLoader using the given GroovyClassLoader as parent.
-     * This loader will get the parent's CompilerConfiguration
+     * Creates a GroovyClassLoader using the given GroovyClassLoader as parent.
+     * The new loader will get the parent's CompilerConfiguration.
      */
-    public GroovyClassLoader(GroovyClassLoader parent) {
+    public GroovyClassLoader(final GroovyClassLoader parent) {
         this(parent, parent.config, false);
     }
 
     /**
-     * creates a GroovyClassLoader.
+     * Creates a GroovyClassLoader using the given ClassLoader as parent.
+     */
+    public GroovyClassLoader(final ClassLoader parent, final CompilerConfiguration config) {
+        this(parent, config, true);
+    }
+
+    /**
+     * Creates a GroovyClassLoader with the default sourceCache.
      *
      * @param parent                    the parent class loader
      * @param config                    the compiler configuration
      * @param useConfigurationClasspath determines if the configurations classpath should be added
      */
-    public GroovyClassLoader(ClassLoader parent, CompilerConfiguration config, boolean useConfigurationClasspath) {
-        super(EMPTY_URL_ARRAY, parent);
-        if (config == null) config = CompilerConfiguration.DEFAULT;
-        this.config = config;
-        if (useConfigurationClasspath) {
-            for (String path : config.getClasspath()) {
-                this.addClasspath(path);
-            }
-        }
-
-        initSourceEncoding(config);
-    }
-
-    private void initSourceEncoding(CompilerConfiguration config) {
-        sourceEncoding = config.getSourceEncoding();
-        if (null == sourceEncoding) {
-            // Keep the same default source encoding with the one used by #parseClass(InputStream, String)
-            // TODO should we use org.codehaus.groovy.control.CompilerConfiguration.DEFAULT_SOURCE_ENCODING instead?
-            sourceEncoding = CharsetToolkit.getDefaultSystemCharset().name();
-        }
+    public GroovyClassLoader(final ClassLoader parent, final CompilerConfiguration config, final boolean useConfigurationClasspath) {
+        this(parent, config, useConfigurationClasspath, new ConcurrentCommonCache<>());
     }
 
     /**
-     * creates a GroovyClassLoader using the given ClassLoader as parent.
+     * Creates a GroovyClassLoader with a custom sourceCache.
+     *
+     * @param parent                    the parent class loader
+     * @param config                    the compiler configuration
+     * @param useConfigurationClasspath determines if the configurations classpath should be added
+     * @param sourceCache               the source cache to use
      */
-    public GroovyClassLoader(ClassLoader loader, CompilerConfiguration config) {
-        this(loader, config, true);
+    public GroovyClassLoader(final ClassLoader parent, final CompilerConfiguration config, final boolean useConfigurationClasspath, FlexibleCache<String, Class> sourceCache) {
+        super(EMPTY_URL_ARRAY, parent);
+        this.config = (config != null ? config : CompilerConfiguration.DEFAULT);
+        this.sourceCache = sourceCache;
+        if (useConfigurationClasspath) {
+            for (String path : this.config.getClasspath()) {
+                addClasspath(path);
+            }
+        }
+        String encoding = this.config.getSourceEncoding();
+        // Keep the same default source encoding as #parseClass(InputStream,String)
+        // TODO Should we use CompilerConfiguration.DEFAULT_SOURCE_ENCODING instead?
+        this.sourceEncoding = encoding != null ? encoding : CharsetToolkit.getDefaultSystemCharset().name();
+        this.recompile = null;
     }
 
-    public void setResourceLoader(GroovyResourceLoader resourceLoader) {
+    //--------------------------------------------------------------------------
+
+    private GroovyResourceLoader resourceLoader = new GroovyResourceLoader() {
+        /** {@inheritDoc} */
+        @Override
+        public URL loadGroovySource(final String filename) {
+            for (String extension : config.getScriptExtensions()) {
+                try {
+                    URL url = getSourceFile(filename, extension);
+                    if (url != null) return url;
+                } catch (Throwable ignore) {
+                }
+            }
+            return null;
+        }
+    };
+
+    /**
+     * Sets the resource loader used to resolve Groovy source by script name.
+     *
+     * @param resourceLoader the resource loader to use
+     */
+    public void setResourceLoader(final GroovyResourceLoader resourceLoader) {
         if (resourceLoader == null) {
             throw new IllegalArgumentException("Resource loader must not be null!");
         }
         this.resourceLoader = resourceLoader;
     }
 
+    /**
+     * Returns the resource loader used to resolve Groovy source by script name.
+     *
+     * @return the current resource loader
+     */
     public GroovyResourceLoader getResourceLoader() {
         return resourceLoader;
     }
 
+    //--------------------------------------------------------------------------
+
     /**
-     * Loads the given class node returning the implementation Class.
-     * <p>
-     * WARNING: this compilation is not synchronized
-     *
-     * @param classNode
-     * @return a class
+     * Converts an array of bytes into an instance of {@code Class}. Before the
+     * class can be used it must be resolved.
      */
-    public Class defineClass(ClassNode classNode, String file, String newCodeBase) {
+    public Class defineClass(final String name, final byte[] bytes) throws ClassFormatError {
+        return super.defineClass(name, bytes, 0, bytes.length);
+    }
+
+    /**
+     * Compiles the given {@code ClassNode} returning the resulting {@code Class}.
+     * <p>
+     * <b>WARNING</b>: compilation is not synchronized
+     */
+    public Class defineClass(final ClassNode classNode, final String file, final String newCodeBase) {
         CodeSource codeSource = null;
         try {
-            codeSource = new CodeSource(new URL("file", "", newCodeBase), (java.security.cert.Certificate[]) null);
-        } catch (MalformedURLException e) {
-            //swallow
+            String path = newCodeBase.startsWith("/") ? newCodeBase : "/" + newCodeBase;
+            codeSource = new CodeSource(new URI("file", "", path, null).toURL(), (java.security.cert.Certificate[]) null);
+        } catch (MalformedURLException | URISyntaxException ignore) {
         }
 
         CompilationUnit unit = createCompilationUnit(config, codeSource);
+        markDefinedInMemory(unit);
+        var generatedClasses = new LinkedHashMap<ClassNode, ClassVisitor>();
         ClassCollector collector = createCollector(unit, classNode.getModule().getContext());
         try {
             unit.addClassNode(classNode);
-            unit.setClassgenCallback(collector);
+            unit.setClassgenCallback((cv, cn) -> generatedClasses.put(cn, cv));
             unit.compile(Phases.CLASS_GENERATION);
+            collect(collector, generatedClasses);
             definePackageInternal(collector.generatedClass.getName());
             return collector.generatedClass;
         } catch (CompilationFailedException e) {
@@ -224,15 +253,59 @@ public class GroovyClassLoader extends URLClassLoader {
         }
     }
 
+    private static void collect(final ClassCollector collector, final LinkedHashMap<ClassNode, ClassVisitor> generatedClasses) {
+        // GROOVY-10687: drive ClassCollector after classgen -- interfaces first
+        var classes = new ArrayList<>(generatedClasses.keySet());
+        classes.sort(Comparator.comparingInt(cn -> {
+            int n;
+            if (cn.isInterface()) {
+                var interfaces = cn.getInterfaces();
+                n = interfaces.length;
+                for (var in : interfaces) {
+                    n += in.getInterfaces().length;
+                }
+            } else {
+                n = 999;
+                while (cn != null) { n += 1;
+                    cn = cn.getSuperClass();
+                }
+            }
+            return n;
+        }));
+
+        // GROOVY-10687: prefer bytes from the unit, where the NestMembers
+        // attribute of each nest host was completed after class generation
+        var unitClasses = new LinkedHashMap<String, GroovyClass>();
+        for (GroovyClass gc : collector.unit.getClasses()) {
+            unitClasses.put(gc.getName(), gc);
+        }
+        for (ClassNode cn : classes) {
+            GroovyClass gc = unitClasses.get(cn.getName());
+            if (gc != null) {
+                collector.createClass(gc.getBytes(), cn);
+            } else {
+                collector.call(generatedClasses.get(cn), cn);
+            }
+        }
+    }
+
     /**
-     * Check if this class loader has compatible {@link CompilerConfiguration}
+     * Applies {@link CompilerConfiguration#RUNTIME_PACKAGE_CHECK} to the classes
+     * this class loader compiles, unless the configuration sets the option.
+     */
+    void enableRuntimePackageCheck() {
+        runtimePackageCheck = true;
+    }
+
+    /**
+     * Checks if this class loader has compatible {@link CompilerConfiguration}
      * with the provided one.
      * @param config the compiler configuration to test for compatibility
      * @return {@code true} if the provided config is exactly the same instance
      * of {@link CompilerConfiguration} as this loader has
      */
-    public boolean hasCompatibleConfiguration(CompilerConfiguration config) {
-      return this.config == config;
+    public boolean hasCompatibleConfiguration(final CompilerConfiguration config) {
+        return (this.config == config);
     }
 
     /**
@@ -241,7 +314,7 @@ public class GroovyClassLoader extends URLClassLoader {
      * @param file the file name to parse
      * @return the main class defined in the given script
      */
-    public Class parseClass(File file) throws CompilationFailedException, IOException {
+    public Class parseClass(final File file) throws CompilationFailedException, IOException {
         return parseClass(new GroovyCodeSource(file, config.getSourceEncoding()));
     }
 
@@ -253,7 +326,7 @@ public class GroovyClassLoader extends URLClassLoader {
      * @return the main class defined in the given script
      */
     public Class parseClass(final String text, final String fileName) throws CompilationFailedException {
-        GroovyCodeSource gcs = AccessController.doPrivileged((PrivilegedAction<GroovyCodeSource>) () -> new GroovyCodeSource(text, fileName, "/groovy/script"));
+        GroovyCodeSource gcs = new GroovyCodeSource(text, fileName, "/groovy/script");
         gcs.setCachable(false);
         return parseClass(gcs);
     }
@@ -264,91 +337,113 @@ public class GroovyClassLoader extends URLClassLoader {
      * @param text the text of the script/class to parse
      * @return the main class defined in the given script
      */
-    public Class parseClass(String text) throws CompilationFailedException {
-        try {
-            return parseClass(text, "Script_" + EncodingGroovyMethods.md5(text) + ".groovy");
-        } catch (NoSuchAlgorithmException e) {
-            throw new GroovyBugError("Failed to generate md5", e); // should never happen
-        }
+    public Class parseClass(final String text) throws CompilationFailedException {
+        return parseClass(text, "Script_" + genEncodingString(text) + ".groovy");
     }
 
-    public synchronized String generateScriptName() {
-        scriptNameCounter++;
-        return "script" + scriptNameCounter + ".groovy";
-    }
-
+    /**
+     * Parses Groovy source read from a {@link Reader}.
+     *
+     * @param reader the reader supplying source text
+     * @param fileName the logical script name
+     * @return the main class defined by the source
+     * @throws CompilationFailedException if compilation fails
+     */
     public Class parseClass(final Reader reader, final String fileName) throws CompilationFailedException {
-        GroovyCodeSource gcs = AccessController.doPrivileged((PrivilegedAction<GroovyCodeSource>) () -> {
-            try {
-                String scriptText = IOGroovyMethods.getText(reader);
-                return new GroovyCodeSource(scriptText, fileName, "/groovy/script");
-            } catch (IOException e) {
-                throw new RuntimeException("Impossible to read the content of the reader for file named: " + fileName, e);
-            }
-        });
+        GroovyCodeSource gcs;
+        try {
+            String scriptText = IOGroovyMethods.getText(reader);
+            gcs = new GroovyCodeSource(scriptText, fileName, "/groovy/script");
+        } catch (IOException e) {
+            throw new RuntimeException("Impossible to read the content of the reader for file named: " + fileName, e);
+        }
         return parseClass(gcs);
     }
 
-    public Class parseClass(GroovyCodeSource codeSource) throws CompilationFailedException {
+    /**
+     * Parses Groovy source described by a {@link GroovyCodeSource}.
+     *
+     * @param codeSource the code source to compile
+     * @return the main class defined by the source
+     * @throws CompilationFailedException if compilation fails
+     */
+    public Class parseClass(final GroovyCodeSource codeSource) throws CompilationFailedException {
         return parseClass(codeSource, codeSource.isCachable());
     }
 
     /**
      * Parses the given code source into a Java class. If there is a class file
      * for the given code source, then no parsing is done, instead the cached class is returned.
+     * <p>
+     * Distinct sources are compiled outside the source-cache lock, so several
+     * threads may call this method on the same loader at once. The cache is
+     * consulted again after compilation and only the first result for a key is kept.
      *
      * @param shouldCacheSource if true then the generated class will be stored in the source cache
      * @return the main class defined in the given script
      */
-    public Class parseClass(final GroovyCodeSource codeSource, boolean shouldCacheSource) throws CompilationFailedException {
-        // it's better to cache class instances by the source code
-        // GCL will load the unique class instance for the same source code
-        // and avoid occupying Permanent Area/Metaspace repeatedly
+    public Class parseClass(final GroovyCodeSource codeSource, final boolean shouldCacheSource) throws CompilationFailedException {
+        // Cache by source text so the same script is not defined again
+        // and does not occupy Metaspace repeatedly.
         String cacheKey = genSourceCacheKey(codeSource);
+        Class<?> cached = sourceCache.get(cacheKey);
+        if (cached != null) {
+            return cached;
+        }
 
-        return sourceCache.getAndPut(
-                cacheKey,
-                key -> doParseClass(codeSource),
-                shouldCacheSource
-        );
+        // FlexibleCache.getAndPut holds its write lock for the whole provider
+        // call. Compiling there made every parseClass on this loader wait for
+        // every other one, including sources that do not share a cache key.
+        Class<?> parsed = doParseClass(codeSource);
+        if (!shouldCacheSource || parsed == null) {
+            return parsed;
+        }
+        Class<?> published = sourceCache.getAndPut(cacheKey, key -> parsed, true);
+        return published != null ? published : parsed;
     }
 
-    private String genSourceCacheKey(GroovyCodeSource codeSource) {
-        StringBuilder strToDigest;
+    /**
+     * Generates a unique script name for unnamed parsed sources.
+     *
+     * @return a unique script name ending in {@code .groovy}
+     */
+    public String generateScriptName() {
+        return "script" + scriptNameCounter.getAndIncrement() + ".groovy";
+    }
+
+    private String genSourceCacheKey(final GroovyCodeSource codeSource) {
+        StringBuilder strToEncode;
 
         String scriptText = codeSource.getScriptText();
         if (null != scriptText) {
-            strToDigest = new StringBuilder((int) (scriptText.length() * 1.2));
-            strToDigest.append("scriptText:").append(scriptText);
+            strToEncode = new StringBuilder((int) (scriptText.length() * 1.2));
+            strToEncode.append("scriptText:").append(scriptText);
 
             CodeSource cs = codeSource.getCodeSource();
             if (null != cs) {
-                strToDigest.append("/codeSource:").append(cs);
+                strToEncode.append("/codeSource:").append(cs);
             }
         } else {
-            strToDigest = new StringBuilder(32);
+            strToEncode = new StringBuilder(32);
             // if the script text is null, i.e. the script content is invalid
             // use the name as cache key for the time being to trigger the validation by `groovy.lang.GroovyClassLoader.validate`
             // note: the script will not be cached due to the invalid script content,
-            //       so it does not matter even if cache key is not the md5 value of script content
-            strToDigest.append("name:").append(codeSource.getName());
+            //       so it does not matter even if cache key is not the encoded value of script content
+            strToEncode.append("name:").append(codeSource.getName());
         }
 
-        try {
-            return EncodingGroovyMethods.md5(strToDigest);
-        } catch (NoSuchAlgorithmException e) {
-            throw new GroovyRuntimeException(e); // should never reach here!
-        }
+        return genEncodingString(strToEncode);
     }
 
-    private Class doParseClass(GroovyCodeSource codeSource) {
+    private Class<?> doParseClass(final GroovyCodeSource codeSource) {
         validate(codeSource);
-        Class answer;  // Was neither already loaded nor compiling, so compile and add to cache.
+        // Was neither already loaded nor compiling, so compile and add to cache.
         CompilationUnit unit = createCompilationUnit(config, codeSource.getCodeSource());
-        if (recompile!=null && recompile || recompile==null && config.getRecompileGroovySource()) {
+        markDefinedInMemory(unit);
+        if (recompile != null ? recompile : config.getRecompileGroovySource()) {
             unit.addFirstPhaseOperation(TimestampAdder.INSTANCE, CompilePhase.CLASS_GENERATION.getPhaseNumber());
         }
-        SourceUnit su = null;
+        SourceUnit su;
         File file = codeSource.getFile();
         if (file != null) {
             su = unit.addSource(file);
@@ -362,24 +457,41 @@ public class GroovyClassLoader extends URLClassLoader {
         }
 
         ClassCollector collector = createCollector(unit, su);
-        unit.setClassgenCallback(collector);
-        int goalPhase = Phases.CLASS_GENERATION;
-        if (config != null && config.getTargetDirectory() != null) goalPhase = Phases.OUTPUT;
-        unit.compile(goalPhase);
+        var generatedClasses = new LinkedHashMap<ClassNode,ClassVisitor>();
+        unit.setClassgenCallback((cv, cn) -> generatedClasses.put(cn, cv));
+        unit.compile(config == null || config.getTargetDirectory() == null ? Phases.CLASS_GENERATION : Phases.OUTPUT);
 
-        answer = collector.generatedClass;
-        String mainClass = su.getAST().getMainClassName();
+        collect(collector, generatedClasses);
+
+        Class<?> answer = collector.generatedClass;
+        String mainName = su.getAST().getMainClassName();
         for (Object o : collector.getLoadedClasses()) {
-            Class clazz = (Class) o;
-            String clazzName = clazz.getName();
-            definePackageInternal(clazzName);
-            setClassCacheEntry(clazz);
-            if (clazzName.equals(mainClass)) answer = clazz;
+            var c = (Class<?>) o;
+            setClassCacheEntry(c);
+            definePackageInternal(c.getName());
+            if (c.getName().equals(mainName)) answer = c;
         }
         return answer;
     }
 
-    private static void validate(GroovyCodeSource codeSource) {
+    /**
+     * Records that the classes of the compilation unit are defined by an
+     * {@link InnerLoader} of their own, so that the compiler does not assume
+     * that a class of another compilation unit is in the same run-time package.
+     * <p>
+     * Every compilation of {@code parseClass} is marked, whatever its
+     * {@link ClassCollector} does with the classes. A subclass whose collector
+     * defines them with this class loader itself, rather than with an
+     * {@code InnerLoader}, therefore reaches the non-public members of classes
+     * of its other compilations through the meta-class where a direct access
+     * would also work; that is slower, but not wrong.
+     */
+    private void markDefinedInMemory(final CompilationUnit unit) {
+        unit.getAST().putNodeMetaData(InnerLoader.class, Boolean.TRUE);
+        if (runtimePackageCheck) unit.getAST().putNodeMetaData(CompilerConfiguration.RUNTIME_PACKAGE_CHECK, Boolean.TRUE);
+    }
+
+    private static void validate(final GroovyCodeSource codeSource) {
         if (codeSource.getFile() == null) {
             if (codeSource.getScriptText() == null) {
                 throw new IllegalArgumentException("Script text to compile cannot be null!");
@@ -387,13 +499,21 @@ public class GroovyClassLoader extends URLClassLoader {
         }
     }
 
-    private void definePackageInternal(String className) {
+    private void definePackageInternal(final String className) {
         int i = className.lastIndexOf('.');
-        if (i != -1) {
-            String pkgName = className.substring(0, i);
-            java.lang.Package pkg = getPackage(pkgName);
-            if (pkg == null) {
-                definePackage(pkgName, null, null, null, null, null, null, null);
+        if (i == -1) {
+            return;
+        }
+        String packageName = className.substring(0, i);
+        if (getDefinedPackage(packageName) != null) {
+            return;
+        }
+        try {
+            definePackage(packageName, null, null, null, null, null, null, null);
+        } catch (IllegalArgumentException alreadyDefined) {
+            // Concurrent parseClass calls can define the same package.
+            if (getDefinedPackage(packageName) == null) {
+                throw alreadyDefined;
             }
         }
     }
@@ -414,8 +534,9 @@ public class GroovyClassLoader extends URLClassLoader {
         return ret;
     }
 
+    /** {@inheritDoc} */
     @Override
-    protected PermissionCollection getPermissions(CodeSource codeSource) {
+    protected PermissionCollection getPermissions(final CodeSource codeSource) {
         PermissionCollection perms;
         try {
             try {
@@ -425,12 +546,7 @@ public class GroovyClassLoader extends URLClassLoader {
                 perms = new Permissions();
             }
 
-            ProtectionDomain myDomain = AccessController.doPrivileged(new PrivilegedAction<ProtectionDomain>() {
-                @Override
-                public ProtectionDomain run() {
-                    return getClass().getProtectionDomain();
-                }
-            });
+            ProtectionDomain myDomain = getProtectionDomain();
             PermissionCollection myPerms = myDomain.getPermissions();
             if (myPerms != null) {
                 for (Enumeration<Permission> elements = myPerms.elements(); elements.hasMoreElements();) {
@@ -445,180 +561,8 @@ public class GroovyClassLoader extends URLClassLoader {
         return perms;
     }
 
-    public static class InnerLoader extends GroovyClassLoader {
-        private final GroovyClassLoader delegate;
-        private final long timeStamp;
-
-        public InnerLoader(GroovyClassLoader delegate) {
-            super(delegate);
-            this.delegate = delegate;
-            timeStamp = System.currentTimeMillis();
-        }
-
-        @Override
-        public void addClasspath(String path) {
-            delegate.addClasspath(path);
-        }
-
-        @Override
-        public void clearCache() {
-            delegate.clearCache();
-        }
-
-        @Override
-        public URL findResource(String name) {
-            return delegate.findResource(name);
-        }
-
-        @Override
-        public Enumeration<URL> findResources(String name) throws IOException {
-            return delegate.findResources(name);
-        }
-
-        @Override
-        public Class[] getLoadedClasses() {
-            return delegate.getLoadedClasses();
-        }
-
-        @Override
-        public URL getResource(String name) {
-            return delegate.getResource(name);
-        }
-
-        @Override
-        public InputStream getResourceAsStream(String name) {
-            return delegate.getResourceAsStream(name);
-        }
-
-        @Override
-        public GroovyResourceLoader getResourceLoader() {
-            return delegate.getResourceLoader();
-        }
-
-        @Override
-        public URL[] getURLs() {
-            return delegate.getURLs();
-        }
-
-        @Override
-        public Class loadClass(String name, boolean lookupScriptFiles, boolean preferClassOverScript, boolean resolve) throws ClassNotFoundException, CompilationFailedException {
-            Class c = findLoadedClass(name);
-            if (c != null) return c;
-            return delegate.loadClass(name, lookupScriptFiles, preferClassOverScript, resolve);
-        }
-
-        @Override
-        public Class parseClass(GroovyCodeSource codeSource, boolean shouldCache) throws CompilationFailedException {
-            return delegate.parseClass(codeSource, shouldCache);
-        }
-
-        @Override
-        public void setResourceLoader(GroovyResourceLoader resourceLoader) {
-            delegate.setResourceLoader(resourceLoader);
-        }
-
-        @Override
-        public void addURL(URL url) {
-            delegate.addURL(url);
-        }
-
-        @Override
-        public Class defineClass(ClassNode classNode, String file, String newCodeBase) {
-            return delegate.defineClass(classNode, file, newCodeBase);
-        }
-
-        @Override
-        public Class parseClass(File file) throws CompilationFailedException, IOException {
-            return delegate.parseClass(file);
-        }
-
-        @Override
-        public Class parseClass(String text, String fileName) throws CompilationFailedException {
-            return delegate.parseClass(text, fileName);
-        }
-
-        @Override
-        public Class parseClass(String text) throws CompilationFailedException {
-            return delegate.parseClass(text);
-        }
-
-        @Override
-        public String generateScriptName() {
-            return delegate.generateScriptName();
-        }
-
-        @Override
-        public Class parseClass(Reader reader, String fileName) throws CompilationFailedException {
-            return delegate.parseClass(reader, fileName);
-        }
-
-        @Override
-        public Class parseClass(GroovyCodeSource codeSource) throws CompilationFailedException {
-            return delegate.parseClass(codeSource);
-        }
-
-        @Override
-        public Class defineClass(String name, byte[] b) {
-            return delegate.defineClass(name, b);
-        }
-
-        @Override
-        public Class loadClass(String name, boolean lookupScriptFiles, boolean preferClassOverScript) throws ClassNotFoundException, CompilationFailedException {
-            return delegate.loadClass(name, lookupScriptFiles, preferClassOverScript);
-        }
-
-        @Override
-        public void setShouldRecompile(Boolean mode) {
-            delegate.setShouldRecompile(mode);
-        }
-
-        @Override
-        public Boolean isShouldRecompile() {
-            return delegate.isShouldRecompile();
-        }
-
-        @Override
-        public Class<?> loadClass(String name) throws ClassNotFoundException {
-            return delegate.loadClass(name);
-        }
-
-        @Override
-        public Enumeration<URL> getResources(String name) throws IOException {
-            return delegate.getResources(name);
-        }
-
-        @Override
-        public void setDefaultAssertionStatus(boolean enabled) {
-            delegate.setDefaultAssertionStatus(enabled);
-        }
-
-        @Override
-        public void setPackageAssertionStatus(String packageName, boolean enabled) {
-            delegate.setPackageAssertionStatus(packageName, enabled);
-        }
-
-        @Override
-        public void setClassAssertionStatus(String className, boolean enabled) {
-            delegate.setClassAssertionStatus(className, enabled);
-        }
-
-        @Override
-        public void clearAssertionStatus() {
-            delegate.clearAssertionStatus();
-        }
-
-        @Override
-        public void close() throws IOException {
-            try {
-                super.close();
-            } finally {
-                delegate.close();
-            }
-        }
-
-        public long getTimeStamp() {
-            return timeStamp;
-        }
+    private ProtectionDomain getProtectionDomain() {
+        return getClass().getProtectionDomain();
     }
 
     /**
@@ -631,7 +575,7 @@ public class GroovyClassLoader extends URLClassLoader {
      * @param source the source containing the initial file to compile, more files may follow during compilation
      * @return the CompilationUnit
      */
-    protected CompilationUnit createCompilationUnit(CompilerConfiguration config, CodeSource source) {
+    protected CompilationUnit createCompilationUnit(final CompilerConfiguration config, final CodeSource source) {
         return new CompilationUnit(config, source, this);
     }
 
@@ -642,83 +586,12 @@ public class GroovyClassLoader extends URLClassLoader {
      * @param su   the SourceUnit
      * @return the ClassCollector
      */
-    protected ClassCollector createCollector(CompilationUnit unit, SourceUnit su) {
-        InnerLoader loader = AccessController.doPrivileged((PrivilegedAction<InnerLoader>) () -> new InnerLoader(GroovyClassLoader.this));
-        return new ClassCollector(loader, unit, su);
+    protected ClassCollector createCollector(final CompilationUnit unit, final SourceUnit su) {
+        return new ClassCollector(createLoader(), unit, su);
     }
 
-    public static class ClassCollector implements CompilationUnit.ClassgenCallback {
-        private Class generatedClass;
-        private final GroovyClassLoader cl;
-        private final SourceUnit su;
-        private final CompilationUnit unit;
-        private final Collection<Class> loadedClasses;
-
-        protected ClassCollector(InnerLoader cl, CompilationUnit unit, SourceUnit su) {
-            this.cl = cl;
-            this.unit = unit;
-            this.loadedClasses = new ArrayList<Class>();
-            this.su = su;
-        }
-
-        public GroovyClassLoader getDefiningClassLoader() {
-            return cl;
-        }
-
-        protected Class createClass(byte[] code, ClassNode classNode) {
-            BytecodeProcessor bytecodePostprocessor = unit.getConfiguration().getBytecodePostprocessor();
-            byte[] fcode = code;
-            if (bytecodePostprocessor!=null) {
-                fcode = bytecodePostprocessor.processBytecode(classNode.getName(), fcode);
-            }
-            GroovyClassLoader cl = getDefiningClassLoader();
-            Class theClass = cl.defineClass(classNode.getName(), fcode, 0, fcode.length, unit.getAST().getCodeSource());
-            this.loadedClasses.add(theClass);
-
-            if (generatedClass == null) {
-                ModuleNode mn = classNode.getModule();
-                SourceUnit msu = null;
-                if (mn != null) msu = mn.getContext();
-                ClassNode main = null;
-                if (mn != null) main = mn.getClasses().get(0);
-                if (msu == su && main == classNode) generatedClass = theClass;
-            }
-
-            return theClass;
-        }
-
-        protected Class onClassNode(ClassWriter classWriter, ClassNode classNode) {
-            byte[] code = classWriter.toByteArray();
-            return createClass(code, classNode);
-        }
-
-        @Override
-        public void call(ClassVisitor classWriter, ClassNode classNode) {
-            onClassNode((ClassWriter) classWriter, classNode);
-        }
-
-        public Collection getLoadedClasses() {
-            return this.loadedClasses;
-        }
-    }
-
-    /**
-     * open up the super class define that takes raw bytes
-     */
-    public Class defineClass(String name, byte[] b) {
-        return super.defineClass(name, b, 0, b.length);
-    }
-
-    /**
-     * loads a class from a file or a parent classloader.
-     * This method does call loadClass(String, boolean, boolean, boolean)
-     * with the last parameter set to false.
-     *
-     * @throws CompilationFailedException if compilation was not successful
-     */
-    public Class loadClass(final String name, boolean lookupScriptFiles, boolean preferClassOverScript)
-            throws ClassNotFoundException, CompilationFailedException {
-        return loadClass(name, lookupScriptFiles, preferClassOverScript, false);
+    private InnerLoader createLoader() {
+        return new InnerLoader(GroovyClassLoader.this);
     }
 
     /**
@@ -732,7 +605,7 @@ public class GroovyClassLoader extends URLClassLoader {
      * @see #setClassCacheEntry(Class)
      * @see #clearCache()
      */
-    protected Class getClassCacheEntry(String name) {
+    protected Class getClassCacheEntry(final String name) {
         return classCache.get(name);
     }
 
@@ -744,7 +617,7 @@ public class GroovyClassLoader extends URLClassLoader {
      * @see #getClassCacheEntry(String)
      * @see #clearCache()
      */
-    protected void setClassCacheEntry(Class cls) {
+    protected void setClassCacheEntry(final Class cls) {
         classCache.put(cls.getName(), cls);
     }
 
@@ -756,7 +629,7 @@ public class GroovyClassLoader extends URLClassLoader {
      * @see #setClassCacheEntry(Class)
      * @see #clearCache()
      */
-    protected void removeClassCacheEntry(String name) {
+    protected void removeClassCacheEntry(final String name) {
         classCache.remove(name);
     }
 
@@ -766,7 +639,7 @@ public class GroovyClassLoader extends URLClassLoader {
      * @param url the new classpath element
      */
     @Override
-    public void addURL(URL url) {
+    public void addURL(final URL url) {
         super.addURL(url);
     }
 
@@ -786,7 +659,7 @@ public class GroovyClassLoader extends URLClassLoader {
      * @return true if the class should be compiled again
      * @see #isSourceNewer(URL, Class)
      */
-    protected boolean isRecompilable(Class cls) {
+    protected boolean isRecompilable(final Class cls) {
         if (cls == null) return true;
         if (cls.getClassLoader() == this) return false;
         if (recompile == null && !config.getRecompileGroovySource()) return false;
@@ -797,15 +670,15 @@ public class GroovyClassLoader extends URLClassLoader {
     }
 
     /**
-     * sets if the recompilation should be enable. There are 3 possible
-     * values for this. Any value different than null overrides the
+     * sets if the recompilation should be enabled. There are 3 possible
+     * values for this. Any value different from null overrides the
      * value from the compiler configuration. true means to recompile if needed
      * false means to never recompile.
      *
      * @param mode the recompilation mode
      * @see CompilerConfiguration
      */
-    public void setShouldRecompile(Boolean mode) {
+    public void setShouldRecompile(final Boolean mode) {
         recompile = mode;
     }
 
@@ -821,36 +694,75 @@ public class GroovyClassLoader extends URLClassLoader {
     }
 
     /**
-     * loads a class from a file or a parent classloader.
+     * {@inheritDoc}
+     *
+     * @see ClassLoader#loadClass(String,boolean)
+     */
+    @Override
+    public Class<?> loadClass(final String name) throws ClassNotFoundException {
+        return loadClass(name, false);
+    }
+
+    /**
+     * Implemented here to check package access prior to returning an
+     * already-loaded class.
+     *
+     * @throws ClassNotFoundException if class could not be found
+     * @throws CompilationFailedException if compilation of script failed
+     */
+    @Override
+    protected Class<?> loadClass(final String name, final boolean resolve) throws ClassNotFoundException, CompilationFailedException {
+        return loadClass(name, true, true, resolve);
+    }
+
+    /**
+     * Loads a class from a file or a parent loader. This method delegates to:
+     * <pre>
+     * loadClass(name, lookupScriptFiles, preferClassOverScript, false);
+     * </pre>
+     *
+     * @throws ClassNotFoundException if class could not be found
+     * @throws CompilationFailedException if compilation of script failed
+     */
+    public Class loadClass(final String name, final boolean lookupScriptFiles, final boolean preferClassOverScript) throws ClassNotFoundException, CompilationFailedException {
+        return loadClass(name, lookupScriptFiles, preferClassOverScript, false);
+    }
+
+    /**
+     * Loads a class from a file or a parent loader.
      *
      * @param name                  of the class to be loaded
      * @param lookupScriptFiles     if false no lookup at files is done at all
      * @param preferClassOverScript if true the file lookup is only done if there is no class
-     * @param resolve               see {@link java.lang.ClassLoader#loadClass(java.lang.String, boolean)}
+     * @param resolve               see {@link ClassLoader#loadClass(String, boolean)}
      * @return the class found or the class created from a file lookup
-     * @throws ClassNotFoundException     if the class could not be found
-     * @throws CompilationFailedException if the source file could not be compiled
+     * @throws ClassNotFoundException     if class could not be found
+     * @throws CompilationFailedException if compilation of script failed
      */
-    public Class loadClass(final String name, boolean lookupScriptFiles, boolean preferClassOverScript, boolean resolve)
-            throws ClassNotFoundException, CompilationFailedException {
+    @SuppressWarnings("removal") // TODO a future Groovy version should remove the security check
+    public Class loadClass(final String name, final boolean lookupScriptFiles, final boolean preferClassOverScript, final boolean resolve) throws ClassNotFoundException, CompilationFailedException {
         // look into cache
-        Class cls = getClassCacheEntry(name);
+        Class<?> cls = getClassCacheEntry(name);
 
         // enable recompilation?
-        boolean recompile = isRecompilable(cls);
-        if (!recompile) return cls;
+        if (!isRecompilable(cls)) return cls;
 
         // try parent loader
         ClassNotFoundException last = null;
         try {
-            Class parentClassLoaderClass = super.loadClass(name, resolve);
+            Class<?> parentClassLoaderClass = super.loadClass(name, resolve);
             // always return if the parent loader was successful
             if (cls != parentClassLoaderClass) return parentClassLoaderClass;
         } catch (ClassNotFoundException cnfe) {
             last = cnfe;
         } catch (NoClassDefFoundError ncdfe) {
-            if (ncdfe.getMessage().indexOf("wrong name") > 0) {
+            // JVMS 5.3.5 / case-insensitive getResource. Do not inspect
+            // ncdfe.getMessage(): it can be null or localized. Only a confirmed
+            // bytecode-name mismatch becomes ClassNotFoundException so a groovy
+            // source of the requested name can still be compiled.
+            if (isConfirmedBytecodeNameMismatch(name)) {
                 last = new ClassNotFoundException(name);
+                last.addSuppressed(ncdfe);
             } else {
                 throw ncdfe;
             }
@@ -878,11 +790,11 @@ public class GroovyClassLoader extends URLClassLoader {
             // try groovy file
             try {
                 // check if recompilation already happened.
-                final Class classCacheEntry = getClassCacheEntry(name);
+                Class<?> classCacheEntry = getClassCacheEntry(name);
                 if (classCacheEntry != cls) return classCacheEntry;
                 URL source = resourceLoader.loadGroovySource(name);
                 // if recompilation fails, we want cls==null
-                Class oldClass = cls;
+                Class<?> oldClass = cls;
                 cls = null;
                 cls = recompile(source, name, oldClass);
             } catch (IOException ioe) {
@@ -905,6 +817,37 @@ public class GroovyClassLoader extends URLClassLoader {
     }
 
     /**
+     * True only when a {@code .class} resource exists and decompiles to a
+     * different binary name. Missing or unreadable resources are not a
+     * confirmed mismatch: the linking {@link NoClassDefFoundError} is kept.
+     */
+    private boolean isConfirmedBytecodeNameMismatch(final String name) {
+        if (name == null || name.isEmpty() || name.contains("/") || name.contains("\\") || name.contains("..")) {
+            return false;
+        }
+        for (String part : name.split("\\.")) {
+            if (part.isEmpty() || !Character.isJavaIdentifierStart(part.charAt(0))) {
+                return false;
+            }
+            for (int i = 1; i < part.length(); i += 1) {
+                if (!Character.isJavaIdentifierPart(part.charAt(i))) {
+                    return false;
+                }
+            }
+        }
+
+        URL resource = getResource(name.replace('.', '/') + ".class");
+        if (resource == null) {
+            return false;
+        }
+        try {
+            return !name.equals(AsmDecompiler.readClassName(resource));
+        } catch (IOException | IllegalArgumentException | IndexOutOfBoundsException | GroovyRuntimeException e) {
+            return false;
+        }
+    }
+
+    /**
      * (Re)Compiles the given source.
      * This method starts the compilation of a given source, if
      * the source has changed since the class was created. For
@@ -918,7 +861,7 @@ public class GroovyClassLoader extends URLClassLoader {
      * @throws IOException                if the source is not readable
      * @see #isSourceNewer(URL, Class)
      */
-    protected Class recompile(URL source, String className, Class oldClass) throws CompilationFailedException, IOException {
+    protected Class recompile(final URL source, final String className, final Class oldClass) throws CompilationFailedException, IOException {
         if (source != null) {
             // found a source, compile it if newer
             if (oldClass == null || isSourceNewer(source, oldClass)) {
@@ -939,26 +882,8 @@ public class GroovyClassLoader extends URLClassLoader {
         return oldClass;
     }
 
-    @Override
-    public Class<?> loadClass(String name) throws ClassNotFoundException {
-        return loadClass(name, false);
-    }
-
     /**
-     * Implemented here to check package access prior to returning an
-     * already loaded class.
-     *
-     * @throws CompilationFailedException if the compilation failed
-     * @throws ClassNotFoundException     if the class was not found
-     * @see java.lang.ClassLoader#loadClass(java.lang.String, boolean)
-     */
-    @Override
-    protected Class loadClass(final String name, boolean resolve) throws ClassNotFoundException {
-        return loadClass(name, true, true, resolve);
-    }
-
-    /**
-     * gets the time stamp of a given class. For groovy
+     * Gets the time stamp of a given class. For groovy
      * generated classes this usually means to return the value
      * of the static field __timeStamp. If the parameter doesn't
      * have such a field, then Long.MAX_VALUE is returned
@@ -966,7 +891,7 @@ public class GroovyClassLoader extends URLClassLoader {
      * @param cls the class
      * @return the time stamp
      */
-    protected long getTimeStamp(Class cls) {
+    protected long getTimeStamp(final Class cls) {
         return Verifier.getTimestamp(cls);
     }
 
@@ -979,23 +904,15 @@ public class GroovyClassLoader extends URLClassLoader {
      * where two scripts were sitting in a directory with spaces in its name.  The code would fail
      * when the class loader tried to resolve the file name and would choke on the URLEncoded space values.
      */
-    private static String decodeFileName(String fileName) {
-        String decodedFile = fileName;
-        try {
-            decodedFile = URLDecoder.decode(fileName, "UTF-8");
-        } catch (UnsupportedEncodingException e) {
-            System.err.println("Encountered an invalid encoding scheme when trying to use URLDecoder.decode() inside of the GroovyClassLoader.decodeFileName() method.  Returning the unencoded URL.");
-            System.err.println("Please note that if you encounter this error and you have spaces in your directory you will run into issues.  Refer to GROOVY-1787 for description of this bug.");
-        }
-
-        return decodedFile;
+    private static String decodeFileName(final String fileName) {
+        return URLDecoder.decode(fileName, StandardCharsets.UTF_8);
     }
 
-    private static boolean isFile(URL ret) {
-        return ret != null && ret.getProtocol().equals("file");
+    private static boolean isFile(final URL ret) {
+        return ret != null && "file".equals(ret.getProtocol());
     }
 
-    private static File getFileForUrl(URL ret, String filename) {
+    private static File getFileForUrl(final URL ret, final String filename) {
         String fileWithoutPackage = filename;
         if (fileWithoutPackage.indexOf('/') != -1) {
             int index = fileWithoutPackage.lastIndexOf('/');
@@ -1004,7 +921,7 @@ public class GroovyClassLoader extends URLClassLoader {
         return fileReallyExists(ret, fileWithoutPackage);
     }
 
-    private static File fileReallyExists(URL ret, String fileWithoutPackage) {
+    private static File fileReallyExists(final URL ret, final String fileWithoutPackage) {
         File path;
         try {
             /* fix for GROOVY-5809 */
@@ -1016,8 +933,8 @@ public class GroovyClassLoader extends URLClassLoader {
 
         File file = new File(path, fileWithoutPackage);
         if (file.exists()) {
-            // file.exists() might be case insensitive.
-            // Let's do case sensitive match for the filename
+            // file.exists() might be case-insensitive.
+            // Let's do case-sensitive match for the filename
             try {
                 String caseSensitiveName = file.getCanonicalPath();
                 int index = caseSensitiveName.lastIndexOf(File.separator);
@@ -1030,49 +947,34 @@ public class GroovyClassLoader extends URLClassLoader {
             } catch (IOException ignore) {
                 // assume doesn't really exist if we can't read the file
             }
-
         }
 
         // file does not exist!
         return null;
     }
 
-    private URL getSourceFile(String name, String extension) {
+    private URL getSourceFile(final String name, final String extension) {
         String filename = name.replace('.', '/') + "." + extension;
-        URL ret = getResource(filename);
-        if (isFile(ret) && getFileForUrl(ret, filename) == null) return null;
-        return ret;
+        URL url = getResource(filename);
+        if (isFile(url) && getFileForUrl(url, filename) == null) return null;
+        return url;
     }
 
     /**
      * Decides if the given source is newer than a class.
+     * Last-modified is read via {@link URLStreams#getLastModified(URL)}. A
+     * class is considered current until the source is newer by more than
+     * {@link CompilerConfiguration#getMinimumRecompilationInterval()}.
      *
      * @param source the source we may want to compile
      * @param cls    the former class
      * @return true if the source is newer, false else
-     * @throws IOException if it is not possible to open an
+     * @throws IOException if it is not possible to open a
      *                     connection for the given source
      * @see #getTimeStamp(Class)
      */
-    protected boolean isSourceNewer(URL source, Class cls) throws IOException {
-        long lastMod;
-
-        // Special handling for file:// protocol, as getLastModified() often reports
-        // incorrect results (-1)
-        if (isFile(source)) {
-            // Coerce the file URL to a File
-            // See ClassNodeResolver.isSourceNewer for another method that replaces '|' with ':'.
-            // WTF: Why is this done and where is it documented?
-            String path = source.getPath().replace('/', File.separatorChar).replace('|', ':');
-            File file = new File(path);
-            lastMod = file.lastModified();
-        } else {
-            URLConnection conn = source.openConnection();
-            lastMod = conn.getLastModified();
-            conn.getInputStream().close();
-        }
-        long classTime = getTimeStamp(cls);
-        return classTime + config.getMinimumRecompilationInterval() < lastMod;
+    protected boolean isSourceNewer(final URL source, final Class cls) throws IOException {
+        return getTimeStamp(cls) + config.getMinimumRecompilationInterval() < URLStreams.getLastModified(source);
     }
 
     /**
@@ -1082,41 +984,37 @@ public class GroovyClassLoader extends URLClassLoader {
      * @see #addURL(URL)
      */
     public void addClasspath(final String path) {
-        AccessController.doPrivileged((PrivilegedAction<Void>) () -> {
+        URI newURI;
+        try {
+            newURI = new URI(path);
+            // check if we can create a URL from that URI
+            newURI.toURL();
+        } catch (URISyntaxException | IllegalArgumentException | MalformedURLException e) {
+            // the URI has a false format, so lets try it with files ...
+            newURI = new File(path).toURI();
+        }
 
-            URI newURI;
+        URL[] urls = getURLs();
+        for (URL url : urls) {
+            // Do not use URL.equals.  It uses the network to resolve names and compares ip addresses!
+            // That is a violation of RFC and just plain evil.
+            // http://michaelscharf.blogspot.com/2006/11/javaneturlequals-and-hashcode-make.html
+            // https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/net/URL.html#equals(java.lang.Object)
+            // "Since hosts comparison requires name resolution, this operation is a blocking operation.
+            // Note: The defined behavior for equals is known to be inconsistent with virtual hosting in HTTP."
             try {
-                newURI = new URI(path);
-                // check if we can create a URL from that URI
-                newURI.toURL();
-            } catch (URISyntaxException | IllegalArgumentException | MalformedURLException e) {
-                // the URI has a false format, so lets try it with files ...
-                newURI=new File(path).toURI();
+                if (newURI.equals(url.toURI())) return;
+            } catch (URISyntaxException e) {
+                // fail fast! if we got a malformed URI the Classloader has to tell it
+                throw new RuntimeException(e);
             }
-
-            URL[] urls = getURLs();
-            for (URL url : urls) {
-                // Do not use URL.equals.  It uses the network to resolve names and compares ip addresses!
-                // That is a violation of RFC and just plain evil.
-                // http://michaelscharf.blogspot.com/2006/11/javaneturlequals-and-hashcode-make.html
-                // http://docs.oracle.com/javase/7/docs/api/java/net/URL.html#equals(java.lang.Object)
-                // "Since hosts comparison requires name resolution, this operation is a blocking operation.
-                // Note: The defined behavior for equals is known to be inconsistent with virtual hosting in HTTP."
-                try {
-                    if (newURI.equals(url.toURI())) return null;
-                } catch (URISyntaxException e) {
-                    // fail fast! if we got a malformed URI the Classloader has to tell it
-                    throw new RuntimeException( e );
-                }
-            }
-            try {
-                addURL(newURI.toURL());
-            } catch (MalformedURLException e) {
-                // fail fast! if we got a malformed URL the Classloader has to tell it
-                throw new RuntimeException( e );
-            }
-            return null;
-        });
+        }
+        try {
+            addURL(newURI.toURL());
+        } catch (MalformedURLException e) {
+            // fail fast! if we got a malformed URL the Classloader has to tell it
+            throw new RuntimeException(e);
+        }
     }
 
     /**
@@ -1125,7 +1023,7 @@ public class GroovyClassLoader extends URLClassLoader {
      * @return all classes loaded by this class loader
      */
     public Class[] getLoadedClasses() {
-        return classCache.values().toArray(EMPTY_CLASS_ARRAY);
+        return classCache.values().toArray(Class[]::new);
     }
 
     /**
@@ -1140,11 +1038,9 @@ public class GroovyClassLoader extends URLClassLoader {
      * @see #removeClassCacheEntry(String)
      */
     public void clearCache() {
-        Map<String, Class> clearedClasses = classCache.clearAll();
-
         sourceCache.clear();
 
-        for (Map.Entry<String, Class> entry : clearedClasses.entrySet()) {
+        for (var entry : classCache.clearAll().entrySet()) {
             // Another Thread may be using an instance of this class
             // (for the first time) requiring a ClassInfo lock and
             // classloading which would require a lock on classCache.
@@ -1171,46 +1067,375 @@ public class GroovyClassLoader extends URLClassLoader {
         clearCache();
     }
 
-    private static class TimestampAdder implements CompilationUnit.IPrimaryClassNodeOperation, Opcodes {
+    //--------------------------------------------------------------------------
+
+    /**
+     * Loader used while defining classes during a compilation round.
+     */
+    public static class InnerLoader extends GroovyClassLoader {
+        private final GroovyClassLoader delegate;
+        private final long timeStamp;
+
+        /**
+         * Creates an inner loader delegating to the supplied outer Groovy class loader.
+         *
+         * @param delegate the outer loader that owns caches and resources
+         */
+        public InnerLoader(final GroovyClassLoader delegate) {
+            super(delegate);
+            this.delegate = delegate;
+            timeStamp = System.currentTimeMillis();
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public void addClasspath(final String path) {
+            delegate.addClasspath(path);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public void addURL(final URL url) {
+            delegate.addURL(url);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public void clearAssertionStatus() {
+            delegate.clearAssertionStatus();
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public void clearCache() {
+            delegate.clearCache();
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public void close() throws IOException {
+            try {
+                super.close();
+            } finally {
+                delegate.close();
+            }
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public Class defineClass(final ClassNode classNode, final String file, final String newCodeBase) {
+            return delegate.defineClass(classNode, file, newCodeBase);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public Class defineClass(final String name, final byte[] b) {
+            return delegate.defineClass(name, b);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public URL findResource(final String name) {
+            return delegate.findResource(name);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public Enumeration<URL> findResources(final String name) throws IOException {
+            return delegate.findResources(name);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public String generateScriptName() {
+            return delegate.generateScriptName();
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public Class[] getLoadedClasses() {
+            return delegate.getLoadedClasses();
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public URL getResource(final String name) {
+            return delegate.getResource(name);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public InputStream getResourceAsStream(final String name) {
+            return delegate.getResourceAsStream(name);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public GroovyResourceLoader getResourceLoader() {
+            return delegate.getResourceLoader();
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public Enumeration<URL> getResources(final String name) throws IOException {
+            return delegate.getResources(name);
+        }
+
+        /**
+         * Returns the creation timestamp of this inner loader.
+         *
+         * @return the timestamp captured when the loader was created
+         */
+        public long getTimeStamp() {
+            return timeStamp;
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public URL[] getURLs() {
+            return delegate.getURLs();
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public Boolean isShouldRecompile() {
+            return delegate.isShouldRecompile();
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public Class<?> loadClass(final String name) throws ClassNotFoundException {
+            return delegate.loadClass(name);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public Class loadClass(final String name, final boolean lookupScriptFiles, final boolean preferClassOverScript) throws ClassNotFoundException, CompilationFailedException {
+            return delegate.loadClass(name, lookupScriptFiles, preferClassOverScript);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public Class loadClass(final String name, final boolean lookupScriptFiles, final boolean preferClassOverScript, final boolean resolve) throws ClassNotFoundException, CompilationFailedException {
+            var c = findLoadedClass(name);
+            if (c == null)
+                c = delegate.loadClass(name, lookupScriptFiles, preferClassOverScript, resolve);
+            return c;
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public Class parseClass(final File file) throws CompilationFailedException, IOException {
+            return delegate.parseClass(file);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public Class parseClass(final GroovyCodeSource codeSource) throws CompilationFailedException {
+            return delegate.parseClass(codeSource);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public Class parseClass(final GroovyCodeSource codeSource, final boolean shouldCache) throws CompilationFailedException {
+            return delegate.parseClass(codeSource, shouldCache);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public Class parseClass(final Reader reader, final String fileName) throws CompilationFailedException {
+            return delegate.parseClass(reader, fileName);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public Class parseClass(final String text) throws CompilationFailedException {
+            return delegate.parseClass(text);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public Class parseClass(final String text, final String fileName) throws CompilationFailedException {
+            return delegate.parseClass(text, fileName);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public void setClassAssertionStatus(final String className, final boolean enabled) {
+            delegate.setClassAssertionStatus(className, enabled);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public void setDefaultAssertionStatus(final boolean enabled) {
+            delegate.setDefaultAssertionStatus(enabled);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public void setPackageAssertionStatus(final String packageName, final boolean enabled) {
+            delegate.setPackageAssertionStatus(packageName, enabled);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public void setResourceLoader(final GroovyResourceLoader resourceLoader) {
+            delegate.setResourceLoader(resourceLoader);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public void setShouldRecompile(final Boolean mode) {
+            delegate.setShouldRecompile(mode);
+        }
+    }
+
+    /**
+     * Collects classes defined during a compilation unit callback.
+     */
+    public static class ClassCollector implements CompilationUnit.ClassgenCallback {
+        private Class generatedClass;
+        private final GroovyClassLoader cl;
+        private final SourceUnit        su;
+        private final CompilationUnit unit;
+        private final Collection<Class> loadedClasses = new ArrayList<>();
+
+        /**
+         * Creates a class collector for the supplied compilation state.
+         *
+         * @param cl the defining loader used for generated classes
+         * @param unit the compilation unit producing classes
+         * @param su the primary source unit for the compilation round
+         */
+        protected ClassCollector(final InnerLoader cl, final CompilationUnit unit, final SourceUnit su) {
+            this.cl = cl;
+            this.su = su;
+            this.unit = unit;
+        }
+
+        /**
+         * Returns the loader used to define generated classes.
+         *
+         * @return the defining class loader
+         */
+        public GroovyClassLoader getDefiningClassLoader() {
+            return cl;
+        }
+
+        /**
+         * Defines a generated class from bytecode produced for a class node.
+         *
+         * @param code the generated bytecode
+         * @param classNode the corresponding class node
+         * @return the defined class
+         */
+        protected Class createClass(final byte[] code, final ClassNode classNode) {
+            BytecodeProcessor bytecodePostprocessor = unit.getConfiguration().getBytecodePostprocessor();
+            byte[] fcode = code;
+            if (bytecodePostprocessor != null) {
+                fcode = bytecodePostprocessor.processBytecode(classNode.getName(), fcode);
+            }
+            Class<?> theClass = getDefiningClassLoader().defineClass(classNode.getName(), fcode, 0, fcode.length, unit.getAST().getCodeSource());
+            loadedClasses.add(theClass);
+
+            if (generatedClass == null) {
+                ModuleNode mn = classNode.getModule();
+                SourceUnit msu = null;
+                if (mn != null) msu = mn.getContext();
+                ClassNode main = null;
+                if (mn != null) main = mn.getClasses().get(0);
+                if (msu == su && main == classNode) generatedClass = theClass;
+            }
+
+            return theClass;
+        }
+
+        /**
+         * Converts the generated class writer output into a defined class.
+         *
+         * @param classWriter the ASM writer containing generated bytecode
+         * @param classNode the corresponding class node
+         * @return the defined class
+         */
+        protected Class onClassNode(final ClassWriter classWriter, final ClassNode classNode) {
+            byte[] code = classWriter.toByteArray();
+            return createClass(code, classNode);
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public void call(final ClassVisitor classWriter, final ClassNode classNode) {
+            onClassNode((ClassWriter) classWriter, classNode);
+        }
+
+        /**
+         * Returns the classes defined during the current compilation callback.
+         *
+         * @return the generated classes in definition order
+         */
+        public Collection getLoadedClasses() {
+            return loadedClasses;
+        }
+    }
+
+    private static class TimestampAdder implements CompilationUnit.IPrimaryClassNodeOperation {
         private static final TimestampAdder INSTANCE = new TimestampAdder();
 
         private TimestampAdder() {}
 
-        protected void addTimeStamp(ClassNode node) {
-            if (node.getDeclaredField(Verifier.__TIMESTAMP) == null) { // in case if verifier visited the call already
+        /**
+         * Adds Groovy timestamp marker fields to a generated primary class.
+         *
+         * @param node the class node to augment
+         */
+        protected void addTimeStamp(final ClassNode node) {
+            if (node.getDeclaredField(Verifier.__TIMESTAMP) == null) { // in case Verifier visited the call already
                 FieldNode timeTagField = new FieldNode(
                         Verifier.__TIMESTAMP,
-                        ACC_PUBLIC | ACC_STATIC | ACC_SYNTHETIC,
+                        Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC,
                         ClassHelper.long_TYPE,
-                        //"",
                         node,
                         new ConstantExpression(System.currentTimeMillis()));
-                // alternatively, FieldNode timeTagField = SourceUnit.createFieldNode("public static final long __timeStamp = " + System.currentTimeMillis() + "L");
                 timeTagField.setSynthetic(true);
                 node.addField(timeTagField);
 
                 timeTagField = new FieldNode(
                         Verifier.__TIMESTAMP__ + System.currentTimeMillis(),
-                        ACC_PUBLIC | ACC_STATIC | ACC_SYNTHETIC,
+                        Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_SYNTHETIC,
                         ClassHelper.long_TYPE,
-                        //"",
                         node,
-                        new ConstantExpression((long) 0));
-                // alternatively, FieldNode timeTagField = SourceUnit.createFieldNode("public static final long __timeStamp = " + System.currentTimeMillis() + "L");
+                        new ConstantExpression(0L));
                 timeTagField.setSynthetic(true);
                 node.addField(timeTagField);
             }
         }
 
+        /** {@inheritDoc} */
         @Override
         public void call(final SourceUnit source, final GeneratorContext context, final ClassNode classNode) throws CompilationFailedException {
-            if ((classNode.getModifiers() & Opcodes.ACC_INTERFACE) > 0) {
-                // does not apply on interfaces
-                return;
-            }
-            if (!(classNode instanceof InnerClassNode)) {
+            if (!classNode.isInterface() && classNode.getOuterClass() == null) {
                 addTimeStamp(classNode);
             }
+        }
+    }
+
+    /**
+     * Generates an encoded string based on the specified characters and the defined encoding algorithm.
+     * Supported algorithms currently are "md5" and sha256".
+     * An exception is throw for an unknown algorithm or if the JVM doesn't support the algorithm.
+     *
+     * @param chars The characters to encode.
+     * @return The encoded string.
+     */
+    public String genEncodingString(CharSequence chars) {
+        try {
+            return switch (HASH_ALGORITHM) {
+                case "md5" -> EncodingGroovyMethods.md5(chars);
+                case "sha256" -> EncodingGroovyMethods.sha256(chars);
+                default -> throw new IllegalStateException("Unknown hash algorithm");
+            };
+        } catch (NoSuchAlgorithmException e) {
+            throw new GroovyRuntimeException(e);
         }
     }
 }

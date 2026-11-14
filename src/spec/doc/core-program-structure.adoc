@@ -31,7 +31,7 @@ This chapter covers the program structure of the Groovy programming language.
 
 == Package names
 
-Package names play exactly the same role as in Java. They allows us to separate the code base without any conflicts. Groovy classes must specify their package before the class definition, else the default package is assumed. 
+Package names play exactly the same role as in Java. They allow us to separate the code base without any conflicts. Groovy classes must specify their package before the class definition, else the default package is assumed.
 
 Defining a package is very similar to Java:
 
@@ -62,7 +62,7 @@ Default imports are the imports that Groovy language provides by default. For ex
 include::../test/PackageTest.groovy[tags=default_import,indent=0]
 ----
 
-The same code in Java needs an import statement to `Date` class like this: ++import java.util.Date++. Groovy by default imports these classes for you. 
+The same code in Java needs an import statement to `Date` class like this: ++import java.util.Date++. Groovy by default imports these classes for you.
 
 The below imports are added by groovy for you:
 
@@ -72,6 +72,7 @@ import java.lang.*
 import java.util.*
 import java.io.*
 import java.net.*
+import java.time.*
 import groovy.lang.*
 import groovy.util.*
 import java.math.BigInteger
@@ -82,7 +83,7 @@ This is done because the classes from these packages are most commonly used. By 
 
 === Simple import
 
-A simple import is an import statement where you fully define the class name along with the package. For example the import statement ++import groovy.xml.MarkupBuilder++ in the code below is a simple import which directly refers to a class inside a package.
+A simple import is an import statement where you fully define the class name along with the package. For example the import statement `import groovy.xml.MarkupBuilder` in the code below is a simple import which directly refers to a class inside a package.
 
 [source,groovy]
 ----
@@ -91,7 +92,7 @@ include::../test/PackageTest.groovy[tags=import_statement,indent=0]
 
 === Star import
 
-Groovy, like Java, provides a special way to import all classes from a package using `*`, the so called star import. `MarkupBuilder` is a class which is in package `groovy.xml`, alongside another class called `StreamingMarkupBuilder`. In case you need to use both classes, you can do:
+Groovy, like Java, provides a special way to import all classes from a package using `*`, the so-called on-demand or star import. `MarkupBuilder` is a class which is in package `groovy.xml`, alongside another class called `StreamingMarkupBuilder`. In case you need to use both classes, you can do:
 
 [source,groovy]
 ----
@@ -105,7 +106,7 @@ That's perfectly valid code. But with a `*` import, we can achieve the same effe
 include::../test/PackageTest.groovy[tags=star_import,indent=0]
 ----
 
-One problem with `*` imports is that they can clutter your local namespace. But with the kinds of aliasing provided by Groovy, this can be solved easily. 
+One problem with `*` imports is that they can clutter your local namespace. But with the kinds of aliasing provided by Groovy, this can be solved easily.
 
 === Static import
 
@@ -124,9 +125,9 @@ include::../test/PackageTest.groovy[tags=static_import_same_method_name_differen
 ----
 <1> static import of method
 <2> declaration of method with same name as method statically imported above, but with a different parameter type
-<3> compile error in java, but is valid groovy code
+<3> compile error in Java, but is valid Groovy code
 
-If you have the same types, the imported class takes precedence.
+If you have the same signature, the imported method takes precedence.
 
 === Static import aliasing
 
@@ -141,10 +142,9 @@ Now, that's clean!
 
 === Static star import
 
-A static star import is very similar to the regular star import. It will import all the static methods from the given class.
+A static star import is very similar to the regular star import. It will import all the static members from the given class.
 
-For example, lets say we need to calculate sines and cosines for our application. 
-The class `java.lang.Math` has static methods named `sin` and `cos` which fit our need. With the help of a static star import, we can do:
+For example, let's say we need to calculate sines and cosines for our application. The class `java.lang.Math` has static methods named `sin` and `cos` which fit our need. With the help of a static star import, we can do:
 
 [source,groovy]
 ----
@@ -164,10 +164,77 @@ For example we can import `java.sql.Date` as `SQLDate` and use it in the same fi
 include::../test/PackageTest.groovy[tags=alias_import,indent=0]
 ----
 
+=== Module import
+
+Groovy supports Java's module import declarations (https://openjdk.org/jeps/476[JEP 476], finalized in Java 25).
+A module import imports all public types from all packages exported by the named module with a single statement:
+
+[source,groovy]
+----
+include::../test/PackageTest.groovy[tags=module_import,indent=0]
+----
+
+This is equivalent to writing a star import (`import pkg.*`) for every package the module exports.
+
+Module imports also include packages from any modules that the named module `requires transitive`.
+For example, `java.sql` transitively requires `java.xml`, `java.logging`, and `java.transaction.xa`:
+
+[source,groovy]
+----
+include::../test/PackageTest.groovy[tags=module_import_transitive,indent=0]
+----
+
+Module imports work with system modules (JDK modules like `java.base`, `java.sql`, `java.desktop`),
+JPMS modules from modular JARs on the classpath (those containing `module-info.class`),
+and automatic modules (JARs with an `Automatic-Module-Name` manifest entry).
+
+Explicit single-type imports take priority over module-expanded imports, which allows you to
+resolve any ambiguity by adding a specific import:
+
+[source,groovy]
+----
+include::../test/PackageTest.groovy[tags=module_import_with_explicit,indent=0]
+----
+
+NOTE: The `module` keyword is context-sensitive — it can still be used as a variable, method, or class name.
+Wildcard (`import module java.base.*`) and alias (`import module java.base as jb`) forms are not supported.
+
+=== Namespace conflicts
+
+Similar to Java, it is an error in Groovy to specify multiple imports with the same name but different types:
+
+[source,groovy]
+----
+import java.awt.List
+import java.util.List // error: name already declared
+----
+
+And to declare an import and a top-level type with the same name:
+
+[source,groovy]
+----
+import java.util.List
+class List { } // error: name already declared
+----
+
+However, inner types can shadow names from the unit scope:
+
+[source,groovy]
+----
+import java.util.List
+class Main {
+    class List { } // allowed; "List" refers to this type within `Main`'s scope and `java.util.List` elsewhere
+}
+----
+
 == Scripts versus classes
 
-=== public static void main vs script
-Groovy supports both scripts and classes. Take the following code for example:
+Groovy supports both scripts and classes. From Groovy 5,
+Groovy also supports https://openjdk.org/jeps/445[JEP 445] compatible scripts.
+
+=== Motivation for scripts
+
+Take the following code for example:
 
 [source,groovy]
 .Main.groovy
@@ -187,9 +254,11 @@ Groovy makes it easier, the following code is equivalent:
 include::../test/ScriptsAndClassesSpecTest.groovy[tags=groovy_script,indent=0]
 ----
 
-A script can be considered as a class without needing to declare it, with some differences.
+A script can be considered as a class without needing to explicitly declare it.
+There are some differences which we'll cover next. First, we'll cover Groovy's
+main `Script` class. Then, we'll cover JEP 445 compatible classes.
 
-=== Script class
+=== `Script` class
 
 A gapi:groovy.lang.Script[script] is always compiled into a class. The Groovy compiler will compile the class for you,
 with the body of the script copied into a `run` method. The previous example is therefore compiled as if it was the
@@ -229,13 +298,17 @@ include::../test/ScriptsAndClassesSpecTest.groovy[tags=multiple_methods_assembly
 <2> a method is defined within the script body
 <3> and script continues
 
-This code is internally converted into:
+Statements 1 and 3 are sometimes referred to as "loose" statements.
+They are not contained within an explicit enclosing method or class.
+Loose statements are assembled sequentially into the `run` method.
+
+So, the above code is internally converted into:
 
 [source,groovy]
 ----
 include::../test/ScriptsAndClassesSpecTest.groovy[tags=multiple_methods_assembly_equiv,indent=0]
 ----
-<1> the `power` method is copied as is into the generated script class
+<1> the `power` method is copied as-is into the generated script class
 <2> first statement is copied into the `run` method
 <3> second statement is copied into the `run` method
 
@@ -266,12 +339,126 @@ method that the compiler will generate and will *not* be visible outside of the 
 a variable will *not* be visible in other methods of the script
 * if the variable is undeclared, it goes into the gapi:groovy.lang.Script#getBinding()[script binding]. The binding is
 visible from the methods, and is especially important if you use a script to interact with an application and need to
-share data between the script and the application. Readers might refer to the 
+share data between the script and the application. Readers might refer to the
 <<{guide-integrating}#_integrating_groovy_in_a_java_application,integration guide>> for more information.
 
 TIP: Another approach to making a variable visible to all methods, is to use the
 <<{core-metaprogramming}#xform-Field,@Field annotation>>.
 A variable annotated this way will become a field of the generated script class and,
 as for local variables, access won't involve the script `Binding`.
-While not recommended, if you have a local variable or script field with the same name as a binding variable,
+If you have a local variable or script field with the same name as a binding variable,
+we recommend renaming one of them to avoid potential confusion. If that's not possible,
 you can use `binding.varName` to access the binding variable.
+
+=== Convenience variations
+
+As mentioned previously, normally, `public static void main` and `run` methods
+are automatically added to your script, so it is normally illegal to add your own versions
+of either of those; you would see a duplicate method compiler error if you tried.
+
+However, there are some exceptions where the above rules don't apply.
+If your script contains _only_ a compatible main method and no other loose statements,
+or _only_ a no-arg `run` instance method (from Groovy 5), then it is allowed.
+In this case, no loose statements (because there aren't any) are collected into the `run` method.
+The method you supplied is used instead of Groovy adding the respective method(s).
+
+This can be useful if you need to add an annotation to the otherwise implicitly added
+`main` or `run` methods as this example shows:
+
+[source,groovy]
+----
+include::../test/ScriptsAndClassesSpecTest.groovy[tags=script_with_explicit_static_main,indent=0]
+----
+
+To be recognised as a convenience variation, as well as having no loose statements,
+the parameter for the `main` method should be:
+
+* untyped as above (`Object` type),
+* or of type `String[]`,
+* or have no arguments (from Groovy 5).
+
+From Groovy 5, a no-arg instance `run` variant is also supported.
+This also allows annotations to be added.
+The `run` variant follows the JEP 445 rules for field declarations
+(hence doesn't need to use the `@Field` annotation)
+as this example involving Jackson JSON serialization shows:
+
+[source,groovy]
+----
+include::../test/ScriptsAndClassesSpecTest.groovy[tags=script_with_explicit_instance_run,indent=0]
+----
+
+The `run` variant is recommended if you need your script to extend the `Script` class
+and have access to the script context and bindings. If you don't have that requirement,
+providing one of the `main` variants will create a JEP 445 compatible class which won't
+extend `Script`. We'll cover JEP 445 compatible scripts in more detail next.
+
+== JEP 445 compatible scripts
+
+From Groovy 5, support has been added for JEP 445 compatible scripts containing
+a `main` method. Such scripts have several differences to normal Groovy `Script` classes:
+
+* they won't have a `public static void main` method added
+* they won't extend the `Script` class and hence won't have access to the script
+context or binding variables
+* allows additional class-level _fields_ and _methods_ to be defined in addition to `main`
+* can't have "loose" statements outside the `main` method (excluding any field definitions)
+
+A simple example might look like:
+
+[source,groovy]
+----
+include::../test/ScriptsAndClassesSpecTest.groovy[tags=jep445_barescript,indent=0]
+----
+
+An example with additional fields and methods might look like:
+
+[source,groovy]
+----
+include::../test/ScriptsAndClassesSpecTest.groovy[tags=jep445_script,indent=0]
+----
+<1> Note that multi-assignment syntax is supported and results in separate field definitions for each component.
+
+=== Differences with Java JEP 445 behavior
+
+There are some differences with Groovy's JEP 445 support and that offered by Java:
+
+* Java supports either a no-arg `main` method or one containing a single `String[]` parameter.
+Groovy also adds support for a single untyped (`Object`) parameter, e.g. `def main(args) { ... }`.
+This addition is known by the Groovy runner but would not be known by the
+Java launch protocol for a JDK supporting JEP 445.
+* Java supports `void` main methods. Groovy also adds support for untyped `def` (`Object`) methods,
+e.g. `def main(...)` as well as `void main(...)`.
+This addition is known by the Groovy runner but would not be known by the Java launch protocol
+for a JDK supporting JEP 445.
+* For static `main` variants, Groovy _promotes_ the no-arg or untyped variants to have the
+standard `public static void main(String[] args)` signature. This is for compatibility
+with versions of Groovy prior to Groovy 5 (where JEP 445 support was added).
+As a consequence, such classes are compatible with the Java launch protocol prior to JEP 445 support.
+* Groovy's runner has been made aware of JEP 445 compatible classes and can run all variations
+for JDK11 and above and without the need for preview mode to be enabled.
+
+=== Main method selection priority
+
+When a class has multiple valid `main` method signatures, the Groovy runner selects one
+using a priority order aligned with JEP 512. Static methods take priority over instance
+methods, and methods with parameters take priority over no-arg methods:
+
+[cols="1,3"]
+|===
+| Priority | Method signature
+
+| 1 | `static main(String[] args)`
+| 2 | `static main(Object args)`
+| 3 | `static main()`
+| 4 | `main(String[] args)` (instance)
+| 5 | `main(Object args)` (instance)
+| 6 | `main()` (instance)
+|===
+
+Only one method is selected — lower-priority `main` methods are not reachable from the
+Groovy runner. A compile-time warning is issued for any valid `main` method that would
+be shadowed by a higher-priority one.
+
+NOTE: Having multiple `main` method overloads in a single class is considered poor style.
+We recommend providing a single `main` method to avoid any confusion about which one will run.

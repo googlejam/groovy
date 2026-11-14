@@ -39,6 +39,9 @@ import static org.objectweb.asm.Opcodes.LUSHR;
 import static org.objectweb.asm.Opcodes.LXOR;
 import static org.objectweb.asm.Opcodes.POP2;
 
+/**
+ * Binary expression helper specialized for {@code long} operations.
+ */
 public class BinaryLongExpressionHelper extends BinaryExpressionWriter {
 
     /**
@@ -48,10 +51,18 @@ public class BinaryLongExpressionHelper extends BinaryExpressionWriter {
         super(controller, arraySet, arrayGet);
     }
 
+    /**
+     * Creates a {@code long}-specialized binary expression helper.
+     *
+     * @param controller the active writer controller
+     */
     public BinaryLongExpressionHelper(WriterController controller) {
         this(controller, longArraySet, longArrayGet);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void doubleTwoOperands(MethodVisitor mv) {
         /*
@@ -61,7 +72,7 @@ public class BinaryLongExpressionHelper extends BinaryExpressionWriter {
             DUP2_X1
             DUP2_X1
             POP2
-            DUP2_X1          
+            DUP2_X1
          */
         mv.visitInsn(DUP2_X1);
         mv.visitInsn(POP2);
@@ -71,32 +82,44 @@ public class BinaryLongExpressionHelper extends BinaryExpressionWriter {
         mv.visitInsn(DUP2_X1);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void removeTwoOperands(MethodVisitor mv) {
         mv.visitInsn(POP2);
         mv.visitInsn(POP2);
     }
 
-    private static final MethodCaller 
+    private static final MethodCaller
         longArrayGet = MethodCaller.newStatic(BytecodeInterface8.class, "lArrayGet"),
         longArraySet = MethodCaller.newStatic(BytecodeInterface8.class, "lArraySet");
 
     private static final int[] bitOp = {
         LOR,            //  BITWISE_OR / PIPE   340
         LAND,           //  BITWISE_AND         341
-        LXOR,           //  BIWISE_XOR          342
+        LXOR,           //  BITWISE_XOR         342
     };
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected int getBitwiseOperationBytecode(int type) {
         return bitOp[type];
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected int getCompareCode() {
         return LCMP;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected ClassNode getNormalOpResultType() {
         return ClassHelper.long_TYPE;
@@ -107,7 +130,10 @@ public class BinaryLongExpressionHelper extends BinaryExpressionWriter {
         LSHR,           // RIGHT_SHIFT              281
         LUSHR           // RIGHT_SHIFT_UNSIGNED     282
     };
-    
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected int getShiftOperationBytecode(int type) {
         return shiftOp[type];
@@ -121,29 +147,44 @@ public class BinaryLongExpressionHelper extends BinaryExpressionWriter {
         LDIV,           //  INTDIV      204
         LREM,           //  MOD         203
     };
-    
+
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected int getStandardOperationBytecode(int type) {
         return stdOperations[type];
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void writeMinusMinus(MethodVisitor mv) {
         mv.visitInsn(LCONST_1);
         mv.visitInsn(LSUB);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected void writePlusPlus(MethodVisitor mv) {
         mv.visitInsn(LCONST_1);
         mv.visitInsn(LADD);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected ClassNode getDevisionOpResultType() {
         return ClassHelper.long_TYPE;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     protected boolean supportsDivision() {
         return true;

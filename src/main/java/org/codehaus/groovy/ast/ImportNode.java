@@ -18,10 +18,15 @@
  */
 package org.codehaus.groovy.ast;
 
-import static java.util.Objects.requireNonNull;
+import java.util.Objects;
 
 /**
- * Represents an import statement.
+ * Represents an import statement in Groovy source code, supporting single-type imports,
+ * wildcard imports, and static imports. Provides a unified representation for different import styles
+ * with methods to query import type and generate display text.
+ *
+ * @see ClassNode
+ * @see org.codehaus.groovy.ast.AnnotatedNode
  */
 public class ImportNode extends AnnotatedNode {
 
@@ -31,15 +36,17 @@ public class ImportNode extends AnnotatedNode {
     private final String packageName;
     private final boolean isStar;
     private final boolean isStatic;
+    private transient int hashCode;
 
     /**
-     * An import of a single type, i.e.&#160;{@code import pack.Type} or {@code import pack.Type as Alias}
+     * Creates an import for a single type (e.g., {@code import pack.Type} or {@code import pack.Type as Alias}).
      *
-     * @param type  the type reference
-     * @param alias optional alias
+     * @param type the {@link ClassNode} being imported (never null)
+     * @param alias an optional alias name, or null if no alias is specified
+     * @throws NullPointerException if type is null
      */
     public ImportNode(final ClassNode type, final String alias) {
-        this.type = requireNonNull(type);
+        this.type = Objects.requireNonNull(type);
         this.alias = alias;
         this.isStar = false;
         this.isStatic = false;
@@ -48,26 +55,28 @@ public class ImportNode extends AnnotatedNode {
     }
 
     /**
-     * An import of all types in a package, i.e.&#160;{@code import pack.*}
+     * Creates an import for all types in a package (e.g., {@code import pack.*}).
      *
-     * @param packageName the name of the package
+     * @param packageName the fully qualified package name (never null)
+     * @throws NullPointerException if packageName is null
      */
     public ImportNode(final String packageName) {
         this.type = null;
         this.alias = null;
         this.isStar = true;
         this.isStatic = false;
-        this.packageName = requireNonNull(packageName);
+        this.packageName = Objects.requireNonNull(packageName);
         this.fieldName = null;
     }
 
     /**
-     * An import of all static members of a type, i.e.&#160;{@code import static pack.Type.*}
+     * Creates a static wildcard import for all static members of a type (e.g., {@code import static pack.Type.*}).
      *
-     * @param type the type reference
+     * @param type the {@link ClassNode} whose static members are imported (never null)
+     * @throws NullPointerException if type is null
      */
     public ImportNode(final ClassNode type) {
-        this.type = requireNonNull(type);
+        this.type = Objects.requireNonNull(type);
         this.alias = null;
         this.isStar = true;
         this.isStatic = true;
@@ -76,75 +85,161 @@ public class ImportNode extends AnnotatedNode {
     }
 
     /**
-     * An import of a static field or method of a type, i.e.&#160;{@code import static pack.Type.name} or {@code import static pack.Type.name as alias}
+     * Creates a static import for a specific field or method of a type (e.g., {@code import static pack.Type.name}
+     * or {@code import static pack.Type.name as alias}).
      *
-     * @param type      the type reference
-     * @param fieldName the field name
-     * @param alias     optional alias
+     * @param type the {@link ClassNode} containing the static member (never null)
+     * @param fieldName the name of the static field or method being imported (never null)
+     * @param alias an optional alias name, or null if no alias is specified
+     * @throws NullPointerException if type or fieldName is null
      */
     public ImportNode(final ClassNode type, final String fieldName, final String alias) {
-        this.type = requireNonNull(type);
+        this.type = Objects.requireNonNull(type);
         this.alias = alias;
         this.isStar = false;
         this.isStatic = true;
         this.packageName = null;
-        this.fieldName = requireNonNull(fieldName);
+        this.fieldName = Objects.requireNonNull(fieldName);
     }
 
     /**
-     * @return the text display of this import
+     * Generates the text representation of this import statement as it would appear in source code.
+     * For example: "import java.util.List", "import static java.util.Collections.*", etc.
+     *
+     * @return the text representation of this import
      */
     @Override
     public String getText() {
-        String typeName = getClassName();
-        if (isStar && !isStatic) {
-            return "import " + packageName + "*";
-        }
-        if (isStar) {
-            return "import static " + typeName + ".*";
-        }
-        if (isStatic) {
-            if (alias != null && !alias.isEmpty() && !alias.equals(fieldName)) {
-                return "import static " + typeName + "." + fieldName + " as " + alias;
+        String simpleName = getAlias();
+        String memberName = getFieldName();
+
+        if (!isStatic()) {
+            if (isStar()) {
+                if (getPackageName().endsWith(".")) {
+                    return "import " + getPackageName() + "*";
+                } else {
+                    return "import module " + getPackageName();
+                }
+            } else if (simpleName == null || simpleName.isEmpty()
+                    || simpleName.equals(getType().getNameWithoutPackage())) {
+                return "import " + getClassName();
+            } else {
+                return "import " + getClassName() + " as " + simpleName;
             }
-            return "import static " + typeName + "." + fieldName;
+        } else {
+            if (isStar()) {
+                return "import static " + getClassName() + ".*";
+            } else if (simpleName == null || simpleName.isEmpty() || simpleName.equals(memberName)) {
+                return "import static " + getClassName() + "." + memberName;
+            } else {
+                return "import static " + getClassName() + "." + memberName + " as " + simpleName;
+            }
         }
-        if (alias == null || alias.isEmpty()) {
-            return "import " + typeName;
-        }
-        return "import " + typeName + " as " + alias;
     }
 
+    /**
+     * Returns whether this import uses star form.
+     * Package star imports, module imports, and static star imports return true.
+     * A single-type import and a static member import return false.
+     *
+     * @return {@code true} when this node was created as a star or module import
+     */
     public boolean isStar() {
         return isStar;
     }
 
+    /**
+     * Returns whether this import is static.
+     * Static star imports and static member imports return true.
+     * A plain type import, a package star import, and a module import return false.
+     *
+     * @return {@code true} when this node was created as a static import
+     */
     public boolean isStatic() {
         return isStatic;
     }
 
+    /**
+     * Returns the alias name for this import, if specified.
+     *
+     * @return the alias, or null if no alias is provided
+     */
     public String getAlias() {
         return alias;
     }
 
+    /**
+     * Returns the fully qualified class name of the imported type.
+     *
+     * @return the class name, or null if this import refers to a package
+     */
     public String getClassName() {
         return (type == null ? null : type.getName());
     }
 
+    /**
+     * Returns the name of the static field or method being imported via static import.
+     *
+     * @return the field name, or null if this is not a static field/method import
+     */
     public String getFieldName() {
         return fieldName;
     }
 
+    /**
+     * Returns the package name for a wildcard import, or the package containing
+     * the imported type or static member.
+     *
+     * @return the package name, or null if this import references a specific type
+     */
     public String getPackageName() {
         return packageName;
     }
 
+    /**
+     * Returns the {@link ClassNode} being imported or providing static members.
+     *
+     * @return the imported type, or null if this is a package-level wildcard import
+     */
     public ClassNode getType() {
         return type;
     }
 
+    /**
+     * Updates the {@link ClassNode} being imported. This may be used during compilation phases
+     * to replace placeholder types with resolved types.
+     *
+     * @param type the new {@link ClassNode} (never null)
+     * @throws NullPointerException if type is null
+     */
     public void setType(final ClassNode type) {
-        this.type = type;
+        this.type = Objects.requireNonNull(type);
+        hashCode = 0;
+    }
+
+    @Override
+    public boolean equals(Object that) {
+        if (that == this) return true;
+        if (!(that instanceof ImportNode node)) return false;
+
+        if (!Objects.equals(type, node.type))
+            return false;
+        if (!Objects.equals(alias, node.alias))
+            return false;
+        if (!Objects.equals(fieldName, node.fieldName))
+            return false;
+        if (!Objects.equals(packageName, node.packageName))
+            return false;
+        return (isStar == node.isStar && isStatic == node.isStatic);
+    }
+
+    @Override
+    public int hashCode() {
+        int result = hashCode;
+        if (result == 0) {
+            hashCode = Objects.hash(type, alias, fieldName, packageName, isStar, isStatic);
+        }
+        return result;
     }
 
     @Override

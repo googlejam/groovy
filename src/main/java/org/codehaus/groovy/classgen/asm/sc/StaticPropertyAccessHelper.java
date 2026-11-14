@@ -20,6 +20,7 @@ package org.codehaus.groovy.classgen.asm.sc;
 
 import org.codehaus.groovy.ast.GroovyCodeVisitor;
 import org.codehaus.groovy.ast.MethodNode;
+import org.codehaus.groovy.ast.expr.ArgumentListExpression;
 import org.codehaus.groovy.ast.expr.Expression;
 import org.codehaus.groovy.ast.expr.ExpressionTransformer;
 import org.codehaus.groovy.ast.expr.MethodCallExpression;
@@ -36,6 +37,9 @@ import java.util.Arrays;
  */
 public abstract class StaticPropertyAccessHelper {
 
+    /**
+     * Rewrites a property assignment into an equivalent setter call expression.
+     */
     public static Expression transformToSetterCall(
             final Expression receiver,
             final MethodNode setterMethod,
@@ -45,32 +49,49 @@ public abstract class StaticPropertyAccessHelper {
             final boolean spreadSafe,
             final boolean returnValue,
             final Expression sourceExpression) {
+        MethodCallExpression call;
+        Expression result;
         if (returnValue) {
-            TemporaryVariableExpression tmp = new TemporaryVariableExpression(valueExpression);
-            PoppingMethodCallExpression call = new PoppingMethodCallExpression(receiver, setterMethod, tmp);
-            call.setSafe(safe);
-            call.setSpreadSafe(spreadSafe);
-            call.setImplicitThis(implicitThis);
-            call.setSourcePosition(sourceExpression);
-            PoppingListOfExpressionsExpression list = new PoppingListOfExpressionsExpression(tmp, call);
-            list.setSourcePosition(sourceExpression);
-            return list;
+            var temp = new TemporaryVariableExpression(valueExpression);
+            temp.setSourcePosition(valueExpression);
+
+            var pmce = new PoppingMethodCallExpression(receiver, setterMethod, temp);
+            result = new PoppingListOfExpressionsExpression(temp, pmce);
+            result.setSourcePosition(sourceExpression);
+            call = pmce;
         } else {
-            MethodCallExpression call = new MethodCallExpression(receiver, setterMethod.getName(), valueExpression);
-            call.setSafe(safe);
-            call.setSpreadSafe(spreadSafe);
-            call.setImplicitThis(implicitThis);
+            var args = new ArgumentListExpression(valueExpression);
+            args.setSourcePosition(valueExpression);
+
+            call = new MethodCallExpression(receiver, setterMethod.getName(), args);
             call.setMethodTarget(setterMethod);
-            call.setSourcePosition(sourceExpression);
-            return call;
+            result = call;
         }
+        call.setSafe(safe);
+        call.setSpreadSafe(spreadSafe);
+        call.setImplicitThis(implicitThis);
+        call.setSourcePosition(sourceExpression);
+        call.setLastLineNumber(valueExpression.getLastLineNumber());
+        call.setLastColumnNumber(valueExpression.getLastColumnNumber());
+        call.setNodeMetaData(AsmClassGenerator.ELIDE_EXPRESSION_VALUE, Boolean.TRUE); // GROOVY-11843
+
+        return result;
     }
+
+    //--------------------------------------------------------------------------
 
     private static class PoppingListOfExpressionsExpression extends ListOfExpressionsExpression {
 
         private final TemporaryVariableExpression tmp;
         private final PoppingMethodCallExpression call;
 
+        /**
+         * Passes {@code tmp} then {@code call} to {@link ListOfExpressionsExpression}
+         * and retains both.
+         *
+         * @param tmp temporary that holds the assigned value
+         * @param call setter call that reads the temporary
+         */
         public PoppingListOfExpressionsExpression(final TemporaryVariableExpression tmp, final PoppingMethodCallExpression call) {
             super(Arrays.asList(tmp, call));
             this.tmp = tmp;
@@ -96,8 +117,18 @@ public abstract class StaticPropertyAccessHelper {
 
         private final TemporaryVariableExpression tmp;
 
+        /**
+         * Creates a call to {@code setterMethod} on {@code receiver} whose only
+         * argument is {@code tmp}. The argument list takes its source position from
+         * {@code tmp}, and the call's method target is {@code setterMethod}.
+         *
+         * @param receiver the object the setter is invoked on
+         * @param setterMethod the setter; its name is the call name and it is the method target
+         * @param tmp the argument, a temporary holding the assigned value
+         */
         public PoppingMethodCallExpression(final Expression receiver, final MethodNode setterMethod, final TemporaryVariableExpression tmp) {
-            super(receiver, setterMethod.getName(), tmp);
+            super(receiver, setterMethod.getName(), new ArgumentListExpression(tmp));
+            getArguments().setSourcePosition(tmp);
             setMethodTarget(setterMethod);
             this.tmp = tmp;
         }
@@ -110,15 +141,19 @@ public abstract class StaticPropertyAccessHelper {
             call.setSafe(isSafe());
             call.setSpreadSafe(isSpreadSafe());
             call.setImplicitThis(isImplicitThis());
+            call.setGenericsTypes(getGenericsTypes());
             return call;
         }
 
         @Override
         public void visit(final GroovyCodeVisitor visitor) {
-            super.visit(visitor);
             if (visitor instanceof AsmClassGenerator) {
-                // ignore the return of the call
-                ((AsmClassGenerator) visitor).getController().getOperandStack().pop();
+                var os = ((AsmClassGenerator) visitor).getController().getOperandStack();
+                int sl = os.getStackLength();
+                super.visit(visitor);
+                os.popDownTo(sl);
+            } else {
+                super.visit(visitor);
             }
         }
     }

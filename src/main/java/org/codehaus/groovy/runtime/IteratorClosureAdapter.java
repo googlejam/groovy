@@ -21,19 +21,26 @@ package org.codehaus.groovy.runtime;
 import groovy.lang.Closure;
 import groovy.lang.MetaClass;
 
+import java.io.Serial;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * A closure which stores calls in a List so that method calls 
+ * A closure which stores calls in a List so that method calls
  * can be iterated over in a 'yield' style way
  */
 public class IteratorClosureAdapter<T> extends Closure {
 
-    private static final long serialVersionUID = -7485077849389539770L;
+    @Serial private static final long serialVersionUID = -7485077849389539770L;
     private final List<T> list = new ArrayList<T>();
     private MetaClass metaClass = InvokerHelper.getMetaClass(getClass());
-    
+
+    /**
+     * Creates an adapter whose owner is {@code delegate}. Calls are
+     * collected in a list that starts empty.
+     *
+     * @param delegate closure owner
+     */
     public IteratorClosureAdapter(Object delegate) {
         super(delegate);
     }
@@ -47,11 +54,23 @@ public class IteratorClosureAdapter<T> extends Closure {
     public void setMetaClass(MetaClass metaClass) {
         this.metaClass = metaClass;
     }
-    
+
+    /**
+     * Returns the values passed to {@link #doCall}, in call order. Later
+     * calls append to the same list.
+     *
+     * @return the accumulated values
+     */
     public List<T> asList() {
         return list;
     }
 
+    /**
+     * Appends {@code argument} to the list returned by {@link #asList}.
+     *
+     * @param argument value yielded by one call
+     * @return {@code null}
+     */
     protected Object doCall(T argument) {
         list.add(argument);
         return null;

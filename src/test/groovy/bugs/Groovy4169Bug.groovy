@@ -16,17 +16,20 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
 import gls.CompilableTestSupport
+import org.junit.jupiter.api.Test
 
-class Groovy4169Bug extends CompilableTestSupport {
+final class Groovy4169Bug extends CompilableTestSupport {
+
+    @Test
     void testClosureParameterWithAnnotations() {
         shouldCompile """
             import java.lang.annotation.*
-            
+
             def newClassImpl = { @MyDescription("Whether the class is abstract") boolean abstr ->}
-            
+
             @Retention(RetentionPolicy.RUNTIME)
             @Target([ElementType.TYPE, ElementType.PARAMETER])
             public @interface MyDescription {

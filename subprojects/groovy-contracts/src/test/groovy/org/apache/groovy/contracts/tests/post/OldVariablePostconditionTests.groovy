@@ -19,15 +19,16 @@
 package org.apache.groovy.contracts.tests.post
 
 import org.apache.groovy.contracts.tests.basic.BaseTestClass
-import org.junit.Test
+import org.junit.jupiter.api.Test
+
+import java.sql.Timestamp
 
 /**
  * <tt>old</tt> variables tests for postconditions.
  *
  * @see groovy.contracts.Ensures
  */
-
-class OldVariablePostconditionTests extends BaseTestClass {
+final class OldVariablePostconditionTests extends BaseTestClass {
 
     def templateSourceCode = '''
     package tests
@@ -100,10 +101,10 @@ class OldVariablePostconditionTests extends BaseTestClass {
         instance = create_instance_of(createSourceCodeForTemplate(templateSourceCode, [type: java.sql.Date.class.getName()]), sql_date_now)
         instance.setVariable sql_date_not_now
 
-        def ts_now = new java.sql.Timestamp(date_now.getTime())
-        def ts_not_now = new java.sql.Timestamp(date_not_now.getTime())
+        def ts_now = new Timestamp(date_now.getTime())
+        def ts_not_now = new Timestamp(date_not_now.getTime())
 
-        instance = create_instance_of(createSourceCodeForTemplate(templateSourceCode, [type: java.sql.Timestamp.class.getName()]), ts_now)
+        instance = create_instance_of(createSourceCodeForTemplate(templateSourceCode, [type: Timestamp.class.getName()]), ts_now)
         instance.setVariable ts_not_now
 
         //instance = create_instance_of(createSourceCodeForTemplate(dynamic_constructor_class_code, [type: GString.class.getName()]), "${''}")
@@ -112,58 +113,50 @@ class OldVariablePostconditionTests extends BaseTestClass {
 
     @Test
     void generate_old_variables_for_super_class() {
+        add_class_to_classpath '''
+            package tests
 
-        def baseClassSource = '''
-        package tests
+            import groovy.contracts.*
 
-        import groovy.contracts.*
+            class Account {
+                private BigDecimal balance
 
-        class Account {
-            protected BigDecimal balance
+                Account(BigDecimal balance = 0.0) {
+                    this.balance = balance
+                }
 
-            def Account( BigDecimal amount = 0.0 ) {
-                balance = amount
+                BigDecimal getBalance() {
+                    return balance
+                }
+
+                @Requires({ amount > 0.0 })
+                void deposit(BigDecimal amount) {
+                    balance += amount
+                }
+
+                @Requires({ amount > 0.0 })
+                void withdraw(BigDecimal amount) {
+                    if (balance >= amount) {
+                        balance -= amount
+                    }
+                }
             }
-
-            void deposit( BigDecimal amount ) {
-                balance += amount
-            }
-
-            @Requires({ amount >= 0.0 })
-            BigDecimal withdraw( BigDecimal amount ) {
-                if (balance < amount) return 0.0
-
-                balance -= amount
-                return amount
-            }
-
-            BigDecimal getBalance() {
-                return balance
-            }
-        }
         '''
 
-        def descendantClassSource = '''
-        package tests
+        def betterAccount = create_instance_of '''
+            package tests
 
-        import groovy.contracts.*
+            import groovy.contracts.*
 
-        class BetterAccount extends Account {
-            @Ensures({ balance == old.balance - (amount * 0.5) })
-            BigDecimal withdraw( BigDecimal amount ) {
-                if (balance < amount) return 0.0
-
-                balance -= amount * 0.5
-                return amount
+            class BetterAccount extends Account {
+                @Ensures({ balance == old.balance - (amount * 0.5) })
+                void withdraw(BigDecimal amount) {
+                    super.withdraw(amount * 0.5)
+                }
             }
-        }
         '''
-
-        add_class_to_classpath baseClassSource
-
-        def betterAccount = create_instance_of(descendantClassSource)
         betterAccount.deposit(30.0)
         betterAccount.withdraw(10.0)
-
+        assert betterAccount.balance == 25.0
     }
 }

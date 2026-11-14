@@ -16,29 +16,33 @@
  *  specific language governing permissions and limitations
  *  under the License.
  */
-package groovy.bugs
+package bugs
 
 import gls.CompilableTestSupport
+import org.junit.jupiter.api.Test
 
-class Groovy4190Bug extends CompilableTestSupport {
+final class Groovy4190Bug extends CompilableTestSupport {
+
+    @Test
     void testGenericsUsageInMethodCall() {
         shouldCompile """
             class Test4190<E> {
                 E someVariable;
-                
+
                 protected Test4190() { }
-                
+
                 public static <E> Test4190<E> create() {
                     return new Test4190<E>();
                 }
-                
+
                 public static void main(String[] args) {
                     Test4190<Integer> t = Test4190.<Integer>create();
                 }
             }
         """
     }
-    
+
+    @Test
     void testGenericsUsageInMethodCall2() {
         shouldCompile """
             class Test4190V2<K,V> {

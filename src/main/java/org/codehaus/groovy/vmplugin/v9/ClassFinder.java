@@ -18,6 +18,9 @@
  */
 package org.codehaus.groovy.vmplugin.v9;
 
+import groovy.lang.Tuple2;
+import groovy.lang.groovydoc.GroovydocHolder;
+
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
@@ -52,13 +55,16 @@ import java.util.regex.Pattern;
  *   // find classes under `java.lang` package via classpath entry(jrt)
  *   ClassFinder.find(URI.create("jrt:/modules/java.base/"), "java/lang")
  *
- *   // find classes under the sub-packages too, e.g. we can get {@link groovy.lang.groovydoc.GroovydocHolder} via the following code
+ *   // find classes under the sub-packages too, e.g. we can get {@link GroovydocHolder} via the following code
  *   ClassFinder.find(URI.create("file:/D:/_DEV/Groovy/groovy-3.0.1/lib/groovy-3.0.1.jar"), "groovy/lang", true)
  * </code></pre>
  *
  * @since 3.0.2
  */
 public class ClassFinder {
+    private static final Pattern FILE_SEP_PATTERN = Pattern.compile(Pattern.quote(File.separator));
+    private static final Pattern SLASH_PATTERN = Pattern.compile("/");
+
     /**
      * Returns the found classes
      *
@@ -81,6 +87,20 @@ public class ClassFinder {
      * @since 3.0.2
      */
     public static Map<String, Set<String>> find(URI classpathEntryURI, String packageName, boolean recursive) {
+        return find(classpathEntryURI, packageName, recursive, true);
+    }
+
+    /**
+     * Returns the found classes
+     *
+     * @param classpathEntryURI the classpath entry
+     * @param packageName the package under which we find classes
+     * @param recursive whether to find sub-packages
+     * @param innerClasses whether to find inner classes (class names containing a "$")
+     * @return the found classes
+     * @since 5.0.0
+     */
+    public static Map<String, Set<String>> find(URI classpathEntryURI, String packageName, boolean recursive, boolean innerClasses) {
         URI uri;
         String prefix;
         String scheme = classpathEntryURI.getScheme();
@@ -97,41 +117,68 @@ public class ClassFinder {
                 uri = URI.create("file:/");
                 prefix = path.toString();
             } else {
-                uri = URI.create("jar:" + classpathEntryURI.toString());
+                uri = URI.create("jar:" + classpathEntryURI);
                 prefix = "";
             }
         } else {
             throw new UnsupportedOperationException(classpathEntryURI + " is not supported");
         }
 
-        return find(uri, prefix, packageName, recursive);
+        return find(uri, prefix, packageName, recursive, innerClasses);
     }
 
-    private static Map<String, Set<String>> find(URI uri, String prefix, String packageName, boolean recursive) {
+    /**
+     * Finds class names under the supplied URI and prefix.
+     *
+     * @param uri the filesystem, jar, or runtime image URI
+     * @param prefix the URI-local path prefix to search from
+     * @param packageName the package path to scan
+     * @param recursive whether sub-packages should be included
+     * @param innerClasses whether inner classes should be included
+     * @return the discovered class names mapped to their package paths
+     */
+    static Map<String, Set<String>> find(URI uri, String prefix, String packageName, boolean recursive, final boolean innerClasses) {
         boolean wfs = "file".equals(uri.getScheme());
+        final Pattern sepPattern = wfs ? FILE_SEP_PATTERN : SLASH_PATTERN;
+
         if (wfs) prefix = prefix.replace("/", File.separator);
 
-        final String sepPatten = Pattern.quote(wfs ? File.separator : "/");
-        final int prefixElemCnt = prefix.trim().isEmpty() ? 0 : prefix.split(sepPatten).length;
+        final int prefixElemCnt = prefix.trim().isEmpty() ? 0 : sepPattern.split(prefix).length;
 
         Map<String, Set<String>> result = new LinkedHashMap<>();
-        try (FileSystem fs = newFileSystem(uri)) {
-            Files.walkFileTree(fs.getPath(prefix + "/" + packageName), new SimpleFileVisitor<Path>() {
+        Tuple2<FileSystem, Boolean> fsMaybeNew = null;
+        try {
+            fsMaybeNew = maybeNewFileSystem(uri);
+            Files.walkFileTree(fsMaybeNew.getV1().getPath(prefix + "/" + packageName), new SimpleFileVisitor<Path>() {
+                /**
+                 * Continues walking through candidate package directories.
+                 *
+                 * @param path the directory being visited
+                 * @param attrs the directory attributes
+                 * @return {@link FileVisitResult#CONTINUE}
+                 */
                 @Override
                 public FileVisitResult preVisitDirectory(Path path, BasicFileAttributes attrs) {
                     return FileVisitResult.CONTINUE;
                 }
 
+                /**
+                 * Records matching class files under the requested package.
+                 *
+                 * @param path the file being visited
+                 * @param attrs the file attributes
+                 * @return {@link FileVisitResult#CONTINUE}
+                 */
                 @Override
                 public FileVisitResult visitFile(Path path, BasicFileAttributes attrs) {
-                    String[] pathElems = path.toString().split(sepPatten);
+                    String[] pathElems = sepPattern.split(path.toString());
                     int nameCount = pathElems.length;
                     if (nameCount <= prefixElemCnt) {
                         return FileVisitResult.CONTINUE;
                     }
 
                     String filename = pathElems[nameCount - 1];
-                    if (!filename.endsWith(".class") || "module-info.class".equals(filename) || "package-info.class".equals(filename)) {
+                    if ((!innerClasses && filename.contains("$")) || !filename.endsWith(".class") || "module-info.class".equals(filename) || "package-info.class".equals(filename)) {
                         return FileVisitResult.CONTINUE;
                     }
 
@@ -151,16 +198,28 @@ public class ClassFinder {
                     String.format("Failed to find classes via uri: %s, prefix: %s, packageName: %s, recursive: %s",
                             uri, prefix, packageName, recursive
                     ), e);
+        } finally {
+            // we only close file systems we opened
+            if (fsMaybeNew != null && fsMaybeNew.getV2()) {
+                closeQuietly(fsMaybeNew.getV1());
+            }
         }
 
         return result;
     }
 
-    private static FileSystem newFileSystem(URI uri) throws IOException {
+    private static void closeQuietly(FileSystem fs) {
         try {
-            return FileSystems.newFileSystem(uri, Collections.emptyMap());
+            fs.close();
+        } catch (IOException ignore) {
+        }
+    }
+
+    private static Tuple2<FileSystem, Boolean> maybeNewFileSystem(URI uri) throws IOException {
+        try {
+            return new Tuple2<>(FileSystems.newFileSystem(uri, Collections.emptyMap()), true);
         } catch (FileSystemAlreadyExistsException e) {
-            return FileSystems.getFileSystem(uri);
+            return new Tuple2<>(FileSystems.getFileSystem(uri), false);
         }
     }
 

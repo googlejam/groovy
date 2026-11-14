@@ -19,16 +19,15 @@
 package org.codehaus.groovy.vmplugin.v9;
 
 import groovy.lang.GroovyClassLoader;
-import groovy.lang.GroovyRuntimeException;
 import groovy.lang.MetaClass;
 import groovy.lang.MetaMethod;
-import groovy.lang.Tuple;
-import groovy.lang.Tuple2;
 import org.codehaus.groovy.GroovyBugError;
 import org.codehaus.groovy.reflection.CachedClass;
 import org.codehaus.groovy.reflection.CachedMethod;
 import org.codehaus.groovy.reflection.ReflectionUtils;
 import org.codehaus.groovy.runtime.DefaultGroovyMethods;
+import org.codehaus.groovy.vmplugin.VMPluginFactory;
+import org.codehaus.groovy.vmplugin.v17.Java17;
 import org.codehaus.groovy.vmplugin.v8.Java8;
 
 import java.lang.invoke.MethodHandle;
@@ -37,8 +36,6 @@ import java.lang.module.ModuleDescriptor;
 import java.lang.module.ModuleFinder;
 import java.lang.module.ModuleReference;
 import java.lang.reflect.AccessibleObject;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Member;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -46,48 +43,76 @@ import java.math.BigInteger;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 
 /**
- * Additional Java 9 based functions will be added here as needed.
+ * Java 9+ JPMS support: module-aware accessibility checks,
+ * {@code MethodHandles.privateLookupIn}, and default-import class discovery
+ * via the {@code jrt:} filesystem.
+ * <p>
+ * Groovy 6 selects {@link Java17} as the {@link VMPluginFactory}
+ * entry point; this class remains the JPMS implementation that {@link Java17} inherits.
+ *
+ * @deprecated Use {@link Java17} instead. Groovy 6.0 requires JDK 17+.
  */
+@Deprecated(since = "6.0.0", forRemoval = true)
+@SuppressWarnings("removal")
 public class Java9 extends Java8 {
-    private static final Logger LOGGER = Logger.getLogger(Java9.class.getName());
 
-    private final Class<?>[] PLUGIN_DGM;
-
-    public Java9() {
-        super();
-        List<Class<?>> dgmClasses = new ArrayList<>();
-        Collections.addAll(dgmClasses, super.getPluginDefaultGroovyMethods());
-        dgmClasses.add(PluginDefaultGroovyMethods.class);
-        PLUGIN_DGM = dgmClasses.toArray(new Class<?>[0]);
+    /** {@inheritDoc} */
+    @Override
+    public int getVersion() {
+        return 9;
     }
 
+    /** {@inheritDoc} */
     @Override
-    public Map<String, Set<String>> getDefaultImportClasses(String[] packageNames) {
-        List<String> javaPns = new ArrayList<>(4);
-        List<String> groovyPns = new ArrayList<>(4);
+    public Class<?>[] getPluginDefaultGroovyMethods() {
+        Class<?>[] answer = super.getPluginDefaultGroovyMethods();
+        if (!hasSystemLogger()) {
+            // the class extends System.Logger and nothing else: where the platform has no
+            // such type (Android) its methods have no receiver, and reflecting on the class
+            // to register them would fail anyway
+            return answer;
+        }
+
+        final int n = answer.length;
+        answer = Arrays.copyOf(answer, n + 1);
+        answer[n] = PluginDefaultGroovyMethods.class;
+
+        return answer;
+    }
+
+    private static boolean hasSystemLogger() {
+        try {
+            Class.forName("java.lang.System$Logger", false, Java9.class.getClassLoader());
+            return true;
+        } catch (ClassNotFoundException e) {
+            return false;
+        }
+    }
+
+    /** {@inheritDoc} */
+    @Override
+    public Map<String, Set<String>> getDefaultImportClasses(final String[] packageNames) {
+        List<String> javaPackages = new ArrayList<>(4);
+        List<String> groovyPackages = new ArrayList<>(4);
         for (String prefix : packageNames) {
             String pn = prefix.substring(0, prefix.length() - 1).replace('.', '/');
-
             if (pn.startsWith("java/")) {
-                javaPns.add(pn);
+                javaPackages.add(pn);
             } else if (pn.startsWith("groovy/")) {
-                groovyPns.add(pn);
+                groovyPackages.add(pn);
             } else {
                 throw new GroovyBugError("unexpected package: " + pn);
             }
@@ -95,37 +120,32 @@ public class Java9 extends Java8 {
 
         Map<String, Set<String>> result = new LinkedHashMap<>(2048);
         try (GroovyClassLoader gcl = new GroovyClassLoader(this.getClass().getClassLoader())) {
-            CompletableFuture<Map<String, Set<String>>> javaDefaultImportsFuture =
-                    CompletableFuture.supplyAsync(() -> doFindClasses(URI.create("jrt:/modules/java.base/"), "java", javaPns));
             try {
-                URI gsLocation = DefaultGroovyMethods.getLocation(gcl.loadClass("groovy.lang.GroovySystem")).toURI();
-                CompletableFuture<Map<String, Set<String>>> groovyDefaultImportsFuture1 =
-                        CompletableFuture.supplyAsync(() -> doFindClasses(gsLocation, "groovy", groovyPns));
+                // groovy-core (Java source)
+                URI gcjLocation = DefaultGroovyMethods.getLocation(gcl.loadClass("groovy.lang.GroovySystem")).toURI();
+                result.putAll(doFindClasses(gcjLocation, "groovy", groovyPackages));
 
-                // in production environment, groovy-core classes, e.g. `GroovySystem`(java class) and `GrapeIvy`(groovy class) are all packaged in the groovy-core jar file,
+                // in production environment, groovy-core classes, e.g. `GroovySystem`(java class) and `ListenerLister`(groovy class) are all packaged in the groovy-core jar file,
                 // but in Groovy development environment, groovy-core classes are distributed in different directories
-                URI giLocation = DefaultGroovyMethods.getLocation(gcl.loadClass("groovy.grape.GrapeIvy")).toURI();
-                CompletableFuture<Map<String, Set<String>>> groovyDefaultImportsFuture2 =
-                        gsLocation.equals(giLocation)
-                                ? CompletableFuture.completedFuture(Collections.emptyMap())
-                                : CompletableFuture.supplyAsync(() -> doFindClasses(giLocation, "groovy", groovyPns));
-
-                result.putAll(groovyDefaultImportsFuture1.get());
-                result.putAll(groovyDefaultImportsFuture2.get());
+                URI gcgLocation = DefaultGroovyMethods.getLocation(gcl.loadClass("groovy.beans.ListenerList")).toURI();
+                if (!gcjLocation.equals(gcgLocation)) {
+                    result.putAll(doFindClasses(gcgLocation, "groovy", groovyPackages));
+                }
             } finally {
-                result.putAll(javaDefaultImportsFuture.get());
+                result.putAll(doFindClasses(URI.create("jrt:/modules/java.base/"), "java", javaPackages));
             }
-        } catch (Exception ignore) {
-            if (LOGGER.isLoggable(Level.FINEST)) {
-                LOGGER.finest("[WARNING] Failed to find default imported classes:\n" + DefaultGroovyMethods.asString(ignore));
+        } catch (Throwable ignore) {
+            Logger logger = Logger.getLogger(getClass().getName());
+            if (logger.isLoggable(Level.FINEST)) {
+                logger.finest("[WARNING] Failed to find default imported classes:\n" + DefaultGroovyMethods.asString(ignore));
             }
         }
 
         return result;
     }
 
-    private static Map<String, Set<String>> doFindClasses(URI uri, String packageName, List<String> defaultPackageNames) {
-        Map<String, Set<String>> result = ClassFinder.find(uri, packageName, true)
+    private static Map<String, Set<String>> doFindClasses(final URI uri, final String packageName, final List<String> defaultPackageNames) {
+        Map<String, Set<String>> result = ClassFinder.find(uri, packageName, true, false)
                 .entrySet().stream()
                 .filter(e -> e.getValue().stream().anyMatch(defaultPackageNames::contains))
                 .collect(
@@ -140,65 +160,90 @@ public class Java9 extends Java8 {
         return result;
     }
 
-    private static class LookupHolder {
-        private static final Method PRIVATE_LOOKUP;
-        private static final Constructor<MethodHandles.Lookup> LOOKUP_Constructor;
+    //--------------------------------------------------------------------------
 
-        static {
-            Constructor<MethodHandles.Lookup> lookup = null;
-            Method privateLookup = null;
-            try { // java 9
-                privateLookup = MethodHandles.class.getMethod("privateLookupIn", Class.class, MethodHandles.Lookup.class);
-            } catch (final NoSuchMethodException | RuntimeException e) { // java 8 or fallback if anything else goes wrong
-                try {
-                    lookup = MethodHandles.Lookup.class.getDeclaredConstructor(Class.class, Integer.TYPE);
-                    if (!lookup.isAccessible()) {
-                        ReflectionUtils.trySetAccessible(lookup);
-                    }
-                } catch (final NoSuchMethodException ex) {
-                    throw new IllegalStateException("Incompatible JVM", e);
-                }
-            }
-            PRIVATE_LOOKUP = privateLookup;
-            LOOKUP_Constructor = lookup;
-        }
-    }
-
+    /** {@inheritDoc} */
     @Override
-    protected MethodHandles.Lookup newLookup(final Class<?> declaringClass) {
-        return of(declaringClass);
-    }
-
-    private static Constructor<MethodHandles.Lookup> getLookupConstructor() {
-        return LookupHolder.LOOKUP_Constructor;
-    }
-
-    private static Method getPrivateLookup() {
-        return LookupHolder.PRIVATE_LOOKUP;
-    }
-
-    public static MethodHandles.Lookup of(final Class<?> declaringClass) {
+    protected MethodHandles.Lookup newLookup(final Class<?> targetClass) {
         try {
-            final Method privateLookup = getPrivateLookup();
-            if (privateLookup != null) {
-                return (MethodHandles.Lookup) privateLookup.invoke(null, declaringClass, MethodHandles.lookup());
-            }
-            return getLookupConstructor().newInstance(declaringClass, MethodHandles.Lookup.PRIVATE).in(declaringClass);
-        } catch (final IllegalAccessException | InstantiationException e) {
+            return MethodHandles.privateLookupIn(targetClass, MethodHandles.lookup());
+        } catch (final IllegalAccessException e) {
             throw new IllegalArgumentException(e);
-        } catch (final InvocationTargetException e) {
-            throw new GroovyRuntimeException(e);
         }
     }
 
+    //--------------------------------------------------------------------------
+
+    /** {@inheritDoc} */
     @Override
-    public Class<?>[] getPluginDefaultGroovyMethods() {
-        return PLUGIN_DGM;
+    public MetaMethod transformMetaMethod(final MetaClass metaClass, final MetaMethod metaMethod, Class<?> caller) {
+        if (metaMethod instanceof CachedMethod cachedMethod) {
+            if (caller == null) caller = ReflectionUtils.class;
+            CachedClass declaringClass = metaMethod.getDeclaringClass();
+            Optional<CachedMethod> transformedMethod = Optional.ofNullable(cachedMethod.getTransformedMethod());
+            if (transformedMethod.isEmpty()
+                    // if caller can access the method legally, there is no need to transform the cached method
+                    && !checkAccessible(caller, declaringClass.getTheClass(), metaMethod.getModifiers(), false)) {
+                Class<?> theClass = metaClass.getTheClass();
+                if (declaringClass.getTheClass() == theClass) {
+                    transformedMethod = transformDirectAccess(theClass, cachedMethod, caller);
+                } else if (declaringClass.isAssignableFrom(theClass)) {
+                    // try to find the corresponding method in its derived class
+                    transformedMethod = findAccessibleMetaMethod(cachedMethod, cachedMethod.getPT(), caller, theClass, false);
+                }
+                transformedMethod.ifPresent(cachedMethod::setTransformedMethod);
+            }
+            return transformedMethod.orElse(cachedMethod);
+        }
+        return metaMethod;
     }
 
+    private Optional<CachedMethod> transformDirectAccess(final Class<?> metaClass, final CachedMethod metaMethod, final Class<?> caller) {
+        Class<?>[] paramTypes = metaMethod.getPT();
+        if (metaClass == BigInteger.class && paramTypes.length == 1 && "multiply".equals(metaMethod.getName())) {
+            Class<?> type = paramTypes[0];
+            if (type == Long.class || type == long.class
+                    || type == Integer.class || type == int.class
+                    || type == Short.class || type == short.class) {
+                return Optional.of(BigIntegerMultiplyMethodHolder.MULTIPLY_METHOD);
+            }
+        }
+
+        // GROOVY-9081: try to find the visible method from its supers
+        for (Class<?> c = metaClass; c != null; c = c.getSuperclass()) {
+            Optional<CachedMethod> cachedMethod = findAccessibleMetaMethod(metaMethod, paramTypes, caller, c, true);
+            if (cachedMethod.isPresent()) {
+                return cachedMethod;
+            }
+        }
+
+        return Optional.empty();
+    }
+
+    private Optional<CachedMethod> findAccessibleMetaMethod(final CachedMethod metaMethod, final Class<?>[] params, final Class<?> caller, final Class<?> sc, final boolean declared) {
+        List<Method> methods = declared ? ReflectionUtils.getDeclaredMethods(sc, metaMethod.getName(), params)
+                                        : ReflectionUtils.getMethods        (sc, metaMethod.getName(), params);
+        return methods.stream().filter(m -> checkAccessible(caller, m.getDeclaringClass(), m.getModifiers(), false)).map(CachedMethod::new).findFirst();
+    }
+
+    private static class BigIntegerMultiplyMethodHolder {
+        private static final CachedMethod MULTIPLY_METHOD;
+        static {
+            try {
+                MULTIPLY_METHOD = new CachedMethod(BigInteger.class.getDeclaredMethod("multiply", BigInteger.class));
+            } catch (NoSuchMethodException | SecurityException e) {
+                throw new GroovyBugError("Failed to find multiply method of BigInteger", e);
+            }
+        }
+    }
+
+    //--------------------------------------------------------------------------
+
+    /** {@inheritDoc} */
     @Override
-    public int getVersion() {
-        return 9;
+    public boolean trySetAccessible(final AccessibleObject ao) {
+        if (!MODULES_AVAILABLE) return super.trySetAccessible(ao);
+        return ao.trySetAccessible();
     }
 
     /**
@@ -211,23 +256,23 @@ public class Java9 extends Java8 {
      * 4) D is in a package that the module containing D opens to at least the module containing C. All packages in unnamed and open modules are open to all modules and so this method always succeeds when D is in an unnamed or open module.
      *
      * @param accessibleObject the accessible object to check
-     * @param callerClass           the callerClass to invoke {@code setAccessible}
+     * @param callerClass      the class wishing to invoke {@code setAccessible}
      * @return the check result
      */
     @Override
-    public boolean checkCanSetAccessible(AccessibleObject accessibleObject, Class<?> callerClass) {
+    public boolean checkCanSetAccessible(final AccessibleObject accessibleObject, final Class<?> callerClass) {
 
         if (!super.checkCanSetAccessible(accessibleObject, callerClass)) return false;
+        if (!MODULES_AVAILABLE) return true;
 
         if (callerClass == MethodHandle.class) {
-            throw new IllegalCallerException();   // should not happen
+            throw new IllegalCallerException(); // should not happen
         }
 
-        if (!(accessibleObject instanceof Member)) {
-            throw new IllegalArgumentException("accessibleObject should be a member of type: " + accessibleObject);   // should not happen
+        if (!(accessibleObject instanceof Member member)) {
+            throw new IllegalArgumentException("accessibleObject should be a member of type: " + accessibleObject); // should not happen
         }
 
-        Member member = (Member) accessibleObject;
         Class<?> declaringClass = member.getDeclaringClass();
 
         Module callerModule = callerClass.getModule();
@@ -237,258 +282,106 @@ public class Java9 extends Java8 {
         if (callerModule == Object.class.getModule()) return true;
         if (!declaringModule.isNamed()) return true;
 
-        int modifiers = member.getModifiers();
-
-        return checkAccessible(callerClass, declaringClass, modifiers, true);
+        return checkAccessible(callerClass, declaringClass, member.getModifiers(), true);
     }
 
+    /** {@inheritDoc} */
     @Override
-    public boolean trySetAccessible(AccessibleObject ao) {
-        return ao.trySetAccessible();
-    }
-
-    @Override
-    public MetaMethod transformMetaMethod(MetaClass metaClass, MetaMethod metaMethod, Class<?> caller) {
-        if (!(metaMethod instanceof CachedMethod)) {
-            return metaMethod;
-        }
-
-        CachedMethod cachedMethod = (CachedMethod) metaMethod;
-        CachedClass methodDeclaringClass = cachedMethod.getDeclaringClass();
-
-        if (null == methodDeclaringClass) {
-            return metaMethod;
-        }
-
-        if (null == caller) {
-            caller = ReflectionUtils.class; // "set accessible" are done via `org.codehaus.groovy.reflection.ReflectionUtils` as shown in warnings
-        }
-
-        return getOrTransformMetaMethod(metaClass, caller, cachedMethod);
-    }
-
-    private CachedMethod getOrTransformMetaMethod(MetaClass metaClass, Class<?> caller, CachedMethod cachedMethod) {
-        CachedMethod transformedMethod = cachedMethod.getTransformedMethod();
-        if (null != transformedMethod) {
-            return transformedMethod;
-        }
-
-        transformedMethod = doTransformMetaMethod(metaClass, cachedMethod, caller);
-        cachedMethod.setTransformedMethod(transformedMethod);
-
-        return transformedMethod;
-    }
-
-    private CachedMethod doTransformMetaMethod(MetaClass metaClass, CachedMethod metaMethod, Class<?> caller) {
-        CachedClass methodDeclaringClass = metaMethod.getDeclaringClass();
-        Class<?> declaringClass = methodDeclaringClass.getTheClass();
-        int methodModifiers = metaMethod.getModifiers();
-
-        // if caller can access the method,
-        // no need to transform the meta method
-        if (checkAccessible(caller, declaringClass, methodModifiers, false)) {
-            return metaMethod;
-        }
-
-        Class<?>[] params = metaMethod.getPT();
-        Class<?> theClass = metaClass.getTheClass();
-        if (declaringClass == theClass) {
-            if (BigInteger.class == theClass) {
-                CachedMethod bigIntegerMetaMethod = transformBigIntegerMetaMethod(metaMethod, params);
-                if (bigIntegerMetaMethod != metaMethod) {
-                    return bigIntegerMetaMethod;
-                }
-            }
-
-            // GROOVY-9081 "3) Access public members of private class", e.g. Collections.unmodifiableMap([:]).toString()
-            // try to find the visible method from its superclasses
-            List<Class<?>> classList = findSuperclasses(theClass);
-            classList.add(0, theClass);
-
-            for (Class<?> sc : classList) {
-                Optional<CachedMethod> optionalMetaMethod = getAccessibleMetaMethod(metaMethod, params, caller, sc, true);
-                if (optionalMetaMethod.isPresent()) {
-                    return optionalMetaMethod.get();
-                }
-            }
-
-            return metaMethod;
-        } else if (declaringClass.isAssignableFrom(theClass)) {
-            // if caller can not access the method,
-            // try to find the corresponding method in its derived class
-            // GROOVY-9081 Sub-class derives the protected members from public class, "Invoke the members on the sub class instances"
-            // e.g. StringBuilder sb = new StringBuilder(); sb.setLength(0);
-            // `setLength` is the method of `AbstractStringBuilder`, which is `package-private`
-            Optional<CachedMethod> optionalMetaMethod = getAccessibleMetaMethod(metaMethod, params, caller, theClass, false);
-            if (optionalMetaMethod.isPresent()) {
-                return optionalMetaMethod.get();
-            }
-        }
-
-        return metaMethod;
-    }
-
-    private static CachedMethod transformBigIntegerMetaMethod(CachedMethod metaMethod, Class<?>[] params) {
-        if (1 == params.length && MULTIPLY.equals(metaMethod.getName())) {
-            Class<?> param = params[0];
-            if (Long.class == param || long.class == param
-                    || Integer.class == param || int.class == param
-                    || Short.class == param || short.class == param) {
-                return new CachedMethod(BigIntegerMultiplyMethodHolder.MULTIPLY_METHOD);
-            }
-        }
-
-        return metaMethod;
-    }
-
-    private Optional<CachedMethod> getAccessibleMetaMethod(CachedMethod metaMethod, Class<?>[] params, Class<?> caller, Class<?> sc, boolean declared) {
-        List<CachedMethod> metaMethodList = getMetaMethods(metaMethod, params, sc, declared);
-        for (CachedMethod mm : metaMethodList) {
-            if (checkAccessible(caller, mm.getDeclaringClass().getTheClass(), mm.getModifiers(), false)) {
-                return Optional.of(mm);
-            }
-        }
-        return Optional.empty();
-    }
-
-    private static List<CachedMethod> getMetaMethods(CachedMethod metaMethod, Class<?>[] params, Class<?> sc, boolean declared) {
-        String metaMethodName = metaMethod.getName();
-        List<Method> optionalMethodList = declared
-                                            ? ReflectionUtils.getDeclaredMethods(sc, metaMethodName, params)
-                                            : ReflectionUtils.getMethods(sc, metaMethodName, params);
-        return optionalMethodList.stream().map(CachedMethod::new).collect(Collectors.toList());
-    }
-
-    @Override
-    public boolean checkAccessible(Class<?> callerClass, Class<?> declaringClass, int memberModifiers, boolean allowIllegalAccess) {
-        Module callerModule = callerClass.getModule();
+    public boolean checkAccessible(final Class<?> accessingClass, final Class<?> declaringClass, final int memberModifiers, final boolean allowIllegalAccess) {
+        if (!MODULES_AVAILABLE) return super.checkAccessible(accessingClass, declaringClass, memberModifiers, allowIllegalAccess);
+        Module accessingModule = accessingClass.getModule();
         Module declaringModule = declaringClass.getModule();
-        String pn = declaringClass.getPackageName();
+        String packageName = declaringClass.getPackageName();
 
-        boolean unnamedModuleAccessNamedModule = !callerModule.isNamed() && declaringModule.isNamed();
-        boolean toCheckIllegalAccess = !allowIllegalAccess && unnamedModuleAccessNamedModule;
+        boolean exportedOrOpenIsSufficient = allowIllegalAccess || accessingModule.isNamed() || !declaringModule.isNamed();
 
-        // class is public and package is exported to callerClass
-        boolean isClassPublic = Modifier.isPublic(declaringClass.getModifiers());
-        if (isClassPublic && declaringModule.isExported(pn, callerModule)) {
-            // member is public
-            if (Modifier.isPublic(memberModifiers)) {
-                return !(toCheckIllegalAccess && isExportedForIllegalAccess(declaringModule, pn));
-            }
-
-            // member is protected-static
-            if (Modifier.isProtected(memberModifiers)
-                    && Modifier.isStatic(memberModifiers)
-                    && isSubclassOf(callerClass, declaringClass)) {
-                return !(toCheckIllegalAccess && isExportedForIllegalAccess(declaringModule, pn));
+        if (Modifier.isPublic(declaringClass.getModifiers()) && declaringModule.isExported(packageName, accessingModule)) {
+            if (Modifier.isPublic(memberModifiers) || Modifier.isProtected(memberModifiers)
+                                                   && declaringClass.isAssignableFrom(accessingClass)) {
+                return exportedOrOpenIsSufficient || !concealedPackageList(declaringModule).contains(packageName);
             }
         }
 
-        // package is open to callerClass
-        if (declaringModule.isOpen(pn, callerModule)) {
-            return !(toCheckIllegalAccess && isOpenedForIllegalAccess(declaringModule, pn));
+        if (declaringModule.isOpen(packageName, accessingModule)) {
+            return exportedOrOpenIsSufficient || !(concealedPackageList(declaringModule).contains(packageName) || exportedPackageList(declaringModule).contains(packageName));
         }
 
         return false;
     }
 
-    private static boolean isExportedForIllegalAccess(Module declaringModule, String pn) {
-        return concealedPackageList(declaringModule).contains(pn);
+    /**
+     * JDK 8 packages in {@code module} that are now concealed.
+     * Unknown modules are not inserted into the map: callers only test membership.
+     */
+    private static Set<String> concealedPackageList(final Module module) {
+        return CONCEALED_PACKAGES_TO_OPEN.getOrDefault(module.getName(), Set.of());
     }
 
-    private static boolean isOpenedForIllegalAccess(Module declaringModule, String pn) {
-        if (isExportedForIllegalAccess(declaringModule, pn)) return true;
-        return exportedPackageList(declaringModule).contains(pn);
-    }
-
-    private static boolean isSubclassOf(Class<?> queryClass, Class<?> ofClass) {
-        while (queryClass != null) {
-            if (queryClass == ofClass) {
-                return true;
-            }
-            queryClass = queryClass.getSuperclass();
-        }
-        return false;
-    }
-
-    private static List<Class<?>> findSuperclasses(Class<?> clazz) {
-        List<Class<?>> result = new LinkedList<>();
-
-        for (Class<?> c = clazz.getSuperclass(); null != c; c = c.getSuperclass()) {
-            result.add(c);
-        }
-
-        return result;
-    }
-
-    private static Set<String> concealedPackageList(Module module) {
-        return CONCEALED_PACKAGES_TO_OPEN.computeIfAbsent(module.getName(), m -> new HashSet<>());
-    }
-
-    private static Set<String> exportedPackageList(Module module) {
-        return EXPORTED_PACKAGES_TO_OPEN.computeIfAbsent(module.getName(), m -> new HashSet<>());
+    /**
+     * JDK 8 packages in {@code module} that are exported but not open.
+     * Unknown modules are not inserted into the map: callers only test membership.
+     */
+    private static Set<String> exportedPackageList(final Module module) {
+        return EXPORTED_PACKAGES_TO_OPEN.getOrDefault(module.getName(), Set.of());
     }
 
     private static final Map<String, Set<String>> CONCEALED_PACKAGES_TO_OPEN;
     private static final Map<String, Set<String>> EXPORTED_PACKAGES_TO_OPEN;
 
+    /**
+     * Whether the running VM has the Java Platform Module System. Runtimes built
+     * on the JDK class library without it (Android's ART) lack {@code Module},
+     * {@code ModuleFinder} and {@code trySetAccessible}; there the Java 8
+     * accessibility rules apply and the package tables below stay empty
+     * (GROOVY-12383).
+     */
+    private static final boolean MODULES_AVAILABLE = modulesAvailable();
+
+    static boolean modulesAvailable() {
+        try {
+            // every JPMS API this class relies on, not just the one it uses first
+            Class.class.getMethod("getModule");
+            AccessibleObject.class.getMethod("trySetAccessible");
+            Class.forName("java.lang.module.ModuleFinder", false, Java9.class.getClassLoader());
+            return true;
+        } catch (ReflectiveOperationException | LinkageError | SecurityException e) {
+            return false;
+        }
+    }
+
     static {
-        Tuple2<Map<String, Set<String>>, Map<String, Set<String>>> tuple2 = findConcealedAndExportedPackagesToOpen();
-        CONCEALED_PACKAGES_TO_OPEN = tuple2.getV1();
-        EXPORTED_PACKAGES_TO_OPEN = tuple2.getV2();
+        Map<String, Set<String>> concealedPackagesToOpen = new ConcurrentHashMap<>(64);
+        Map<String, Set<String>> exportedPackagesToOpen = new ConcurrentHashMap<>(64);
+        if (MODULES_AVAILABLE) {
+            ModuleFinder finder = ModuleFinder.ofSystem();
+            Map<String, ModuleDescriptor> packages = new HashMap<>(1024);
+            finder.findAll().stream()
+                    .map(ModuleReference::descriptor)
+                    .forEach(md -> md.packages().forEach(pn -> packages.putIfAbsent(pn, md)));
+
+            for (String j8pn : JAVA8_PACKAGES()) {
+                ModuleDescriptor descriptor = packages.get(j8pn);
+                if (descriptor == null || isOpen(descriptor, j8pn)) continue;
+
+                Map<String, Set<String>> packagesToOpen =
+                    isExported(descriptor, j8pn) ? exportedPackagesToOpen : concealedPackagesToOpen;
+                packagesToOpen.computeIfAbsent(descriptor.name(), k -> new HashSet<>(128)).add(j8pn);
+            }
+        }
+        CONCEALED_PACKAGES_TO_OPEN = concealedPackagesToOpen;
+        EXPORTED_PACKAGES_TO_OPEN = exportedPackagesToOpen;
     }
 
-    private static Tuple2<Map<String, Set<String>>, Map<String, Set<String>>> findConcealedAndExportedPackagesToOpen() {
-        ModuleFinder finder = ModuleFinder.ofSystem();
-
-        Map<String, ModuleDescriptor> map = new HashMap<>();
-        finder.findAll().stream()
-                .map(ModuleReference::descriptor)
-                .forEach(md -> md.packages().forEach(pn -> map.putIfAbsent(pn, md)));
-
-        final Map<String, Set<String>> concealedPackagesToOpen = new ConcurrentHashMap<>();
-        final Map<String, Set<String>> exportedPackagesToOpen = new ConcurrentHashMap<>();
-
-        Arrays.stream(JAVA8_PACKAGES())
-                .forEach(pn -> {
-                    ModuleDescriptor descriptor = map.get(pn);
-                    if (descriptor != null && !isOpen(descriptor, pn)) {
-                        String name = descriptor.name();
-                        if (isExported(descriptor, pn)) {
-                            exportedPackagesToOpen.computeIfAbsent(name,
-                                    k -> new HashSet<>()).add(pn);
-                        } else {
-                            concealedPackagesToOpen.computeIfAbsent(name,
-                                    k -> new HashSet<>()).add(pn);
-                        }
-                    }
-                });
-
-        return Tuple.tuple(concealedPackagesToOpen, exportedPackagesToOpen);
-    }
-
-    private static boolean isExported(ModuleDescriptor descriptor, String pn) {
+    private static boolean isExported(final ModuleDescriptor descriptor, final String pn) {
         return descriptor.exports()
                 .stream()
                 .anyMatch(e -> e.source().equals(pn) && !e.isQualified());
     }
 
-    private static boolean isOpen(ModuleDescriptor descriptor, String pn) {
+    private static boolean isOpen(final ModuleDescriptor descriptor, final String pn) {
         return descriptor.opens()
                 .stream()
                 .anyMatch(e -> e.source().equals(pn) && !e.isQualified());
-    }
-
-    private static final String MULTIPLY = "multiply";
-    private static class BigIntegerMultiplyMethodHolder {
-        private static final Method MULTIPLY_METHOD;
-        static {
-            try {
-                MULTIPLY_METHOD = BigInteger.class.getDeclaredMethod(MULTIPLY, BigInteger.class);
-            } catch (NoSuchMethodException | SecurityException e) {
-                throw new GroovyBugError("Failed to find " + MULTIPLY + " method of BigInteger", e);
-            }
-        }
     }
 
     private static String[] JAVA8_PACKAGES() {

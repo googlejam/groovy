@@ -1,5 +1,3 @@
-import groovy.test.GroovyTestCase
-
 /*
  *  Licensed to the Apache Software Foundation (ASF) under one
  *  or more contributor license agreements.  See the NOTICE file
@@ -18,9 +16,16 @@ import groovy.test.GroovyTestCase
  *  specific language governing permissions and limitations
  *  under the License.
  */
-class ClosuresSpecTest extends GroovyTestCase {
+
+import org.junit.jupiter.api.Test
+
+import static groovy.test.GroovyAssert.assertScript
+
+final class ClosuresSpecTest {
+
     static void sink(Closure cl) {}
 
+    @Test
     void testClosureSyntax() {
         sink
                 // tag::closure_syntax_1[]
@@ -61,6 +66,7 @@ class ClosuresSpecTest extends GroovyTestCase {
                 // end::closure_syntax_6[]
     }
 
+    @Test
     void testAssignClosureToAVariable() {
         // tag::closure_is_an_instance_of_Closure[]
         def listener = { e -> println "Clicked on $e.source" }      // <1>
@@ -72,6 +78,7 @@ class ClosuresSpecTest extends GroovyTestCase {
         // end::closure_is_an_instance_of_Closure[]
     }
 
+    @Test
     void testCallClosure() {
         // tag::closure_call_1[]
         def code = { 123 }
@@ -94,6 +101,7 @@ class ClosuresSpecTest extends GroovyTestCase {
         // end::closure_call_2[]
     }
 
+    @Test
     void testClosureParameters() {
         // tag::closure_param_declaration[]
         def closureWithOneArg = { str -> str.toUpperCase() }
@@ -116,6 +124,7 @@ class ClosuresSpecTest extends GroovyTestCase {
         // end::closure_param_declaration[]
     }
 
+    @Test
     void testImplicitIt() {
         assertScript '''
         // tag::implicit_it[]
@@ -146,6 +155,7 @@ class ClosuresSpecTest extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testClosureVargs() {
         // tag::closure_vargs[]
         def concat1 = { String... args -> args.join('') }           // <1>
@@ -161,6 +171,7 @@ class ClosuresSpecTest extends GroovyTestCase {
 
     }
 
+    @Test
     void testThisObject() {
         assertScript '''
         // tag::closure_this[]
@@ -217,6 +228,7 @@ class ClosuresSpecTest extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testOwner() {
         assertScript '''
         // tag::closure_owner[]
@@ -253,6 +265,7 @@ class ClosuresSpecTest extends GroovyTestCase {
 '''
     }
 
+    @Test
     void testClosureDelegate() {
         assertScript '''
         // tag::delegate_is_owner[]
@@ -306,6 +319,7 @@ class ClosuresSpecTest extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testDelegationStrategy() {
         assertScript '''
                 // tag::delegation_strategy_intro[]
@@ -320,6 +334,7 @@ class ClosuresSpecTest extends GroovyTestCase {
             '''
     }
 
+    @Test
     void testOwnerFirst() {
         assertScript '''
             // tag::closure_owner_first[]
@@ -349,6 +364,7 @@ class ClosuresSpecTest extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testDelegateOnly() {
         assertScript '''
             // tag::delegate_only[]
@@ -365,15 +381,16 @@ class ClosuresSpecTest extends GroovyTestCase {
             def t = new Thing(name:'Printer')
             def cl = p.fetchAge
             cl.delegate = p
-            assert cl() == 42
+            assert cl() == 42          // <1>
             cl.delegate = t
-            assert cl() == 42
+            assert cl() == 42          // <1>
+
             cl.resolveStrategy = Closure.DELEGATE_ONLY
             cl.delegate = p
-            assert cl() == 42
+            assert cl() == 42          // <2>
             cl.delegate = t
             try {
-                cl()
+                cl()                   // <3>
                 assert false
             } catch (MissingPropertyException ex) {
                 // "age" is not defined on the delegate
@@ -382,6 +399,205 @@ class ClosuresSpecTest extends GroovyTestCase {
         '''
     }
 
+    @Test
+    void testDelegateOnlyPropertyMissing() {
+        assertScript '''
+            // tag::delegate_only_prop_missing[]
+            class Person {
+                String name
+                int age
+                def fetchAge = { age }
+            }
+            class Thing {
+                String name
+                def propertyMissing(String name) { -1 }
+            }
+
+            def p = new Person(name:'Jessica', age:42)
+            def t = new Thing(name:'Printer')
+            def cl = p.fetchAge
+            cl.resolveStrategy = Closure.DELEGATE_FIRST
+            cl.delegate = p
+            assert cl() == 42
+            cl.delegate = t
+            assert cl() == -1
+            // end::delegate_only_prop_missing[]
+        '''
+    }
+
+    @Test
+    void testResolutionOfLocalsAndClosureMembers() {
+        assertScript '''
+            // tag::resolution_locals_and_closure_members[]
+            class Report {
+                String title = 'from the owner'
+                String delegate = 'a property of the owner'
+
+                def run() {
+                    String title = 'from a local variable'
+                    def cl = { [title, delegate] }
+                    cl.delegate = [title: 'from the delegate']
+                    cl()
+                }
+            }
+
+            def (title, delegate) = new Report().run()
+            assert title == 'from a local variable'             // <1>
+            assert delegate == [title: 'from the delegate']     // <2>
+            // end::resolution_locals_and_closure_members[]
+        '''
+    }
+
+    @Test
+    void testResolutionOfClosureMethods() {
+        assertScript '''
+            // tag::resolution_closure_methods[]
+            class Calculator {
+                def curry(int n) { "the owner's curry" }
+
+                def run() {
+                    def add = { int a, int b -> a + b }
+                    def cl = { int a, int b -> curry(1) }
+                    cl.delegate = add
+                    cl(0, 0)
+                }
+            }
+
+            def result = new Calculator().run()
+            assert result instanceof Closure                    // <1>
+            assert result.maximumNumberOfParameters == 1
+            // end::resolution_closure_methods[]
+        '''
+    }
+
+    @Test
+    void testResolutionOfReadOnlyClosureProperty() {
+        assertScript '''
+            // tag::resolution_closure_readonly_property[]
+            class Holder {
+                String owner = 'initial'
+
+                def run() {
+                    def cl = { ->
+                        owner = 'changed'
+                        owner
+                    }
+                    cl()
+                }
+            }
+
+            def holder = new Holder()
+            assert holder.run().is(holder)                      // <1>
+            assert holder.owner == 'changed'                    // <2>
+            // end::resolution_closure_readonly_property[]
+        '''
+    }
+
+    @Test
+    void testResolutionOfCurryWithDelegateOnly() {
+        assertScript '''
+            // tag::resolution_delegate_only_curry[]
+            class Recipe {
+                def curry(String spice) { "curry with $spice" }
+            }
+
+            def cl = { String unused -> curry('cumin') }
+            cl.delegate = new Recipe()
+
+            cl.resolveStrategy = Closure.DELEGATE_FIRST
+            assert cl('x') instanceof Closure                   // <1>
+
+            cl.resolveStrategy = Closure.DELEGATE_ONLY
+            assert cl('x') == 'curry with cumin'                // <2>
+            // end::resolution_delegate_only_curry[]
+        '''
+    }
+
+    @Test
+    void testResolutionThroughNestedClosures() {
+        assertScript '''
+            // tag::resolution_nested[]
+            class Thing {
+                String name = 'thing'
+            }
+
+            def outer = { ->
+                def inner = { -> name }                         // <1>
+                inner()
+            }
+            outer.delegate = new Thing()                        // <2>
+            assert outer() == 'thing'
+            // end::resolution_nested[]
+        '''
+    }
+
+    @Test
+    void testResolutionWithNullOwner() {
+        assertScript '''
+            // tag::resolution_null_owner[]
+            class Greeter {
+                String name = 'Groovy'
+                String greet(String who) { "Hello, $who" }
+            }
+
+            def cl = { -> greet(name) }.dehydrate()             // <1>
+            assert cl.owner == null && cl.delegate == null
+
+            cl.delegate = new Greeter()
+            assert cl() == 'Hello, Groovy'                      // <2>
+
+            cl.resolveStrategy = Closure.OWNER_ONLY
+            try {
+                cl()                                            // <3>
+                assert false
+            } catch (MissingPropertyException ex) {
+                assert ex.property == 'name'
+            }
+            // end::resolution_null_owner[]
+        '''
+    }
+
+    @Test
+    void testResolutionFallsBackToTheClosure() {
+        assertScript '''
+            // tag::resolution_closure_fallback[]
+            def describe = { -> toString() }
+            assert describe() == this.toString()                // <1>
+
+            def detached = describe.dehydrate()
+            assert detached() == detached.toString()            // <2>
+
+            def unknown = { -> shout('hi') }.dehydrate()
+            try {
+                unknown()                                       // <3>
+                assert false
+            } catch (MissingMethodException ex) {
+                assert ex.method == 'shout'
+            }
+            // end::resolution_closure_fallback[]
+        '''
+    }
+
+    @Test
+    void testResolutionToSelf() {
+        assertScript '''
+            // tag::resolution_to_self[]
+            def cl = { -> name }
+            cl.delegate = [name: 'from the delegate']
+            assert cl() == 'from the delegate'
+
+            cl.resolveStrategy = Closure.TO_SELF
+            try {
+                cl()                                            // <1>
+                assert false
+            } catch (MissingPropertyException ex) {
+                assert ex.property == 'name'
+            }
+            // end::resolution_to_self[]
+        '''
+    }
+
+    @Test
     void testGStringEager() {
         // tag::gstring_eager_intro[]
         def x = 1
@@ -398,6 +614,7 @@ class ClosuresSpecTest extends GroovyTestCase {
         assert gs == 'x = 1'
     }
 
+    @Test
     void testGStringLazy() {
         // tag::gstring_lazy[]
         def x = 1
@@ -409,6 +626,7 @@ class ClosuresSpecTest extends GroovyTestCase {
         // end::gstring_lazy[]
     }
 
+    @Test
     void testGStringWithMutation() {
         assertScript '''
             // tag::gstring_mutation[]
@@ -429,6 +647,7 @@ class ClosuresSpecTest extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testGStringWithoutMutation() {
         assertScript '''
             // tag::gstring_no_mutation[]
@@ -448,6 +667,7 @@ class ClosuresSpecTest extends GroovyTestCase {
         '''
     }
 
+    @Test
     void testLeftCurry() {
         // tag::left_curry[]
         def nCopies = { int n, String str -> str*n }    // <1>
@@ -457,6 +677,7 @@ class ClosuresSpecTest extends GroovyTestCase {
         // end::left_curry[]
     }
 
+    @Test
     void testRightCurry() {
         // tag::right_curry[]
         def nCopies = { int n, String str -> str*n }    // <1>
@@ -466,6 +687,7 @@ class ClosuresSpecTest extends GroovyTestCase {
         // end::right_curry[]
     }
 
+    @Test
     void testNCurry() {
         // tag::ncurry[]
         def volume = { double l, double w, double h -> l*w*h }      // <1>
@@ -476,6 +698,7 @@ class ClosuresSpecTest extends GroovyTestCase {
         // end::ncurry[]
     }
 
+    @Test
     void testMemoize() {
         // tag::naive_fib[]
         def fib
@@ -488,6 +711,7 @@ class ClosuresSpecTest extends GroovyTestCase {
         // end::memoized_fib[]
     }
 
+    @Test
     void testComposition() {
         // tag::closure_composition[]
         def plus2  = { it + 2 }
@@ -507,6 +731,7 @@ class ClosuresSpecTest extends GroovyTestCase {
 
     }
 
+    @Test
     void testTrampoline() {
         // tag::trampoline[]
         def factorial

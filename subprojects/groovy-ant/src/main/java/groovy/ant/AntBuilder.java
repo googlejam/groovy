@@ -26,6 +26,7 @@ import org.apache.tools.ant.BuildLogger;
 import org.apache.tools.ant.DemuxInputStream;
 import org.apache.tools.ant.DemuxOutputStream;
 import org.apache.tools.ant.Location;
+import org.apache.tools.ant.MagicNames;
 import org.apache.tools.ant.NoBannerLogger;
 import org.apache.tools.ant.Project;
 import org.apache.tools.ant.ProjectHelper;
@@ -56,13 +57,13 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Allows <a href="http://ant.apache.org/manual/coretasklist.html">Ant tasks</a> to
- * be used with a Groovy builder-style markup. Requires that {{ant.jar}} is on your classpath which will
+ * Allows <a href="https://ant.apache.org/manual/tasklist.html">Ant tasks</a> to
+ * be used with a Groovy builder-style markup. Requires that <code>ant.jar</code> is on your classpath which will
  * happen automatically if you are using the Groovy distribution but will be up
  * to you to organize if you are embedding Groovy. If you wish to use the
- * <a href="http://ant.apache.org/manual/install#optionalTasks">optional tasks</a>
+ * <a href="https://ant.apache.org/manual/install.html#optionalTasks">optional tasks</a>
  * you will need to add one or more additional jars from the ant distribution to
- * your classpath - see the <a href="http://ant.apache.org/manual/install.html#librarydependencies">library
+ * your classpath - see the <a href="https://ant.apache.org/manual/install.html#librarydependencies">library
  * dependencies</a> for more details.
  */
 public class AntBuilder extends BuilderSupport {
@@ -76,7 +77,10 @@ public class AntBuilder extends BuilderSupport {
     private final Target implicitTarget;
     private Target definingTarget;
     private Object lastCompletedNode;
-    // true when inside a task so special ant.target handling occurs just at top level
+    /**
+     * Tracks whether builder execution is currently inside a task so top-level {@code ant.target}
+     * handling can be applied correctly.
+     */
     boolean insideTask;
 
     private boolean saveStreams = true;
@@ -89,14 +93,28 @@ public class AntBuilder extends BuilderSupport {
     private static DemuxOutputStream demuxErrorStream;
     private static InputStream savedProjectInputStream;
 
+    /**
+     * Creates an {@code AntBuilder} backed by a freshly initialized Ant project.
+     */
     public AntBuilder() {
         this(createProject());
     }
 
+    /**
+     * Creates an {@code AntBuilder} backed by the supplied project.
+     *
+     * @param project the project used to create and execute Ant tasks
+     */
     public AntBuilder(final Project project) {
         this(project, new Target());
     }
 
+    /**
+     * Creates an {@code AntBuilder} backed by the supplied project and owning target.
+     *
+     * @param project the project used to create and execute Ant tasks
+     * @param owningTarget the target that should collect top-level tasks
+     */
     public AntBuilder(final Project project, final Target owningTarget) {
         this.project = project;
 
@@ -123,12 +141,17 @@ public class AntBuilder extends BuilderSupport {
         project.addDataTypeDefinition("fileScanner", FileScanner.class);
     }
 
+    /**
+     * Creates an {@code AntBuilder} that shares the context of the supplied parent task.
+     *
+     * @param parentTask the Ant task whose project and owning target should be reused
+     */
     public AntBuilder(final Task parentTask) {
         this(parentTask.getProject(), parentTask.getOwningTarget());
 
         // define "owning" task as wrapper to avoid having tasks added to the target
         // but it needs to be an UnknownElement and no access is available from
-        // task to its original UnknownElement 
+        // task to its original UnknownElement
         final UnknownElement ue = new UnknownElement(parentTask.getTaskName());
         ue.setProject(parentTask.getProject());
         ue.setTaskType(parentTask.getTaskType());
@@ -187,12 +210,12 @@ public class AntBuilder extends BuilderSupport {
         final Project project = new Project();
 
         final ProjectHelper helper = ProjectHelper.getProjectHelper();
-        project.addReference(ProjectHelper.PROJECTHELPER_REFERENCE, helper);
-        helper.getImportStack().addElement("AntBuilder"); // import checks that stack is not empty 
+        project.addReference(MagicNames.REFID_PROJECT_HELPER, helper);
+        helper.getImportStack().addElement("AntBuilder"); // import checks that stack is not empty
 
         final BuildLogger logger = new NoBannerLogger();
 
-        logger.setMessageOutputLevel(org.apache.tools.ant.Project.MSG_INFO);
+        logger.setMessageOutputLevel(Project.MSG_INFO);
         logger.setOutputPrintStream(System.out);
         logger.setErrorPrintStream(System.err);
 
@@ -203,6 +226,12 @@ public class AntBuilder extends BuilderSupport {
         return project;
     }
 
+    /**
+     * Ant child nodes are attached by Ant's own configuration machinery, so this hook is intentionally a no-op.
+     *
+     * @param parent the logical parent node
+     * @param child the logical child node
+     */
     @Override
     protected void setParent(Object parent, Object child) {
     }
@@ -249,8 +278,7 @@ public class AntBuilder extends BuilderSupport {
         }
 
         // as in Target.execute()
-        if (node instanceof Task) {
-            Task task = (Task) node;
+        if (node instanceof Task task) {
             final String taskName = task.getTaskName();
 
             if ("antcall".equals(taskName) && parent == null) {
@@ -368,16 +396,33 @@ public class AntBuilder extends BuilderSupport {
             } catch (Exception e) {
                 BuildException be = new BuildException(e);
                 be.setLocation(task.getLocation());
-                throw be;
+                if (reason != null) {
+                    reason.addSuppressed(be);
+                } else {
+                    throw be;
+                }
             }
         }
     }
 
+    /**
+     * Creates a node with no attributes or body text.
+     *
+     * @param tagName the requested node name
+     * @return the created Ant proxy
+     */
     @Override
     protected Object createNode(Object tagName) {
         return createNode(tagName, Collections.EMPTY_MAP);
     }
 
+    /**
+     * Creates a node and applies inline text to it.
+     *
+     * @param name the requested node name
+     * @param value the inline text value
+     * @return the created Ant proxy
+     */
     @Override
     protected Object createNode(Object name, Object value) {
         Object task = createNode(name);
@@ -385,6 +430,14 @@ public class AntBuilder extends BuilderSupport {
         return task;
     }
 
+    /**
+     * Creates a node, applies attributes, and then applies inline text to it.
+     *
+     * @param name the requested node name
+     * @param attributes the node attributes
+     * @param value the inline text value
+     * @return the created Ant proxy
+     */
     @Override
     protected Object createNode(Object name, Map attributes, Object value) {
         Object task = createNode(name, attributes);
@@ -409,6 +462,13 @@ public class AntBuilder extends BuilderSupport {
         return attr;
     }
 
+    /**
+     * Creates a node from the supplied name and attributes.
+     *
+     * @param name the requested node name
+     * @param attributes the attributes to apply
+     * @return the created Ant proxy or target
+     */
     @Override
     protected Object createNode(final Object name, final Map attributes) {
 
@@ -416,8 +476,7 @@ public class AntBuilder extends BuilderSupport {
         String tagName = name.toString();
         String ns = "";
 
-        if (name instanceof QName) {
-            QName q = (QName) name;
+        if (name instanceof QName q) {
             tagName = q.getLocalPart();
             ns = q.getNamespaceURI();
         }
@@ -476,6 +535,12 @@ public class AntBuilder extends BuilderSupport {
         }
     }
 
+    /**
+     * Applies nested text content to the current Ant task.
+     *
+     * @param task the current Ant task proxy
+     * @param text the text content to apply
+     */
     protected void setText(Object task, String text) {
         final char[] characters = text.toCharArray();
         try {
@@ -485,6 +550,11 @@ public class AntBuilder extends BuilderSupport {
         }
     }
 
+    /**
+     * Returns the underlying Ant project instance.
+     *
+     * @return the project backing this builder
+     */
     public Project getAntProject() {
         return project;
     }
@@ -495,21 +565,33 @@ public class AntBuilder extends BuilderSupport {
  * In a first time, without info
  */
 class AntBuilderLocator implements Locator {
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public int getColumnNumber() {
         return 0;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public int getLineNumber() {
         return 0;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public String getPublicId() {
         return "";
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public String getSystemId() {
         return "";

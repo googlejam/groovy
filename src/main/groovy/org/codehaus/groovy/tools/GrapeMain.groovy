@@ -19,27 +19,22 @@
 package org.codehaus.groovy.tools
 
 import groovy.grape.Grape
-import org.apache.ivy.util.DefaultMessageLogger
-import org.apache.ivy.util.Message
 import picocli.CommandLine
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
 import picocli.CommandLine.Parameters
 import picocli.CommandLine.ParentCommand
-import picocli.CommandLine.RunLast
 import picocli.CommandLine.Unmatched
 
+/**
+ * Command-line entry point for inspecting and managing the local Grape cache.
+ */
 @SuppressWarnings('Println')
 @Command(name = 'grape', description = 'Allows for the inspection and management of the local grape cache.',
-        subcommands = [
-                GrapeMain.Install,
-                GrapeMain.Uninstall,
-                GrapeMain.ListCommand,
-                GrapeMain.Resolve,
-                CommandLine.HelpCommand])
+    subcommands = [Install, Uninstall, ListCommand, Resolve, CommandLine.HelpCommand])
 class GrapeMain implements Runnable {
     @Option(names = ['-D', '--define'], description = 'define a system property', paramLabel = '<name=value>')
-    private final Map<String, String> properties = new LinkedHashMap<String, String>()
+    private final Map<String, String> sysProperties = new LinkedHashMap<String, String>()
 
     @SuppressWarnings('UnusedPrivateField') // used in run()
     @Option(names = ['-r', '--resolver'], description = 'define a grab resolver (for install)', paramLabel = '<url>')
@@ -60,10 +55,18 @@ class GrapeMain implements Runnable {
     @Option(names = ['-d', '--debug'], description = 'Log level 4 - debug')
     private boolean debug
 
+    /**
+     * Tokens that did not match a known command or option.
+     */
     @Unmatched List<String> unmatched = new ArrayList<String>()
 
     private CommandLine parser
 
+    /**
+     * Launches the Grape command-line application.
+     *
+     * @param args the command-line arguments
+     */
     static void main(String[] args) {
         GrapeMain grape = new GrapeMain()
         def parser = new CommandLine(grape)
@@ -71,12 +74,17 @@ class GrapeMain implements Runnable {
         parser.subcommands.findAll { k, v -> k != 'help' }.each { k, v -> v.addMixin('helpOptions', new HelpOptionsMixin()) }
 
         grape.parser = parser
-        parser.parseWithHandler(new RunLast(), args)
+        int exitCode = parser.execute(args)
+        System.exit(exitCode)
     }
 
+    /**
+     * Handles top-level execution when no valid subcommand was selected.
+     */
     void run() {
         if (unmatched) {
             System.err.println "grape: '${unmatched[0]}' is not a grape command. See 'grape --help'"
+            throw new CommandLine.ParameterException(parser, "Unknown command: ${unmatched[0]}")
         } else {
             parser.usage(System.out) // if no subcommand was specified
         }
@@ -84,26 +92,26 @@ class GrapeMain implements Runnable {
 
     @SuppressWarnings('UnusedPrivateMethod') // used in run()
     private void init() {
-        properties.each { k, v ->
+        sysProperties.each { k, v ->
             System.setProperty(k, v)
         }
     }
 
     @SuppressWarnings('UnusedPrivateMethod') // used in run()
-    private void setupLogging(int defaultLevel = 2) { // = Message.MSG_INFO -> some parsing error :(
+    private void setupLogging(int defaultLevel = 2) {
+        int level = defaultLevel
         if (quiet) {
-            Message.defaultLogger = new DefaultMessageLogger(Message.MSG_ERR)
+            level = 0
         } else if (warn) {
-            Message.defaultLogger = new DefaultMessageLogger(Message.MSG_WARN)
+            level = 1
         } else if (info) {
-            Message.defaultLogger = new DefaultMessageLogger(Message.MSG_INFO)
+            level = 2
         } else if (verbose) {
-            Message.defaultLogger = new DefaultMessageLogger(Message.MSG_VERBOSE)
+            level = 3
         } else if (debug) {
-            Message.defaultLogger = new DefaultMessageLogger(Message.MSG_DEBUG)
-        } else {
-            Message.defaultLogger = new DefaultMessageLogger(defaultLevel)
+            level = 4
         }
+        Grape.instance?.setLoggingLevel(level)
     }
 
     /**
@@ -119,11 +127,22 @@ class GrapeMain implements Runnable {
             optionListHeading = '%nOptions:%n',
             descriptionHeading = '%n')
     private static class HelpOptionsMixin {
+        /**
+         * Whether command help was requested.
+         */
         @Option(names = ['-h', '--help'], usageHelp = true, description = 'usage information') boolean isHelpRequested
+        /**
+         * Whether version information was requested.
+         */
         @Option(names = ['-v', '--version'], versionHelp = true, description = 'display the Groovy and JVM versions') boolean isVersionRequested
     }
 
     private static class VersionProvider implements CommandLine.IVersionProvider {
+        /**
+         * Returns the version banner shown by picocli.
+         *
+         * @return the Groovy and JVM version line
+         */
         String[] getVersion() {
             String version = GroovySystem.version
             ["Groovy Version: $version JVM: ${System.getProperty('java.version')}"]
@@ -131,22 +150,41 @@ class GrapeMain implements Runnable {
     }
 
     @Command(name = 'install', header = 'Installs a particular grape',
-            description = 'Installs the specified groovy module or maven artifact. If a version is specified that specific version will be installed, otherwise the most recent version will be used (as if `*` was passed in).')
+            description = ['Installs the specified groovy module or maven artifact. If a version is specified that specific version will be installed, otherwise the most recent version will be used (as if `*` was passed in).',
+                           'Accepts three coordinate forms: `group module [version] [classifier]` (positional), `group:module:version[:classifier][@ext]` (Maven shorthand), or `group#module;version` (Ivy shorthand).'])
     private static class Install implements Runnable {
-        @Parameters(index = '0', arity = '1', description = 'Which module group the module comes from. Translates directly to a Maven groupId or an Ivy Organization. Any group matching /groovy[x][\\..*]^/ is reserved and may have special meaning to the groovy endorsed modules.')
+        /**
+         * Module group to install, or a full coordinate in Maven/Ivy shorthand.
+         */
+        @Parameters(index = '0', arity = '1', description = 'Either the module group (Maven groupId / Ivy organisation), or a full coordinate in Maven shorthand `g:m:v[:c][@e]` or Ivy shorthand `g#m;v`. Any group matching /groovy[x][\\..*]^/ is reserved and may have special meaning to the groovy endorsed modules.')
         String group
 
-        @Parameters(index = '1', arity = '1', description = 'The name of the module to load. Translated directly to a Maven artifactId or an Ivy artifact.')
+        /**
+         * Module name to install. Optional when a shorthand coordinate is supplied as the first parameter.
+         */
+        @Parameters(index = '1', arity = '0..1', description = 'The name of the module to load. Translated directly to a Maven artifactId or an Ivy artifact. Omit when supplying a shorthand coordinate.')
         String module
 
+        /**
+         * Module version to install, defaulting to the latest available version.
+         */
         @Parameters(index = '2', arity = '0..1', description = 'The version of the module to use. Either a literal version `1.1-RC3` or an Ivy Range `[2.2.1,)` meaning 2.2.1 or any greater version).')
         String version = '*'
 
+        /**
+         * Optional classifier to install.
+         */
         @Parameters(index = '3', arity = '0..1', description = 'The optional classifier to use (for example, jdk15).')
         String classifier
 
+        /**
+         * Owning top-level command.
+         */
         @ParentCommand GrapeMain parentCommand
 
+        /**
+         * Installs the requested grape artifact.
+         */
         void run() {
             parentCommand.init()
 
@@ -158,10 +196,35 @@ class GrapeMain implements Runnable {
                 Grape.addResolver(name:url, root:url)
             }
 
-            try {
-                Grape.grab(autoDownload: true, group: group, module: module, version: version, classifier: classifier, noExceptions: true)
-            } catch (Exception ex) {
-                System.err.println "An error occured : $ex"
+            // Call the engine directly to get the exception return value
+            // The Grape.grab() facade doesn't propagate the return value
+            def engine = Grape.instance
+            if (!engine) {
+                System.err.println "Grape engine not available"
+                throw new CommandLine.ExecutionException(new CommandLine(this), "Grape engine not initialized")
+            }
+
+            // If the first positional carries Maven/Ivy shorthand separators, parse it and let any
+            // explicit later positionals override what the shorthand supplied.
+            String g = group, m = module, v = version, c = classifier
+            if (g != null && (g.indexOf(':') >= 0 || g.indexOf('#') >= 0)) {
+                Map<String, Object> parts = GrapeUtil.getIvyParts(g)
+                if (parts.get('group') && parts.get('module')) {
+                    g = parts.group
+                    if (!m) m = parts.module as String
+                    if (v == '*' && parts.version) v = parts.version as String
+                    if (!c && parts.classifier) c = parts.classifier as String
+                }
+            }
+            if (!m) {
+                System.err.println "Missing module: pass three positionals or a shorthand like 'g:m:v'"
+                throw new CommandLine.ExecutionException(new CommandLine(this), "Missing module")
+            }
+
+            def result = engine.grab(autoDownload: true, group: g, module: m, version: v, classifier: c, noExceptions: true)
+            if (result instanceof Exception) {
+                System.err.println "Error grabbing Grapes -- ${result.message}"
+                throw new CommandLine.ExecutionException(new CommandLine(this), "Failed to install grape", result)
             }
         }
     }
@@ -170,8 +233,14 @@ class GrapeMain implements Runnable {
             description = 'Lists locally installed modules (with their full maven name in the case of groovy modules) and versions.')
     private static class ListCommand implements Runnable {
 
+        /**
+         * Owning top-level command.
+         */
         @ParentCommand GrapeMain parentCommand
 
+        /**
+         * Lists cached grape modules and versions.
+         */
         void run() {
             parentCommand.init()
 
@@ -185,7 +254,7 @@ class GrapeMain implements Runnable {
             parentCommand.setupLogging()
 
             Grape.enumerateGrapes().each {String groupName, Map group ->
-                group.each {String moduleName, List<String> versions ->
+                group.each { String moduleName, List<String> versions ->
                     println "$groupName $moduleName  $versions"
                     moduleCount++
                     versionCount += versions.size()
@@ -200,7 +269,8 @@ class GrapeMain implements Runnable {
     @Command(name = 'resolve', header = 'Enumerates the jars used by a grape',
             customSynopsis = 'grape resolve [-adhisv] (<groupId> <artifactId> <version>)+',
             description = [
-                    'Prints the file locations of the jars representing the artifcats for the specified module(s) and the respective transitive dependencies.',
+                    'Prints the file locations of the jars representing the artifacts for the specified module(s) and the respective transitive dependencies.',
+                    'The exact format supported by some parameters depends on the Grape implementation, e.g. Ivy or Maven.',
                     '',
                     'Parameters:',
                     '      <group>     Which module group the module comes from. Translates directly',
@@ -227,17 +297,26 @@ class GrapeMain implements Runnable {
         @Option(names = ['-i', '--ivy'], description = 'Express dependencies in an ivy-like format')
         private boolean ivyFormatRequested
 
+        /**
+         * Positional dependency coordinates captured from the command line.
+         */
         @Parameters(hidden = true) // parameter description is embedded in the command description
         List<String> args = new ArrayList<>() // the positional parameters
 
+        /**
+         * Owning top-level command.
+         */
         @ParentCommand GrapeMain parentCommand
 
+        /**
+         * Resolves the requested grapes and prints their resulting classpath entries.
+         */
         void run() {
             parentCommand.init()
 
-            // set the instance so we can re-set the logger
+            // set the instance so we can re-set the logger (implementation dependent)
             Grape.instance
-            parentCommand.setupLogging(Message.MSG_ERR)
+            parentCommand.setupLogging(0) // errors only
 
             if ((args.size() % 3) != 0) {
                 println 'There needs to be a multiple of three arguments: (group module version)+'
@@ -282,7 +361,7 @@ class GrapeMain implements Runnable {
             }
             try {
                 def results = []
-                def uris = Grape.resolve(* params)
+                def uris = Grape.resolve(*params)
                 if (!ivyFormatRequested) {
                     for (URI uri: uris) {
                         if (uri.scheme == 'file') {
@@ -305,6 +384,7 @@ class GrapeMain implements Runnable {
             } catch (Exception e) {
                 System.err.println "Error in resolve:\n\t$e.message"
                 if (e.message =~ /unresolved dependency/) println 'Perhaps the grape is not installed?'
+                throw new CommandLine.ExecutionException(new CommandLine(this), "Failed to resolve grape", e)
             }
         }
     }
@@ -312,12 +392,21 @@ class GrapeMain implements Runnable {
     @Command(name = 'uninstall',
             description = 'Uninstalls a particular grape (non-transitively removes the respective jar file from the grape cache).')
     private static class Uninstall implements Runnable {
+        /**
+         * Module group to uninstall.
+         */
         @Parameters(index = '0', arity = '1', description = 'Which module group the module comes from. Translates directly to a Maven groupId or an Ivy Organization. Any group matching /groovy[x][\\..*]^/ is reserved and may have special meaning to the groovy endorsed modules.')
         String group
 
+        /**
+         * Module name to uninstall.
+         */
         @Parameters(index = '1', arity = '1', description = 'The name of the module to load. Translated directly to a Maven artifactId or an Ivy artifact.')
         String module
 
+        /**
+         * Module version to uninstall.
+         */
         @Parameters(index = '2', arity = '1', description = 'The version of the module to use. Either a literal version `1.1-RC3` or an Ivy Range `[2.2.1,)` meaning 2.2.1 or any greater version).')
         String version
 
@@ -325,8 +414,14 @@ class GrapeMain implements Runnable {
         //@Parameters(index = '3', arity = '0..1', description = 'The optional classifier to use (for example, jdk15).')
         //String classifier;
 
+        /**
+         * Owning top-level command.
+         */
         @ParentCommand GrapeMain parentCommand
 
+        /**
+         * Removes the requested grape artifact from the local cache.
+         */
         void run() {
             parentCommand.init()
 

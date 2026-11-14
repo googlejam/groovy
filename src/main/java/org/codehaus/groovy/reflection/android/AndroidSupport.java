@@ -18,19 +18,46 @@
  */
 package org.codehaus.groovy.reflection.android;
 
+/**
+ * Detects whether the runtime is Android's ART (or its Dalvik predecessor),
+ * where classes cannot be defined at run time and parts of the JDK class
+ * library are absent.
+ * <p>
+ * The VM name is the primary signal: Android reports {@code java.vm.name} as
+ * {@code "Dalvik"} on every release to date. A JVM merely carrying Android
+ * classes on its class path, as Robolectric tests do, is not Android and keeps
+ * the JVM behaviour. The framework's {@code Activity} class is consulted only
+ * when the property cannot be read (GROOVY-12384).
+ */
 public abstract class AndroidSupport {
-    private static final boolean IS_ANDROID;
+    private static final boolean IS_ANDROID = detect();
 
-    static {
-        boolean isAndroid = true;
+    private static boolean detect() {
+        String vmName;
+        try {
+            vmName = System.getProperty("java.vm.name");
+        } catch (SecurityException e) {
+            vmName = null;
+        }
+        if (vmName != null) {
+            return vmName.startsWith("Dalvik");
+        }
         try {
             Class.forName("android.app.Activity", false, AndroidSupport.class.getClassLoader());
+            return true;
         } catch (ClassNotFoundException e) {
-            isAndroid = false;
+            return false;
         }
-        IS_ANDROID = isAndroid;
     }
 
+    /**
+     * Whether this runtime was detected as Android. The answer is computed once:
+     * {@code java.vm.name} starting with {@code "Dalvik"} means Android. If that
+     * property cannot be read, the answer is whether {@code android.app.Activity}
+     * can be loaded by this class's loader.
+     *
+     * @return {@code true} when the runtime was detected as Android
+     */
     public static boolean isRunningAndroid() {
         return IS_ANDROID;
     }

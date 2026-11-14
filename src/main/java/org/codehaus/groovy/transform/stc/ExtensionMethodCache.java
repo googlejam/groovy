@@ -33,15 +33,20 @@ import static org.codehaus.groovy.runtime.metaclass.MetaClassRegistryImpl.EXTENS
 
 /**
  * This class is used to make extension methods lookup faster. Basically, it will only
- * collect the list of extension methods (see {@link ExtensionModule} if the list of
+ * collect the list of extension methods (see {@link ExtensionModule}) if the list of
  * extension modules has changed. It avoids recomputing the whole list each time we perform
- * a method lookup.
+ * a method lookup. Cached lists are indexed by method name so the static type checker can
+ * collect DGM candidates without a linear scan of every method on the receiver type.
  */
 public class ExtensionMethodCache extends AbstractExtensionMethodCache {
+    /** Shared cache instance used by static type checking. */
     public static final ExtensionMethodCache INSTANCE = new ExtensionMethodCache();
 
     private ExtensionMethodCache() {}
 
+    /**
+     * Adds the built-in extension classes used during static type checking.
+     */
     @Override
     protected void addAdditionalClassesToScan(Set<Class> instanceExtClasses, Set<Class> staticExtClasses) {
         Collections.addAll(instanceExtClasses, DefaultGroovyMethods.DGM_LIKE_CLASSES);
@@ -62,16 +67,25 @@ public class ExtensionMethodCache extends AbstractExtensionMethodCache {
         Collections.addAll(staticExtClasses, VMPluginFactory.getPlugin().getPluginStaticGroovyMethods());
     }
 
+    /**
+     * Returns the system property that disables extension methods.
+     */
     @Override
     protected String getDisablePropertyName() {
         return EXTENSION_DISABLE_PROPERTY;
     }
 
+    /**
+     * Returns the filter that excludes deprecated extension methods.
+     */
     @Override
     protected Predicate<MethodNode> getMethodFilter() {
         return m -> !m.getAnnotations(StaticTypeCheckingSupport.Deprecated_TYPE).isEmpty();
     }
 
+    /**
+     * Maps extension methods to their receiver type names.
+     */
     @Override
     protected Function<MethodNode, String> getMethodMapper() {
         return m -> m.getParameters()[0].getType().getName();
